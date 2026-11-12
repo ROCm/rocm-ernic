@@ -50,9 +50,10 @@ void ionic_eth_emu_destroy(struct ionic_eth_emu *emu);
 
 /*
  * Return the guest's view of the device to what it was before any client
- * attached, for a device reset: the BAR0 registers and BAR2 doorbells,
- * every interrupt masked, no Ethernet queue, no LIF or port info block,
- * the station MAC, zeroed counters, and no frame queued for the guest.
+ * attached, for a device reset: the BAR0 registers, BAR2 doorbells and
+ * BAR4 CMB, every interrupt masked, no Ethernet queue, no LIF or port info
+ * block, the station MAC, zeroed counters, and no frame queued for the
+ * guest.
  * What the operator configured stays: the profile, faults, network backend
  * and filters, and the registered handlers.  Nothing is written to guest
  * memory.  @emu may be NULL.  Main loop thread only.
@@ -121,6 +122,30 @@ ssize_t ionic_eth_emu_bar0_access(struct ionic_eth_emu *emu, char *buf,
 
 ssize_t ionic_eth_emu_bar2_access(struct ionic_eth_emu *emu, char *buf,
                                   size_t count, loff_t offset, bool is_write);
+
+/* Refuses every access, with EINVAL, unless the device has a CMB. */
+ssize_t ionic_eth_emu_bar4_access(struct ionic_eth_emu *emu, char *buf,
+                                  size_t count, loff_t offset, bool is_write);
+
+/*
+ * Give the device a Controller Memory Buffer (CMB), BAR4, which it doesn't
+ * have by default. Without one, Q_IDENTIFY advertises no express doorbell,
+ * DISCOVER_CMB is refused, and BAR4 accesses fail; the server doesn't set
+ * up BAR4 either, so the guest driver finds no CMB and puts every ring in
+ * guest memory. Call before the device is used. Returns 0, or -1 if the
+ * CMB can't be allocated.
+ */
+int ionic_eth_emu_enable_cmb(struct ionic_eth_emu *emu);
+
+/*
+ * Zero the CMB, BAR4, so that nothing written there -- work requests and
+ * their inline data -- survives a device reset or the client that wrote it.
+ * It runs on every reset libvfio-user reports, which includes a client's
+ * going, through ionic_eth_emu_reset(), and on the driver's
+ * IONIC_CMD_RESET.  @emu may be NULL, and a device without a CMB has
+ * nothing to clear.  Main loop thread only.
+ */
+void ionic_eth_emu_clear_cmb(struct ionic_eth_emu *emu);
 
 /*
  * Trigger an MSI-X vector (0 = success, -EINVAL = bad vec).  One that is

@@ -526,6 +526,16 @@ ernic_add_test_program(ernic-test-ionic-adminq-maps
     HEADER_DEPS vfio-user glib ibverbs
 )
 
+# ionic admin queue CMB test. It links the admin queue and stubs the rest
+# with ionic_adminq_fakes.h, whose data path records where CREATE_QP put a
+# QP's rings in the CMB, so the offsets it passes on can be checked.
+ernic_add_test_program(ernic-test-ionic-adminq-cmb
+    SOURCES
+        test_ionic_adminq_cmb.c
+        ${ERNIC_TEST_ADMINQ_SOURCES}
+    HEADER_DEPS vfio-user glib ibverbs
+)
+
 # ionic SRQ adminq unit test: drives CREATE/MODIFY/QUERY/DESTROY_SRQ through
 # ionic_adminq_dispatch_wqe() against the same fake guest memory, so the
 # response buffer AND the reported length can both be inspected -- the pair
@@ -1005,6 +1015,12 @@ ernic_add_unit_test(ionic-adminq-poll-unit ernic-test-ionic-adminq-poll
 ernic_add_unit_test(ionic-adminq-maps-unit ernic-test-ionic-adminq-maps
     TIMEOUT 30)
 
+# ionic admin queue CMB unit test: a ring CREATE_QP puts in the CMB is at
+# the offset the driver gave, whatever rings came before it, and one that
+# does not fit inside the CMB is refused before anything is allocated.
+ernic_add_unit_test(ionic-adminq-cmb-unit ernic-test-ionic-adminq-cmb
+    TIMEOUT 30)
+
 # ionic SRQ adminq unit test: the four SRQ handlers had no in-process
 # coverage, which is how CREATE_SRQ shipped writing its id into a response
 # the driver was told was zero bytes long.
@@ -1274,6 +1290,20 @@ add_test(
         --pci-regs $<TARGET_FILE:ernic-pci-regs>
 )
 set_tests_properties(ernic-vfu-client PROPERTIES
+    TIMEOUT 180
+    RUN_SERIAL TRUE
+)
+
+# The Controller Memory Buffer, BAR4, with --cmb and without: what
+# DISCOVER_CMB and Q_IDENTIFY report, a QP placed in it, and its clearing
+# on a reset and between clients.
+add_test(
+    NAME ernic-cmb
+    COMMAND ${ERNIC_PY_RUN}
+        ${CMAKE_CURRENT_SOURCE_DIR}/py/test_cmb.py
+        --server $<TARGET_FILE:rocm-ernic>
+)
+set_tests_properties(ernic-cmb PROPERTIES
     TIMEOUT 180
     RUN_SERIAL TRUE
 )

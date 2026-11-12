@@ -478,6 +478,23 @@ static void reset_pci_config(vfu_ctx_t *vfu_ctx, const rocm_ernic_dev_t *dev,
                    dev->pci_init.pmcsr);
 }
 
+/*
+ * BAR4 (CMB) access callback.
+ *
+ * The guest writes WQEs directly into the CMB, and QEMU delivers its stores
+ * at most 8 bytes at a time.  Reads are not part of the expdb protocol
+ * but libvfio-user may deliver them.  Delegate to the eth_emu layer which
+ * holds the shadow buffer and posts a WQE once the write ending its slot
+ * arrives.
+ */
+static ssize_t bar4_access(vfu_ctx_t *vfu_ctx, char *buf, size_t count,
+                           loff_t offset, bool is_write)
+{
+    rocm_ernic_dev_t *dev = vfu_get_private(vfu_ctx);
+    struct ionic_eth_emu *emu = ionic_device_eth_emu(dev->ionic);
+    return ionic_eth_emu_bar4_access(emu, buf, count, offset, is_write);
+}
+
 /**
  * Device reset callback
  *
@@ -702,6 +719,7 @@ static int device_init(rocm_ernic_dev_t *dev)
     cfg.profile = &dev->profile;
     cfg.mac = dev->mac_addr_set ? dev->mac_addr : NULL;
     cfg.faults = dev->faults;
+    cfg.cmb = dev->cmb;
     dev->ionic = ionic_device_create(&cfg, err, sizeof(err));
     if (!dev->ionic) {
         ernic_log(ERNIC_LOG_ERROR, "%s", err);
@@ -847,6 +865,9 @@ static int setup_pci_config(vfu_ctx_t *vfu_ctx)
  *   BAR0 (64-bit): 32 KB device registers (devcmd + MSI-X ctrl),
  *                  with the MSI-X table/PBA above the register window
  *   BAR2 (64-bit): 4 MB doorbell pages (BAR1 is skipped per ionic spec)
+ *   BAR4 (64-bit): 8 MB Controller Memory Buffer (CMB), with --cmb only.
+ *                  Without it the guest driver finds no CMB and puts every
+ *                  ring in guest memory, whatever the application asked.
  *
  * Returns 0, or -1 after saying why.
  */
@@ -881,10 +902,28 @@ static int setup_bars(vfu_ctx_t *vfu_ctx, rocm_ernic_dev_t *dev)
         return -1;
     }
 
-    ernic_startup_report(
-        "rocm-ernic: ionic BARs configured: BAR0=%zu (regs=%zu) BAR2=%zu",
-        (size_t)IONIC_BAR0_TOTAL_SIZE, (size_t)IONIC_BAR0_REGS_SIZE,
-        IONIC_BAR2_DB_SIZE);
+    if (!dev->cmb) {
+        ernic_startup_report("rocm-ernic: ionic BARs configured: BAR0=%zu "
+                             "(regs=%zu) BAR2=%zu, no CMB",
+                             (size_t)IONIC_BAR0_TOTAL_SIZE,
+                             (size_t)IONIC_BAR0_REGS_SIZE, IONIC_BAR2_DB_SIZE);
+        return 0;
+    }
+
+    ret = vfu_setup_region(
+        vfu_ctx, VFU_PCI_DEV_BAR4_REGION_IDX, IONIC_BAR4_CMB_SIZE, bar4_access,
+        VFU_REGION_FLAG_RW | VFU_REGION_FLAG_MEM, NULL, 0, -1, 0);
+    if (ret < 0) {
+        ernic_log_errno(ERNIC_LOG_ERROR, errno,
+                        "ionic: Failed to setup BAR4 (CMB)");
+        return -1;
+    }
+
+    ernic_startup_report("rocm-ernic: ionic BARs configured: BAR0=%zu "
+                         "(regs=%zu) BAR2=%zu BAR4=%zu (CMB)",
+                         (size_t)IONIC_BAR0_TOTAL_SIZE,
+                         (size_t)IONIC_BAR0_REGS_SIZE, IONIC_BAR2_DB_SIZE,
+                         IONIC_BAR4_CMB_SIZE);
 
     return 0;
 }
@@ -1156,6 +1195,12 @@ static void usage(const char *progname)
     fprintf(stderr, "                       Beats every profile; the guest "
                     "uses at most\n");
     fprintf(stderr, "                       one per vCPU.\n");
+    fprintf(stderr, "      --cmb            Give the device an 8 MB "
+                    "Controller Memory Buffer\n");
+    fprintf(stderr, "                       (BAR4) the driver may put "
+                    "queues in. Without it\n");
+    fprintf(stderr, "                       (the default), every queue is "
+                    "in guest memory.\n");
 
     /* A testing aid; ionic_fault_set_add() parses the grammar. */
     fprintf(stderr, "      --inject FAULT   Inject a fault (repeatable), as "
@@ -1476,6 +1521,7 @@ static enum parse_result parse_options(int argc, char *argv[],
         OPT_STATS_INTERVAL,
         OPT_ETH_QUEUES,
         OPT_INJECT,
+        OPT_CMB,
     };
 
     /* Command-line option definitions */
@@ -1496,6 +1542,7 @@ static enum parse_result parse_options(int argc, char *argv[],
         {"stats-interval-ms", required_argument, NULL, OPT_STATS_INTERVAL},
         {"eth-queues", required_argument, NULL, OPT_ETH_QUEUES},
         {"inject", required_argument, NULL, OPT_INJECT},
+        {"cmb", no_argument, NULL, OPT_CMB},
 #ifdef ERNIC_HAVE_P4
         {"p4", no_argument, NULL, 'P'},
         {"p4-program", required_argument, NULL, 'J'},
@@ -1587,6 +1634,9 @@ static enum parse_result parse_options(int argc, char *argv[],
         case OPT_ETH_QUEUES:
             /* Applied after every --nic-profile, which it beats. */
             eth_queues_arg = optarg;
+            break;
+        case OPT_CMB:
+            dev->cmb = true;
             break;
         case OPT_INJECT: {
             char fault_err[256];

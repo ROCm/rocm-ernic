@@ -223,6 +223,39 @@
   Linux and QEMU, seeing No_Soft_Reset, still reset the device with an FLR
   rather than by a trip through D3hot.
 
+* **Express doorbell (CMB / EXPDB) end-to-end support, with `--cmb`.** The
+  device has a CMB only when the server is started with `--cmb`; without it
+  there is no BAR4, the guest driver finds no CMB, and every queue is in
+  guest memory, as before. With it, rdma-core puts a QP's queues in the CMB
+  unless the application opts out (`ionic_dv_pd_set_sqcmb()`,
+  `ionic_dv_pd_set_rqcmb()`). The server exposes an 8 MB Controller Memory
+  Buffer on BAR4 and responds to `DISCOVER_CMB` (opcode 80): two CMB
+  regions are reported — `DEVMEM` and `EXPDB512` — each 128 × 64 KiB pages
+  on BAR4.  `Q_IDENTIFY` for TXQ (qtype 3) and RXQ (qtype 2) sets the
+  `IONIC_QIDENT_F_EXPDB` feature bit so the guest `ionic_rdma` driver may
+  request express-doorbell QPs.  `CREATE_QP` with `IONIC_QPF_SQ_CMB` or
+  `IONIC_QPF_RQ_CMB` now fully wires the QP into the CMB path. Such a
+  ring's address is its offset in BAR4, as the driver gives it, and a ring
+  that does not lie wholly inside the CMB is refused with `ERANGE`, or
+  with `ENOSUPP` on a device without a CMB. BAR4 guest writes are shadowed
+  in a server-side buffer, the write that ends a stride-sized slot
+  dispatches its WQE, whatever its size (QEMU delivers a guest's stores
+  into BAR4 at most 8 bytes at a time, so a 64-byte store arrives as eight
+  writes), and `process_sq_wqe()` reads the
+  WQE from the shadow buffer rather than via DMA (BAR4 GPAs are PCI device
+  memory, not guest DRAM, so `ernic_dma_read()` cannot map them). The CMB is
+  zeroed on every device reset, including the driver's `IONIC_CMD_RESET`,
+  and whenever a client disconnects, so what one guest, boot, or driver load
+  wrote there can't be read by the next. A QP's rings in the CMB are zeroed
+  when it's destroyed, since the driver maps them into the process that
+  created the QP and gives their pages to the next QP as they are. A WQE
+  posted by the express doorbell while Bus Master Enable is clear, or the
+  function is in D3hot, waits until the guest sets the bit or returns the
+  function to D0, as one posted by a doorbell does. Each WQE posted by the
+  express doorbell counts as one doorbell ring in
+  `ernic_qp_doorbell_send_total` or `ernic_qp_doorbell_recv_total`, and in
+  the guest's `doorbell_send` or `doorbell_recv` hw_counter.
+
 * `--backend nvmeof:kv=1[,keys=...,maxval=...]` serves the namespace with the
   NVM Express Key Value command set instead of the block one: Store (01h),
   Retrieve (02h), List (06h), Delete (10h) and Exist (14h), with the key
@@ -568,7 +601,8 @@
   * `tests/py/` drives real server processes over the vfio-user socket from
     Python, the way a VMM does, with guest memory in a shared `memfd` and
     nothing outside the standard library: `ernic-vfu-client` (the protocol,
-    and what a client mustn't get away with), `ernic-ionic-driver` (QPs,
+    and what a client mustn't get away with), `ernic-cmb` (the CMB, with
+    `--cmb` and without), `ernic-ionic-driver` (QPs,
     MRs, work requests and completions), `ernic-ionic-hw-stats` (the four
     statistics commands and the counts they report), `ernic-p4-driver`, and
     `ernic-mesh-stress` (a three-node mesh under traffic, hostile peers, the
@@ -1949,6 +1983,11 @@
 ### Limitations
 
 * rocm-ernic supports only 64-bit Linux; 32-bit systems aren't supported.
+* A WQE written into the CMB (BAR4) is dispatched as soon as the write ending
+  its slot arrives, so the guest must write each WQE front to back. One that
+  writes a slot's last bytes first, for example storing the WQE's first word
+  last to publish it, has the WQE dispatched holding whatever the slot held
+  before, and the writes after it post nothing.
 
 ### Known issues
 

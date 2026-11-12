@@ -126,17 +126,55 @@
 #define IONIC_XCVR_PID_QSFP_400G_SR4    81
 /* port_info config.mtu; the driver only logs it.  The MTU the guest can set
  * comes from the LIF identity max_frame_size (link.mtu_max). */
-#define IONIC_ETH_MTU         9000
-#define IONIC_CMD_LIF_RESET   22
-#define IONIC_CMD_LIF_GETATTR 23
-#define IONIC_CMD_LIF_SETATTR 24
-#define IONIC_CMD_Q_IDENTIFY  39
-#define IONIC_CMD_Q_INIT      40
-#define IONIC_CMD_Q_CONTROL   41
+#define IONIC_ETH_MTU          9000
+#define IONIC_CMD_LIF_RESET    22
+#define IONIC_CMD_LIF_GETATTR  23
+#define IONIC_CMD_LIF_SETATTR  24
+#define IONIC_CMD_Q_IDENTIFY   39
+#define IONIC_CMD_Q_INIT       40
+#define IONIC_CMD_Q_CONTROL    41
+#define IONIC_CMD_DISCOVER_CMB 80
 
 /* ionic_q_control_cmd.oper; IONIC_Q_HANG_RESET (2) is acknowledged as is */
 #define IONIC_Q_DISABLE 0
 #define IONIC_Q_ENABLE  1
+
+/*
+ * DISCOVER_CMB (opcode 80): describes the CMB BAR regions.
+ *
+ * The response is union ionic_discover_cmb_identity, written to dev_cmd_regs
+ * data[].  Wire layout (all little-endian):
+ *   le32 num_regions @0        -- number of valid region[] entries
+ *   le32 flags       @4        -- IONIC_CMB_FLAG_EXPDB if expdb is present
+ *   region[i] @CMB_ID_REGION_OFF+CMB_ID_REGION_SIZE*i:
+ *     u8  bar_num   @CMB_REGION_BAR_NUM_OFF  -- PCI BAR number
+ *     u8  cmb_type  @CMB_REGION_TYPE_OFF     -- IONIC_CMB_TYPE_*
+ *     u8  rsvd[6]   @2
+ *     le32 offset   @CMB_REGION_OFFSET_OFF   -- in IONIC_CMB_SHIFT_64K units
+ *     le32 length   @CMB_REGION_LENGTH_OFF   -- in IONIC_CMB_SHIFT_64K units
+ *
+ * We expose two regions on BAR4: one DEVMEM (the whole 8 MB) and one
+ * EXPDB512 (also the whole 8 MB, covering the 512-byte expdb stride WQEs).
+ */
+#define IONIC_CMB_TYPE_DEVMEM   0U
+#define IONIC_CMB_TYPE_EXPDB512 4U
+#define IONIC_CMB_FLAG_EXPDB    1U
+#define IONIC_CMB_SHIFT_64K     16U
+/* IONIC_BAR4_CMB_SIZE >> IONIC_CMB_SHIFT_64K = 0x800000 >> 16 = 128 */
+#define IONIC_CMB_ENTRY_PAGES 128U
+#define IONIC_MAX_CMB_REGIONS 16U
+/* IONIC_QIDENT_F_EXPDB: Q_IDENTIFY feature bit for express doorbell support */
+#define IONIC_QIDENT_F_EXPDB UINT64_C(0x400) /* BIT_ULL(10) */
+
+/* Byte offsets within the DISCOVER_CMB response in dev_cmd_regs->data[] */
+#define CMB_ID_NUM_REGIONS_OFF 0U
+#define CMB_ID_FLAGS_OFF       4U
+#define CMB_ID_REGION_OFF      8U
+#define CMB_ID_REGION_SIZE     16U
+#define CMB_REGION_BAR_NUM_OFF 0U
+#define CMB_REGION_TYPE_OFF    1U
+#define CMB_REGION_OFFSET_OFF  8U
+#define CMB_REGION_LENGTH_OFF  12U
 
 /* LIF capabilities */
 #define IONIC_LIF_CAP_ETH  (1U << 0)
@@ -401,6 +439,10 @@ struct ionic_eth_emu {
     uint8_t *bar2;
     size_t bar2_size;
 
+    /* CMB buffer: 8 MB shadow of BAR4.  Allocated in ionic_eth_emu_create();
+     * the datapath shares the same pointer via ionic_datapath_set_cmb(). */
+    uint8_t *cmb_buf;
+
     /* True once LIF_INIT has completed. */
     bool lif_initialized;
     uint16_t lif_hw_index;
@@ -524,6 +566,7 @@ void ionic_eth_emu_handle_lif_init(struct ionic_eth_emu *emu,
 void ionic_eth_emu_handle_q_identify(const struct ionic_eth_emu *emu,
                                      const uint8_t *cmd, uint8_t *comp,
                                      uint8_t *data);
+void ionic_eth_emu_handle_discover_cmb(uint8_t *data);
 void ionic_eth_emu_handle_q_init(struct ionic_eth_emu *emu, const uint8_t *cmd,
                                  uint8_t *comp);
 

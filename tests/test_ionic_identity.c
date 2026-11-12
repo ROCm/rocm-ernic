@@ -23,6 +23,8 @@
  * See the LICENSE_GPL.md file in the top-level directory.
  */
 
+#include <errno.h>
+#include <inttypes.h>
 #include <stdbool.h>
 #include <stddef.h>
 #include <stdint.h>
@@ -578,6 +580,162 @@ static void check_identity_clears_window(const char *name, enum block blk,
     }
 }
 
+/*
+ * Check the wire layout of DISCOVER_CMB.
+ *
+ * ionic_map_disc_cmb() reads num_regions, flags, and two region entries.
+ * Verify that our handler writes exactly the expected bytes for each field.
+ */
+static void check_discover_cmb(void)
+{
+    uint8_t data[DEVCMD_DATA_SIZE];
+    memset(data, 0xa5, sizeof(data)); /* poison to catch partial writes */
+
+    ionic_eth_emu_handle_discover_cmb(data);
+
+    /* CMB_ID_NUM_REGIONS_OFF = 0, le32 = 2 */
+    uint32_t nregions = ernic_get_le32(data + CMB_ID_NUM_REGIONS_OFF);
+    bool ok = (nregions == 2);
+    printf("%s DISCOVER_CMB: num_regions=%u (expected 2)\n",
+           ok ? "ok  " : "FAIL", nregions);
+    if (!ok) {
+        failures++;
+    }
+
+    /* CMB_ID_FLAGS_OFF = 4, le32, IONIC_CMB_FLAG_EXPDB = 1 */
+    uint32_t flags = ernic_get_le32(data + CMB_ID_FLAGS_OFF);
+    ok = ((flags & IONIC_CMB_FLAG_EXPDB) != 0);
+    printf("%s DISCOVER_CMB: flags EXPDB bit set (flags=0x%x)\n",
+           ok ? "ok  " : "FAIL", flags);
+    if (!ok) {
+        failures++;
+    }
+
+    /* region[0] at CMB_ID_REGION_OFF: bar_num=4, type=DEVMEM, offset=0,
+     * length=128 */
+    const uint8_t *r0 = data + CMB_ID_REGION_OFF;
+    bool r0_ok =
+        (r0[CMB_REGION_BAR_NUM_OFF] == 4 &&
+         r0[CMB_REGION_TYPE_OFF] == IONIC_CMB_TYPE_DEVMEM &&
+         ernic_get_le32(r0 + CMB_REGION_OFFSET_OFF) == 0 &&
+         ernic_get_le32(r0 + CMB_REGION_LENGTH_OFF) == IONIC_CMB_ENTRY_PAGES);
+    printf("%s DISCOVER_CMB: region[0] bar=%u type=%u offset=%u length=%u "
+           "(expected bar=4 type=%u offset=0 length=%u)\n",
+           r0_ok ? "ok  " : "FAIL", r0[CMB_REGION_BAR_NUM_OFF],
+           r0[CMB_REGION_TYPE_OFF], ernic_get_le32(r0 + CMB_REGION_OFFSET_OFF),
+           ernic_get_le32(r0 + CMB_REGION_LENGTH_OFF), IONIC_CMB_TYPE_DEVMEM,
+           IONIC_CMB_ENTRY_PAGES);
+    if (!r0_ok) {
+        failures++;
+    }
+
+    /* region[1] at CMB_ID_REGION_OFF+CMB_ID_REGION_SIZE: bar_num=4,
+     * type=EXPDB512 */
+    const uint8_t *r1 = data + CMB_ID_REGION_OFF + CMB_ID_REGION_SIZE;
+    bool r1_ok =
+        (r1[CMB_REGION_BAR_NUM_OFF] == 4 &&
+         r1[CMB_REGION_TYPE_OFF] == IONIC_CMB_TYPE_EXPDB512 &&
+         ernic_get_le32(r1 + CMB_REGION_OFFSET_OFF) == 0 &&
+         ernic_get_le32(r1 + CMB_REGION_LENGTH_OFF) == IONIC_CMB_ENTRY_PAGES);
+    printf("%s DISCOVER_CMB: region[1] bar=%u type=%u offset=%u length=%u "
+           "(expected bar=4 type=%u offset=0 length=%u)\n",
+           r1_ok ? "ok  " : "FAIL", r1[CMB_REGION_BAR_NUM_OFF],
+           r1[CMB_REGION_TYPE_OFF], ernic_get_le32(r1 + CMB_REGION_OFFSET_OFF),
+           ernic_get_le32(r1 + CMB_REGION_LENGTH_OFF), IONIC_CMB_TYPE_EXPDB512,
+           IONIC_CMB_ENTRY_PAGES);
+    if (!r1_ok) {
+        failures++;
+    }
+}
+
+/*
+ * Check that Q_IDENTIFY sets IONIC_QIDENT_F_EXPDB in features for TXQ
+ * (qtype 3) and RXQ (qtype 2), where the RDMA driver looks for it, but not
+ * for ADMINQ (0) or NOTIFYQ (1), and only on a device with a CMB: a device
+ * without one, the default, advertises no express doorbell at all.
+ */
+static void check_q_identify_expdb(bool cmb)
+{
+    struct ionic_eth_emu *emu = make_emu(NULL, true);
+    const char *dev = cmb ? "with a CMB" : "without a CMB";
+
+    if (emu && cmb && ionic_eth_emu_enable_cmb(emu) != 0) {
+        ionic_eth_emu_destroy(emu);
+        emu = NULL;
+    }
+    if (!emu) {
+        printf("FAIL Q_IDENTIFY EXPDB %s: could not create emulator\n", dev);
+        failures++;
+        return;
+    }
+
+    static const struct {
+        uint8_t qtype;
+        bool rdma_side; /* what the RDMA driver reads EXPDB support from */
+    } qtypes[] = {
+        {IONIC_QTYPE_ADMINQ, false},
+        {IONIC_QTYPE_NOTIFYQ, false},
+        {IONIC_QTYPE_RXQ, true},
+        {IONIC_QTYPE_TXQ, true},
+    };
+    uint8_t cmd[64];
+    uint8_t comp[16];
+    uint8_t data[DEVCMD_DATA_SIZE];
+
+    for (size_t i = 0; i < sizeof(qtypes) / sizeof(qtypes[0]); i++) {
+        uint8_t qt = qtypes[i].qtype;
+        bool want = cmb && qtypes[i].rdma_side;
+
+        memset(cmd, 0, sizeof(cmd));
+        cmd[4] = qt; /* ionic_q_identify_cmd.type */
+        ionic_eth_emu_handle_q_identify(emu, cmd, comp, data);
+        uint64_t features = ernic_get_le64(data + 8 /* QID_FEATURES_OFF */);
+        bool ok;
+        if (want) {
+            ok = (features & IONIC_QIDENT_F_EXPDB) != 0;
+        } else {
+            ok = (features & IONIC_QIDENT_F_EXPDB) == 0;
+        }
+        printf("%s Q_IDENTIFY qtype=%u %s: features=0x%" PRIx64
+               " EXPDB bit %s\n",
+               ok ? "ok  " : "FAIL", qt, dev, features, want ? "set" : "clear");
+        if (!ok) {
+            failures++;
+        }
+    }
+
+    ionic_eth_emu_destroy(emu);
+}
+
+/*
+ * Without a CMB, BAR4 has nothing behind it: the server doesn't set the
+ * region up, and the emulator refuses an access that reaches it anyway.
+ */
+static void check_bar4_without_cmb(void)
+{
+    struct ionic_eth_emu *emu = make_emu(NULL, true);
+    char buf[8] = {0};
+    bool ok = false;
+
+    if (emu) {
+        errno = 0;
+        ok = ionic_eth_emu_bar4_access(emu, buf, sizeof(buf), 0, false) < 0 &&
+             errno == EINVAL;
+        errno = 0;
+        ok = ok &&
+             ionic_eth_emu_bar4_access(emu, buf, sizeof(buf), 0, true) < 0 &&
+             errno == EINVAL;
+        ionic_eth_emu_clear_cmb(emu); /* nothing to clear, and no crash */
+        ionic_eth_emu_destroy(emu);
+    }
+    printf("%s negative: a BAR4 read and write on a device without a CMB; "
+           "expected: both refused with EINVAL\n",
+           ok ? "ok  " : "FAIL");
+    if (!ok) {
+        failures++;
+    }
+}
+
 int main(void)
 {
     for (size_t i = 0; i < sizeof(golden_cases) / sizeof(golden_cases[0]);
@@ -592,6 +750,10 @@ int main(void)
                                  ionic_eth_emu_handle_identify);
     check_identity_clears_window("Q_IDENTIFY", BLK_Q_IDENTITY0,
                                  ionic_eth_emu_handle_q_identify);
+    check_discover_cmb();
+    check_q_identify_expdb(true);
+    check_q_identify_expdb(false);
+    check_bar4_without_cmb();
 
     if (failures) {
         printf("\n%d check(s) failed\n", failures);

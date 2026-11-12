@@ -171,7 +171,8 @@ struct ionic_device *ionic_device_create(const struct ionic_device_cfg *cfg,
     if (dev->emu) {
         dev->dp = ionic_datapath_create(cfg->vfu_ctx, dev->emu);
     }
-    if (!dev->emu || !dev->rdma || !dev->dp) {
+    if (!dev->emu || !dev->rdma || !dev->dp ||
+        (cfg->cmb && ionic_eth_emu_enable_cmb(dev->emu) < 0)) {
         ernic_set_err(err, errlen, "out of memory for the ionic device");
         ionic_device_destroy(dev);
         return NULL;

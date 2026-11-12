@@ -36,7 +36,7 @@ affected unit tests:
 ctest --test-dir build-valgrind -T memcheck --output-on-failure \
   --overwrite "MemoryCheckCommand=$(command -v valgrind)" \
   --overwrite "MemoryCheckCommandOptions=--leak-check=full --track-origins=yes --num-callers=40 --error-exitcode=1" \
-  -E '^(pci-config-test|find-rdma-device-tuple|find-ipv4-gid-index|server-lifecycle|ionic-server-smoke|ionic-ci|tcp-mesh-ci|nvmeof-ci|s3-ci|ionic-stats-interval-cli|ionic-eth-queues-cli|cmake-subproject|ernic-package-deb|ernic-package-deb-config-paths|ernic-vfu-client|ernic-ionic-driver|ernic-p4-driver|ernic-ionic-hw-stats|ernic-mesh-stress|ernic-mesh-flow|ernic-mesh-flr|ernic-feature-macros)$'
+  -E '^(pci-config-test|find-rdma-device-tuple|find-ipv4-gid-index|server-lifecycle|ionic-server-smoke|ionic-ci|tcp-mesh-ci|nvmeof-ci|s3-ci|ionic-stats-interval-cli|ionic-eth-queues-cli|cmake-subproject|ernic-package-deb|ernic-package-deb-config-paths|ernic-vfu-client|ernic-cmb|ernic-ionic-driver|ernic-p4-driver|ernic-ionic-hw-stats|ernic-mesh-stress|ernic-mesh-flow|ernic-mesh-flr|ernic-feature-macros)$'
 ```
 
 Reports go to `build-valgrind/Testing/Temporary/MemoryChecker.*.log`,
@@ -58,7 +58,7 @@ mkdir build-valgrind/valgrind-server
 opts="--log-file=$PWD/build-valgrind/valgrind-server/%p.log --leak-check=full --track-origins=yes --num-callers=40 --error-exitcode=1"
 ERNIC_TEST_SERVER_WRAPPER="valgrind $opts" \
   ctest --test-dir build-valgrind --output-on-failure \
-  -R '^(pci-config-test|ionic-server-smoke|ionic-ci|tcp-mesh-ci|nvmeof-ci|s3-ci|ernic-vfu-client|ernic-ionic-driver|ernic-p4-driver|ernic-ionic-hw-stats|ernic-mesh-flow|ernic-mesh-flr|ionic-stats-interval-cli|ionic-eth-queues-cli)$'
+  -R '^(pci-config-test|ionic-server-smoke|ionic-ci|tcp-mesh-ci|nvmeof-ci|s3-ci|ernic-vfu-client|ernic-cmb|ernic-ionic-driver|ernic-p4-driver|ernic-ionic-hw-stats|ernic-mesh-flow|ernic-mesh-flr|ionic-stats-interval-cli|ionic-eth-queues-cli)$'
 valgrind --trace-children=yes $opts build-valgrind/tests/test_server_lifecycle
 grep -L 'ERROR SUMMARY: 0 errors' build-valgrind/valgrind-server/*.log
 ```

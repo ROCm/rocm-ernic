@@ -302,10 +302,12 @@ except ``ernic_qp_count``, which has no ``qp`` label:
      - Total CQEs posted on this QP.
    * - ``ernic_qp_doorbell_send_total``
      - Counter
-     - Send doorbell rings on this QP.
+     - Send doorbell rings on this QP, counting each WQE posted
+       by the express doorbell (BAR 4, with ``--cmb``) as one.
    * - ``ernic_qp_doorbell_recv_total``
      - Counter
-     - Receive doorbell rings on this QP.
+     - Receive doorbell rings on this QP, counting each WQE
+       posted by the express doorbell as one.
 
 LIF Counters
 ^^^^^^^^^^^^

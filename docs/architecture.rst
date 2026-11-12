@@ -484,8 +484,9 @@ can't get on the bus would, rather than dropping it:
 
 - ``ionic_device_poll()`` does nothing, and the server doesn't
   skip its idle sleep for work it may not do.
-- A doorbell only notes its producer index, and arming a CQ
-  raises no event.
+- A doorbell only notes its producer index, as does a write
+  into the CMB that posts a WQE (the express doorbell), and
+  arming a CQ raises no event.
 - An interrupt is latched, as if its vector were masked.
 - ``PORT_INIT`` and ``LIF_INIT`` complete, but write their
   blocks later.
@@ -562,10 +563,10 @@ the data window, and sets ``done``.
      - Resets the whole device as a function-level reset does,
        but for the PCI function's registers and the P4 engine:
        every queue and RDMA resource goes, nothing more is
-       written into the blocks, and every counter restarts at
-       zero. The driver sends it before it sets Bus Master
-       Enable, so a kernel started by kexec finds nothing of
-       its predecessor's still running
+       written into the blocks, every counter restarts at
+       zero, and the CMB is zeroed. The driver sends it before
+       it sets Bus Master Enable, so a kernel started by kexec
+       finds nothing of its predecessor's still running
    * - Q_INIT
      - Records where an Ethernet queue's descriptor and
        completion rings are in guest memory, and its interrupt
@@ -577,7 +578,12 @@ the data window, and sets ``done``.
    * - Q_IDENTIFY
      - Reports descriptor and scatter-gather sizes for the
        admin, notify, receive and transmit queues; advertises
-       no offloads. Fails for any other queue type
+       no offloads, and the express doorbell for the receive
+       and transmit queues, but only with ``--cmb``. Fails for
+       any other queue type
+   * - DISCOVER_CMB
+     - With ``--cmb``, reports the CMB's two regions on BAR 4
+       (see :doc:`ionic`). Fails as unsupported without it
    * - LIF_GETATTR, LIF_SETATTR
      - Read or set the MAC; other attributes succeed without
        effect

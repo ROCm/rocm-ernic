@@ -128,11 +128,13 @@ def test_device_info(suite, client):
 
     bar0 = client.regions.get(vfu.VFU_PCI_DEV_BAR0_REGION_IDX)
     bar2 = client.regions.get(vfu.VFU_PCI_DEV_BAR2_REGION_IDX)
+    bar4 = client.regions.get(vfu.VFU_PCI_DEV_BAR4_REGION_IDX)
     cfg = client.regions.get(vfu.VFU_PCI_DEV_CFG_REGION_IDX)
     suite.check(bar0 is not None and bar0.size == BAR0_SIZE, "BAR0 is 64 KiB")
     suite.check(bar2 is not None and bar2.size >= 1 << 20, "BAR2 is at least 1 MiB")
+    suite.check(bar4 is not None and bar4.size == 8 << 20, "BAR4 (CMB) is 8 MiB")
     suite.check(cfg is not None and cfg.size >= 256, "config space is present")
-    for region in (bar0, bar2, cfg):
+    for region in (bar0, bar2, bar4, cfg):
         if region is not None:
             suite.check(
                 region.flags & (vfu.VFIO_REGION_INFO_FLAG_READ)
@@ -141,7 +143,7 @@ def test_device_info(suite, client):
             )
     suite.check(
         client.regions.get(1) is None,
-        "BAR1 has no size, as the device sets up only two",
+        "BAR1 has no size (BAR0 and BAR2 are 64-bit, BAR4 is the CMB)",
     )
 
 
@@ -927,7 +929,7 @@ def main():
             args.server,
             os.path.join(run_dir, "vfu.sock"),
             log_path=os.path.join(run_dir, "server.log"),
-            extra_args=("--stats-file", stats_path),
+            extra_args=("--stats-file", stats_path, "--cmb"),
         )
         server.start(timeout=60)
         try:
