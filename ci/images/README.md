@@ -206,7 +206,7 @@ also tell git to trust the checkout, with
 `-e GIT_CONFIG_COUNT=1 -e GIT_CONFIG_KEY_0=safe.directory
 -e GIT_CONFIG_VALUE_0=/src`. The build takes about 25
 minutes, and needs cloud-images.ubuntu.com,
-kernel.ubuntu.com, GitHub and PyPI. `CI_IMAGES_ROOT_CA`, a
+kernel.ubuntu.com and the Ubuntu archive. `CI_IMAGES_ROOT_CA`, a
 path in the container, works for it too, and the guest then
 trusts the certificate.
 
@@ -222,12 +222,13 @@ Docker, oras and the guest's scripts, and
 `guest/build.sh` builds the guest in the builder, booting it
 under KVM once for each step:
 
-1. qemu-minimal's `qemu-tool gen-vm`, installed from
-   `QEMU_MINIMAL_COMMIT`, copies Ubuntu's current cloud image
-   for `RELEASE`, checked against its `SHA256SUMS`, and boots
-   it once, while cloud-init installs qemu-minimal's default
-   packages and `packages/ionic.txt`;
-2. a boot takes out unattended-upgrades;
+1. Ubuntu's current cloud image for `RELEASE`, checked
+   against its `SHA256SUMS`, boots once with a NoCloud seed,
+   while cloud-init authorizes the build's key for the
+   default user, installs `packages/ionic.txt`, the whole
+   list beyond the cloud image's own, and powers it off;
+2. a boot checks cloud-init reported no error, and takes
+   out unattended-upgrades;
 3. a boot installs the `KERNEL_REF` mainline kernel, checked
    against its `CHECKSUMS`, and pins grub to it;
 4. `provision/ionic.sh` checks the release's rdma-core is
@@ -290,8 +291,7 @@ that image's QEMU v11.1.1, and changes:
   entrypoint and its `batesste` user, and ccache, whose
   cache mount doesn't outlive a CI runner; the registry
   cache does that job;
-- it drops the `qemu-tool` CLI, which only building a guest
-  needs, so that build will install it from its own pin.
+- it drops the `qemu-tool` CLI, which nothing here uses.
 
 The guest replaces Stephen Bates'
 `batesste-ci-images-ubuntu-qcow2-gen-ionic`, built from
@@ -300,9 +300,8 @@ at dca6903: `build-vm.sh` became `build.sh`, with
 `probe-guest.sh`, `packages/ionic.txt`, `provision/ionic.sh`,
 `trim/kernel-only.sh` and `checks/ionic.sh` beside it, and
 `ci-images-tool.py push-artifact` became `push.sh`. It keeps
-the pinned image's contents, the `ionic` flavour at 9d2be1e,
-built with qemu-minimal at c079195 (it pins 096ddfe, whose
-`gen-vm` makes the same image), and changes:
+most of the pinned image's contents, the `ionic` flavour at
+9d2be1e, and changes:
 
 - it has no SSH key or password, published or not, and every
   boot makes its own host keys, where every copy of the old
@@ -316,6 +315,14 @@ built with qemu-minimal at c079195 (it pins 096ddfe, whose
 - it checks that the packages `packages/ionic.txt` names are
   installed, which its source skipped for a trimmed image,
   and that the kernel is `KERNEL_REF`;
+- it boots the cloud image with a seed of its own, not with
+  qemu-minimal's `qemu-tool gen-vm`, so it depends on nothing
+  outside this repository but Ubuntu's: no password is ever
+  set, the time zone stays UTC, and the packages are only
+  those `packages/ionic.txt` names. Of qemu-minimal's default
+  list it keeps what the lanes use or install, such as fio,
+  nvme-cli and the guest agent, and drops the rest, such as
+  emacs, mutt and gnuplot;
 - it checks the downloads: the cloud image against its
   `SHA256SUMS`, from its dated directory, and the kernel
   `.deb`s against their `CHECKSUMS`;

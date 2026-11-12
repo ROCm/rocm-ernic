@@ -927,8 +927,9 @@ the workflow's ``GITHUB_TOKEN``:
    ``ci/images/guest/`` and published as an OCI artifact:
    the zstd-compressed qcow2, with its ``vm-info.json``
    attached. ``build.sh`` builds it in the builder, with
-   KVM: qemu-minimal's ``qemu-tool gen-vm`` makes it from
-   Ubuntu's cloud image, then it gets the mainline kernel,
+   KVM: Ubuntu's cloud image boots once while cloud-init
+   installs ``packages/ionic.txt``, then it gets the mainline
+   kernel,
    ``provision/ionic.sh``, a trim to that one kernel, and
    ``checks/ionic.sh``. Last, it's sealed: the build's key
    and the host keys are removed, the password is locked,

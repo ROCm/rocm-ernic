@@ -11,7 +11,8 @@
 # phase after the first.
 #
 # The guest boots without a seed, so cloud-init does nothing, and accepts
-# the build's key, which gen-vm authorized. Without --persist it boots a
+# the build's key, which the first boot's seed authorized. Without
+# --persist it boots a
 # throwaway overlay, so the disk is left as it was; with it, it boots the
 # disk itself, and what the script changes is kept, so it's powered off
 # cleanly, and failing that is an error.

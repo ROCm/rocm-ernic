@@ -743,7 +743,7 @@ push() {
     shift
     : >"$WORK/docker.log"
     env PATH="$BIN:$PATH" FAKE_DOCKER_LOG="$WORK/docker.log" \
-        VM_NAME="$VM_NAME" "${env[@]}" "$PUSH" "$@" \
+        FAKE_ORAS=missing VM_NAME="$VM_NAME" "${env[@]}" "$PUSH" "$@" \
         >"$WORK/out" 2>"$WORK/err"
 }
 
@@ -776,7 +776,20 @@ tagged_at=$(oras_at tag)
     fail "not pushed, then attached, then tagged: $pushed_at $attached_at $tagged_at"
 [[ $(ls -A "$GOUT") == $'ubuntu-ci-vm.qcow2\nvm-info.json' ]] ||
     fail "push.sh left files behind: $(ls -A "$GOUT")"
+looked_at=$(oras_at manifest)
+[[ -n $looked_at && $attached_at -lt $looked_at &&
+    $looked_at -lt $tagged_at ]] ||
+    fail "it didn't look for the tag again just before tagging"
 pass "push.sh pushes the disk by digest, attaches vm-info.json, then tags it"
+
+push FAKE_ORAS=published -- "$GOUT" "$PREF:t1" ||
+    fail "push.sh failed when the tag appeared meanwhile: $(cat "$WORK/err")"
+[[ -z $(oras_at tag) ]] || fail "a tag that appeared meanwhile was moved"
+if push FAKE_ORAS=denied -- "$GOUT" "$PREF:t1"; then
+    fail "push.sh tagged on an unclear answer from the registry"
+fi
+[[ -z $(oras_at tag) ]] || fail "it tagged on an unclear answer"
+pass "push.sh leaves a tag that appeared while it pushed where it is"
 
 for step in push attach; do
     if push FAKE_ORAS_FAIL=$step -- "$GOUT" "$PREF:t1"; then

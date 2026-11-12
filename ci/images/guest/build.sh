@@ -18,8 +18,9 @@
 #
 # It boots the guest once for each step, with KVM, so it runs in the CI
 # builder image, as root or as a user who can open /dev/kvm:
-#   stage      qemu-tool's gen-vm copies the cloud image and boots it once,
-#              while cloud-init installs packages/ionic.txt; then a boot
+#   stage      the cloud image boots once, with a NoCloud seed, while
+#              cloud-init authorizes the build's key and installs
+#              packages/ionic.txt; then a boot checks that went well and
 #              takes unattended-upgrades out, and one installs the
 #              mainline kernel and makes grub boot it
 #   provision  provision/ionic.sh
@@ -45,9 +46,9 @@
 #                         ensure-image.sh won't publish such an image
 #
 # Needs qemu-system-x86_64 and qemu-img (the builder's are on PATH),
-# cloud-localds, ssh, scp, ssh-keygen, curl, git, jq, python3 with venv,
-# and network access to cloud-images.ubuntu.com, kernel.ubuntu.com,
-# GitHub and PyPI.
+# cloud-localds, ssh, scp, ssh-keygen, curl, jq and timeout, and network
+# access to cloud-images.ubuntu.com and kernel.ubuntu.com, and for the
+# guest, to the Ubuntu archive.
 
 set -euo pipefail
 
@@ -67,8 +68,8 @@ die() {
 
 # ── The pins and the environment ─────────────────────────────────────
 
-for pin in RELEASE KERNEL_REF RDMA_CORE_VERSION QEMU_MINIMAL_REPO \
-    QEMU_MINIMAL_COMMIT VM_NAME VM_SIZE USERNAME REBUILD; do
+for pin in RELEASE KERNEL_REF RDMA_CORE_VERSION VM_NAME VM_SIZE USERNAME \
+    REBUILD; do
     [[ -n ${!pin:-} ]] ||
         die "$pin isn't set: pass the pins in pins.env, as ensure-image.sh does"
 done
@@ -77,10 +78,6 @@ done
     die "KERNEL_REF isn't a mainline version tag: '$KERNEL_REF'"
 [[ $RDMA_CORE_VERSION =~ ^[0-9]+(\.[0-9]+)*$ ]] ||
     die "RDMA_CORE_VERSION isn't a version: '$RDMA_CORE_VERSION'"
-[[ $QEMU_MINIMAL_REPO =~ ^https://[^[:space:]]+$ ]] ||
-    die "QEMU_MINIMAL_REPO isn't an https URL: '$QEMU_MINIMAL_REPO'"
-[[ $QEMU_MINIMAL_COMMIT =~ ^[0-9a-f]{40}$ ]] ||
-    die "QEMU_MINIMAL_COMMIT isn't a full SHA: '$QEMU_MINIMAL_COMMIT'"
 [[ $VM_NAME =~ ^[A-Za-z0-9]([A-Za-z0-9-]{0,61}[A-Za-z0-9])?$ ]] ||
     die "VM_NAME isn't a hostname: '$VM_NAME'"
 [[ $VM_SIZE =~ ^[1-9][0-9]{0,4}$ ]] || die "VM_SIZE isn't a size: '$VM_SIZE'"
@@ -94,8 +91,8 @@ for var in GUEST_BUILD_VCPUS GUEST_BUILD_MEM GUEST_BUILD_SSH_PORT; do
     [[ ${!var} =~ ^[1-9][0-9]{0,5}$ ]] || die "$var isn't a number"
 done
 
-for tool in cloud-localds curl git jq python3 qemu-img qemu-system-x86_64 \
-    scp sha256sum ssh ssh-keygen; do
+for tool in cloud-localds curl jq qemu-img qemu-system-x86_64 scp sha256sum \
+    ssh ssh-keygen timeout; do
     command -v "$tool" >/dev/null || die "$tool isn't on PATH"
 done
 # No falling back to TCG, which is about ten times slower
@@ -109,9 +106,8 @@ OUT=$(cd -- "$1" && pwd)
 [[ -z $(ls -A -- "$OUT") ]] || die "$OUT isn't empty"
 WORK=$OUT/work
 LOGS=$OUT/logs
-IMAGES=$WORK/images
-mkdir -p "$WORK" "$LOGS" "$IMAGES"
-DISK=$IMAGES/$VM_NAME.qcow2
+mkdir -p "$WORK" "$LOGS"
+DISK=$WORK/$VM_NAME.qcow2
 KEY=$WORK/id_ed25519
 
 # Retries span the bursts of 503s kernel.ubuntu.com has, which have lasted
@@ -126,7 +122,6 @@ if [[ -n ${CI_IMAGES_ROOT_CA:-} ]]; then
     cat /etc/ssl/certs/ca-certificates.crt "$CI_IMAGES_ROOT_CA" \
         >"$WORK/ca-bundle.crt"
     CURL+=(--cacert "$WORK/ca-bundle.crt")
-    export GIT_SSL_CAINFO=$WORK/ca-bundle.crt PIP_CERT=$WORK/ca-bundle.crt
     ROOT_CA=true
 fi
 
@@ -171,22 +166,6 @@ preamble() {
 
 # ── stage: the disk, from the cloud image ────────────────────────────
 
-step "fetching qemu-tool at $QEMU_MINIMAL_COMMIT"
-QM=$WORK/qemu-minimal
-git init -q "$QM"
-git -C "$QM" fetch -q --depth 1 "$QEMU_MINIMAL_REPO" "$QEMU_MINIMAL_COMMIT"
-git -C "$QM" checkout -q FETCH_HEAD
-[[ $(git -C "$QM" rev-parse HEAD) == "$QEMU_MINIMAL_COMMIT" ]] ||
-    die "qemu-minimal isn't at $QEMU_MINIMAL_COMMIT"
-python3 -m venv "$WORK/qemu-tool"
-"$WORK/qemu-tool/bin/pip" install --quiet --disable-pip-version-check \
-    "$QM/qemu" >"$LOGS/pip.log" 2>&1 || {
-    cat -- "$LOGS/pip.log" >&2
-    die "couldn't install qemu-tool"
-}
-QEMU_TOOL=$WORK/qemu-tool/bin/qemu-tool
-"$QEMU_TOOL" --version >&2
-
 # The cloud image, from its dated directory, which current/ points to and
 # which doesn't change, so the image and its checksum can't come from
 # different builds. HTTPS, and the checksum from the same server: this
@@ -204,61 +183,121 @@ CLOUD_SHA256=$(awk -v f="$CLOUD_FILE" '$2 == f || $2 == "*" f { print $1 }' \
     <<<"$sums")
 [[ $CLOUD_SHA256 =~ ^[0-9a-f]{64}$ ]] ||
     die "$CLOUD_BASE/$CLOUD_SERIAL/SHA256SUMS has no $CLOUD_FILE"
-"${CURL[@]}" -o "$IMAGES/$CLOUD_FILE" "$CLOUD_URL"
-sha256sum -c --quiet - <<<"$CLOUD_SHA256  $IMAGES/$CLOUD_FILE" ||
+"${CURL[@]}" -o "$DISK" "$CLOUD_URL"
+sha256sum -c --quiet - <<<"$CLOUD_SHA256  $DISK" ||
     die "$CLOUD_URL doesn't match its SHA256SUMS"
 echo "$PROG: $CLOUD_URL, sha256 $CLOUD_SHA256" >&2
+# Sparse: the guest's root filesystem grows into it on the first boot
+qemu-img resize -q "$DISK" "${VM_SIZE}G"
 
-# qemu-minimal's default packages, then ours. Not its linux-generic,
-# which would install the release's newest kernel too, a third one.
+# The packages, as a YAML list
 PACKAGES=$WORK/packages
-{
-    grep -vE '^[[:space:]]*-[[:space:]]*linux-generic[[:space:]]*$' \
-        "$QM/qemu/packages.d/packages-default"
-    echo "# ci/images/guest/packages/ionic.txt"
-    grep -vE '^[[:space:]]*(#|$)' "$GUEST_DIR/packages/ionic.txt" |
-        sed 's/^/  - /'
-} >"$PACKAGES"
+grep -vE '^[[:space:]]*(#|$)' "$GUEST_DIR/packages/ionic.txt" |
+    sed 's/^/  - /' >"$PACKAGES"
 PACKAGES_DIGEST=$(sha256sum <"$PACKAGES")
 PACKAGES_DIGEST=${PACKAGES_DIGEST%% *}
 
 # The build's own key, which no one else ever has: the seal removes it
-# from the guest, and it goes with WORK. The password is random, and
-# locked by the seal.
+# from the guest, and it goes with WORK
 ssh-keygen -q -t ed25519 -N '' -C "rocm-ernic guest build" -f "$KEY"
-PASSWORD=$(od -An -N16 -tx1 /dev/urandom | tr -d ' \n')
 
-# gen-vm reads settings from the user's files unless given its own, and
-# writes its cloud-config to the working directory. Its output is the
-# console of a long boot, so it goes to a log.
-step "making the disk with qemu-tool gen-vm, while cloud-init installs" \
-    "packages"
-QEMU_DIR=$(dirname -- "$(command -v qemu-system-x86_64)")
-: >"$WORK/qemu-tool.env"
-if ! (
-    cd "$WORK"
-    XDG_CONFIG_HOME=$WORK/xdg XDG_DATA_HOME=$WORK/xdg \
-        XDG_STATE_HOME=$WORK/xdg XDG_CACHE_HOME=$WORK/xdg \
-        "$QEMU_TOOL" gen-vm --env-file "$WORK/qemu-tool.env" \
-        --vm-name "$VM_NAME" --username "$USERNAME" --password "$PASSWORD" \
-        --release "$RELEASE" --arch "$ARCH" --size "$VM_SIZE" \
-        --vcpus "$GUEST_BUILD_VCPUS" --vmem "$GUEST_BUILD_MEM" \
-        --images "$IMAGES" --qemu-path "$QEMU_DIR/" \
-        --ssh-key-file "$KEY.pub" --packages "$PACKAGES" \
-        --no-backing --kvm
-) </dev/null >"$LOGS/gen-vm.log" 2>&1; then
-    tail -n 100 -- "$LOGS/gen-vm.log" >&2
-    die "gen-vm failed; the whole log is $LOGS/gen-vm.log"
+# The first boot's NoCloud seed. cloud-init gives the image's default
+# user, which has no password and passwordless sudo, the build's key;
+# grows the root filesystem to the disk; trusts CI_IMAGES_ROOT_CA before
+# it fetches anything; installs packages/ionic.txt, without
+# recommendations; and powers the guest off. As in the image this
+# replaced, services the lanes don't use are masked, the user's services
+# run without a login, dmesg is readable without root, and services get
+# 15 s to stop.
+{
+    echo '#cloud-config'
+    echo "hostname: $VM_NAME"
+    echo 'ssh_pwauth: false'
+    echo 'users: [default]'
+    echo 'ssh_authorized_keys:'
+    echo "  - '$(<"$KEY.pub")'"
+    if $ROOT_CA; then
+        echo 'ca_certs:'
+        echo '  trusted:'
+        echo '    - |'
+        sed 's/^/      /' "$CI_IMAGES_ROOT_CA"
+    fi
+    cat <<EOF
+apt:
+  conf: |
+    APT::Install-Recommends "false";
+    APT::Install-Suggests "false";
+package_update: true
+packages:
+$(cat "$PACKAGES")
+runcmd:
+  - [systemctl, mask, multipathd.service, multipathd.socket, iscsid.service,
+     iscsid.socket, snapd.service, snapd.socket, snapd.seeded.service]
+  - [loginctl, enable-linger, $USERNAME]
+write_files:
+  - path: /etc/sysctl.d/10-kernel-hardening.conf
+    content: |
+      kernel.dmesg_restrict = 0
+  - path: /etc/systemd/logind.conf.d/99-kill-user-processes.conf
+    content: |
+      [Login]
+      KillUserProcesses=yes
+  - path: /etc/systemd/system.conf.d/99-timeout.conf
+    content: |
+      [Manager]
+      DefaultTimeoutStopSec=15s
+power_state:
+  mode: poweroff
+  condition: true
+EOF
+} >"$WORK/user-data"
+printf 'instance-id: %s-build\nlocal-hostname: %s\n' "$VM_NAME" "$VM_NAME" \
+    >"$WORK/meta-data"
+cloud-localds "$WORK/seed.img" "$WORK/user-data" "$WORK/meta-data" >&2
+
+# QEMU exits when cloud-init powers the guest off. Not forever, for a
+# guest that hangs, but an hour, for a slow mirror.
+step "booting the cloud image while cloud-init installs packages"
+status=0
+timeout 3600 qemu-system-x86_64 \
+    -machine q35,accel=kvm \
+    -cpu host \
+    -smp "$GUEST_BUILD_VCPUS" \
+    -m "$GUEST_BUILD_MEM" \
+    -drive "if=virtio,format=qcow2,file=$DISK,discard=unmap,detect-zeroes=unmap" \
+    -drive "if=virtio,format=raw,file=$WORK/seed.img,readonly=on" \
+    -netdev user,id=n0 \
+    -device virtio-net-pci,netdev=n0 \
+    -display none \
+    -monitor none \
+    -serial "file:$LOGS/first-boot.console.log" \
+    </dev/null >"$LOGS/first-boot.qemu.log" 2>&1 || status=$?
+if [[ $status -ne 0 ]]; then
+    cat -- "$LOGS/first-boot.qemu.log" >&2
+    tail -n 100 -- "$LOGS/first-boot.console.log" >&2 || true
+    die "the first boot didn't power off by itself (status $status)"
 fi
-[[ -f $DISK ]] || die "gen-vm made no $DISK"
-rm -f -- "$IMAGES/$CLOUD_FILE"
 
+# cloud-init's verdict on the first boot. A package it couldn't install
+# is only a warning; the verify step looks for each one.
+#
 # Ubuntu's cloud images run unattended-upgrades, whose timers take the
 # dpkg lock while a later step is using apt, and which would replace the
 # pinned kernel in a long-lived guest. Masked before it's purged: purging
 # while apt-daily runs waits for the dpkg lock.
-step "taking unattended-upgrades out"
+step "checking the first boot, and taking unattended-upgrades out"
 cat >"$WORK/harden.body" <<'EOF'
+sudo python3 - <<'PYTHON'
+import json
+import sys
+
+with open("/var/lib/cloud/data/result.json", encoding="utf-8") as f:
+    errors = json.load(f)["v1"]["errors"]
+if errors:
+    print("Error: cloud-init's first boot failed:", *errors, sep="\n  ",
+          file=sys.stderr)
+    sys.exit(1)
+PYTHON
 sudo systemctl mask --now apt-daily.timer apt-daily-upgrade.timer
 sudo systemctl stop apt-daily.service apt-daily-upgrade.service || true
 sudo systemctl mask unattended-upgrades.service || true
@@ -272,23 +311,7 @@ APT::Periodic::Download-Upgradeable-Packages "0";
 APT::Periodic::AutocleanInterval "0";
 CONF
 EOF
-# The root certificate, for the guest's own HTTPS fetches, such as
-# update-pciids's. Not gen-vm's --ca-cert, which qemu-tool at
-# QEMU_MINIMAL_COMMIT ignores.
-HARDEN_OPTS=()
-if $ROOT_CA; then
-    mkdir -p "$WORK/root-ca"
-    cp -- "$CI_IMAGES_ROOT_CA" "$WORK/root-ca/build-root-ca.crt"
-    HARDEN_OPTS=(--payload "$WORK/root-ca")
-    cat >>"$WORK/harden.body" <<'EOF'
-sudo install -m 0644 /tmp/payload/build-root-ca.crt \
-    /usr/local/share/ca-certificates/build-root-ca.crt
-sudo update-ca-certificates
-rm -rf /tmp/payload
-EOF
-fi
-probe harden "$(preamble)" --persist "${HARDEN_OPTS[@]}" -- \
-    "$WORK/harden.body" >&2
+probe harden "$(preamble)" --persist -- "$WORK/harden.body" >&2
 
 # The mainline kernel: loose .debs in no repository, fetched here so the
 # log names them, build stamp included, and checked against the
@@ -556,6 +579,7 @@ disk_info=$(qemu-img info --output=json -- "$DISK")
 qemu_version=$(qemu-system-x86_64 --version)
 qemu_version=${qemu_version%%$'\n'*}
 qemu_commit=unknown
+QEMU_DIR=$(dirname -- "$(command -v qemu-system-x86_64)")
 if [[ -r $QEMU_DIR/../share/qemu-commit.txt ]]; then
     qemu_commit=$(<"$QEMU_DIR/../share/qemu-commit.txt")
 fi
@@ -590,7 +614,6 @@ jq -n \
     --argjson root_ca "$ROOT_CA" \
     --arg qemu_version "$qemu_version" \
     --arg qemu_commit "$qemu_commit" \
-    --arg qemu_minimal_commit "$QEMU_MINIMAL_COMMIT" \
     --arg revision "$revision" \
     --arg timestamp "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
     --argjson vcpus "$GUEST_BUILD_VCPUS" \
@@ -640,7 +663,6 @@ jq -n \
       build_info: {
         qemu_version: $qemu_version,
         qemu_commit: $qemu_commit,
-        qemu_minimal_commit: $qemu_minimal_commit,
         source_revision: $revision,
         build_timestamp: $timestamp,
         build_vcpus: $vcpus,

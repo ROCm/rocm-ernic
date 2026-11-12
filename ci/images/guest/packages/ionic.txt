@@ -2,11 +2,12 @@
 #
 # SPDX-License-Identifier: MIT
 #
-# The packages cloud-init installs in the guest, one per line, on top of
-# qemu-minimal's default list: the verbs userspace, and what the lanes
-# need to build rdma-core and the ionic DKMS modules against the guest's
-# kernel. The modules themselves aren't built here: building them from
-# this tree is what the lanes test.
+# Every package cloud-init installs in the guest, one per line, beyond
+# the cloud image's own, without their recommendations: the verbs
+# userspace, what the lanes need to build rdma-core and the ionic DKMS
+# modules against the guest's kernel, and what their tests run. The
+# modules themselves aren't built here: building them from this tree is
+# what the lanes test. build.sh checks every one was installed.
 #
 # Nothing here may name a kernel version: cloud-init runs before the
 # mainline kernel is installed.
@@ -53,4 +54,18 @@ curl
 pciutils
 
 pipx
+python-is-python3
+python3-pip
 python3-venv
+
+# pahole, which Kbuild runs to give the DKMS modules BTF
+pahole
+
+# The NVMe-oF tests' tools, which they would otherwise install
+fio
+libaio-dev
+liburing-dev
+nvme-cli
+
+# The guest agent, whose channel ernicctl vm-launch adds
+qemu-guest-agent

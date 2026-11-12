@@ -694,7 +694,19 @@
   the pinned one. The guest is otherwise the one CI booted before: Ubuntu
   26.04 on mainline kernel 7.2.6, with rdma-core 61.0, DKMS and
   `perftest`. It also loads `ionic_rdma` at boot, raises the memlock limit
-  for RDMA, and has a newer PCI ID database.
+  for RDMA, and has a newer PCI ID database; its time zone is UTC. It no
+  longer has the tools only qemu-minimal's default list brought, such as
+  emacs, mutt, gh, gnuplot, expect, sysstat and moreutils; it keeps fio,
+  nvme-cli, the guest agent and pahole.
+
+  A VM you launched before keeps booting the old image, published key and
+  all: `vm-launch` reuses an instance's existing overlay,
+  `ERNIC_VM_IMAGE_DIR/ERNIC_VM_NAME-N.qcow2`, and makes one on
+  `ERNIC_VM_BACKING` only when it's missing. To move one to the new image,
+  fetch the image, then rerun host setup, or point `ERNIC_VM_BACKING` at its
+  disk; copy anything you want to keep out of the guest; stop it with
+  `sudo ernicctl vm-stop N`; and move its overlay aside. The next
+  `sudo ernicctl vm-launch N` makes a new overlay on the new image.
 * **Breaking:** **`ernicctl`'s default `ERNIC_VM_IMAGE_DIR` is now
   `/opt/qemu-images`**, the directory the Ansible roles already use, and
   `ERNIC_QEMU_MINIMAL` is gone. The default was

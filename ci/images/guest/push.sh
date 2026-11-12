@@ -13,6 +13,9 @@
 # attached to that digest, and only then is the digest tagged, so a tag
 # never names a disk without its vm-info.json, and a push that fails part
 # way leaves no tag, so ensure-image.sh builds the image again next time.
+# A tag that appeared meanwhile is left alone, and readers resolve the tag
+# to a digest once, so even two runs tagging at the same moment can't
+# give anyone one build's disk with another's vm-info.json.
 #
 # Usage: push.sh OUT REF
 #   OUT  the directory build.sh wrote the image to
@@ -103,5 +106,22 @@ echo "$PROG: attaching vm-info.json to $REPO@$DIGEST" >&2
     --annotation "$OCI.created=$CREATED" \
     "$REPO@$DIGEST" vm-info.json:application/json) >&2
 
+# Another run may have tagged its build of the same definition while this
+# one uploaded. Then the tag stays on that one, rather than moving under
+# anyone pulling it, and this upload is left untagged, for pruning.
+status=0
+answer=$(oras manifest fetch --descriptor "$REF" 2>&1) || status=$?
+if [[ $status -eq 0 ]]; then
+    echo "$PROG: $REF was published while this run pushed; not tagging" \
+        "$DIGEST" >&2
+    exit 0
+fi
+case $answer in
+    *": not found"* | *MANIFEST_UNKNOWN* | *NAME_UNKNOWN*) ;;
+    *)
+        printf '%s\n' "$answer" >&2
+        die "couldn't tell whether $REF is published, so $DIGEST isn't tagged"
+        ;;
+esac
 oras tag "$REPO@$DIGEST" "$TAG" >&2
 echo "$PROG: published $REF ($DIGEST)" >&2

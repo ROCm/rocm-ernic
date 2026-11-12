@@ -119,6 +119,13 @@ jobs:
         with:
           persist-credentials: false
 
+      # The workspace belongs to the runner's user, not this container's
+      # root, so git refuses it as dubious ownership, and image-tag.sh
+      # lists the files that define the image with git
+      - name: Trust the checkout
+        shell: bash
+        run: git config --global --add safe.directory "$GITHUB_WORKSPACE"
+
       - name: Log in to GHCR
         shell: bash
         env:

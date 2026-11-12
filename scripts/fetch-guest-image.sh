@@ -297,10 +297,19 @@ fi
 
 cd "$DEST"
 
+# The tag, resolved once, so the metadata and the disk are the same
+# image's even if the tag moves between the two pulls
+SUBJECT=$(retry oras manifest fetch --descriptor "$REF" | jq -r .digest)
+if ! [[ $SUBJECT =~ ^sha256:[0-9a-f]{64}$ ]]; then
+    echo "✗ couldn't resolve ${REF} to a digest" >&2
+    exit 1
+fi
+echo "${REF} is ${REPO}@${SUBJECT}" >&2
+
 echo "=== Fetching metadata for ${REF} ===" >&2
 # Referrer first: it is kilobytes, so a bad reference fails in seconds
 # rather than after a 1.6 GB download.
-DIGEST=$(retry oras discover --format json "$REF" \
+DIGEST=$(retry oras discover --format json "${REPO}@${SUBJECT}" \
     | jq -r --arg t "$INFO_TYPE" \
         '[.referrers[] | select(.artifactType==$t)]
          | sort_by(.annotations["org.opencontainers.image.created"])
@@ -321,7 +330,7 @@ retry oras pull "${REPO}@${DIGEST}"
 [ "$VERIFY" = false ] || verify_image
 
 echo "=== Fetching disk for ${REF} ===" >&2
-retry oras pull "$REF"
+retry oras pull "${REPO}@${SUBJECT}"
 
 # Take the disk name from what actually landed rather than pinning it,
 # so a renamed guest fails here instead of at first boot.
