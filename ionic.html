@@ -441,11 +441,10 @@ here. The driver source is near-stock — one small RDMA
 patch — but the guest itself is <strong>not</strong> a stock cloud
 image. It needs a mainline kernel
 matching <code class="docutils literal notranslate"><span class="pre">IONIC_KERNEL_REF</span></code> and the headers to build
-against, which no Ubuntu release ships. Nothing in this repo
-bakes such an image either: the guest is the published
-<code class="docutils literal notranslate"><span class="pre">ionic</span></code> flavour of <a class="reference external" href="https://github.com/sbates130272/batesste-ci-images">batesste-ci-images</a>,
-fetched by <code class="docutils literal notranslate"><span class="pre">scripts/fetch-guest-image.sh</span></code>. See the warning
-below.</p>
+against, which no Ubuntu release ships. CI builds such an
+image, defined in <code class="docutils literal notranslate"><span class="pre">ci/images/guest/</span></code> and published to GHCR,
+and <code class="docutils literal notranslate"><span class="pre">scripts/fetch-guest-image.sh</span></code> fetches it. See the
+warning below.</p>
 <p>The Pensando vendor ID <code class="docutils literal notranslate"><span class="pre">0x1dd8</span></code> is kept, and the emulated
 PF now uses the upstream device ID <code class="docutils literal notranslate"><span class="pre">0x1002</span></code>. The
 subsystem ID <code class="docutils literal notranslate"><span class="pre">0x5400</span></code> distinguishes this function from

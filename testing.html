@@ -1093,18 +1093,31 @@ sanity play.</p>
 <section id="the-guest-image">
 <span id="ansible-guest-image"></span><h3>The guest image<a class="headerlink" href="#the-guest-image" title="Link to this heading">#</a></h3>
 <p>Nothing in <code class="docutils literal notranslate"><span class="pre">ansible/</span></code> builds a guest image. The guests
-come from a published OCI artifact: the <code class="docutils literal notranslate"><span class="pre">ionic</span></code> flavour of
-<a class="reference external" href="https://github.com/sbates130272/batesste-ci-images">batesste-ci-images</a>,
-which pins mainline kernel 7.2.6 on Ubuntu 26.04 (resolute)
-and bakes the RDMA userspace, the DKMS toolchain,
+boot the CI guest image, defined in <code class="docutils literal notranslate"><span class="pre">ci/images/guest/</span></code>
+and published to GHCR as an OCI artifact (see
+<a class="reference internal" href="#ci-images"><span class="std std-ref">CI images</span></a>): mainline kernel 7.2.6 on Ubuntu 26.04
+(resolute), with the RDMA userspace, the DKMS toolchain,
 <code class="docutils literal notranslate"><span class="pre">perftest</span></code> and a distro rdma-core 61.0 carrying the ionic
 provider.</p>
-<p><code class="docutils literal notranslate"><span class="pre">scripts/fetch-guest-image.sh</span></code> pulls the image and its
-<code class="docutils literal notranslate"><span class="pre">vm-info.json</span></code> metadata with <code class="docutils literal notranslate"><span class="pre">oras</span></code>, decompresses the
-qcow2 and runs <code class="docutils literal notranslate"><span class="pre">qemu-img</span> <span class="pre">check</span></code> over it. The download is
-skipped when the tag is already unpacked. It lands the same
-bytes in the same layout as <code class="docutils literal notranslate"><span class="pre">.github/actions/fetch-guest-vm</span></code>,
-which the hosted jobs use.</p>
+<p>The image has no password and no SSH key. Whatever boots it
+authorizes a key through a NoCloud seed, for the <code class="docutils literal notranslate"><span class="pre">ubuntu</span></code>
+account, which keeps its passwordless sudo:
+<code class="docutils literal notranslate"><span class="pre">ci/boot-guest.sh</span></code> makes one for each boot, and
+<code class="docutils literal notranslate"><span class="pre">ernicctl</span> <span class="pre">vm-launch</span></code>, which runs it, also authorizes
+<code class="docutils literal notranslate"><span class="pre">ERNIC_VM_SSH_IDENTITY</span></code>’s public key, or by default that of
+the first of <code class="docutils literal notranslate"><span class="pre">id_rsa</span></code>, <code class="docutils literal notranslate"><span class="pre">id_ed25519</span></code> and <code class="docutils literal notranslate"><span class="pre">id_ecdsa</span></code> in
+the <code class="docutils literal notranslate"><span class="pre">~/.ssh</span></code> of the user running it with <code class="docutils literal notranslate"><span class="pre">sudo</span></code>. So you
+log in, and the plays here connect, with your own key; host
+setup fails early, saying how to make one, if you have none.
+Each boot is a new cloud-init instance, so the guest makes
+host keys of its own.</p>
+<p><code class="docutils literal notranslate"><span class="pre">scripts/fetch-guest-image.sh</span> <span class="pre">--dest</span> <span class="pre">DIR</span></code> pulls the image
+<code class="docutils literal notranslate"><span class="pre">ci/guest-image.env</span></code> pins and its <code class="docutils literal notranslate"><span class="pre">vm-info.json</span></code>
+metadata with <code class="docutils literal notranslate"><span class="pre">oras</span></code>, decompresses the qcow2 and runs
+<code class="docutils literal notranslate"><span class="pre">qemu-img</span> <span class="pre">check</span></code> over it. The download is skipped when the
+tag is already unpacked. It lands the same bytes in the same
+layout as <code class="docutils literal notranslate"><span class="pre">.github/actions/fetch-guest-vm</span></code>, which the
+hosted jobs use.</p>
 <p>It also checks the image’s <code class="docutils literal notranslate"><span class="pre">vm-info.json</span></code> against this
 checkout and refuses the image when they disagree. That
 happens between the metadata pull and the disk pull, so a
@@ -1216,9 +1229,9 @@ changes the builder runs every lane in the new image; see
 KVM on hosted runners with <code class="docutils literal notranslate"><span class="pre">ci/boot-guest.sh</span></code>, as
 <code class="docutils literal notranslate"><span class="pre">ernicctl</span> <span class="pre">vm-launch</span></code> does, so the vfio-user device sits
 behind a PCIe root port and SSH is forwarded from
-127.0.0.1 only. The helper authorizes a key made for the
-job, not the one published with the guest image. The
-workflow provisions the guests by running the
+127.0.0.1 only. The guest image has no key of its own; the
+helper authorizes one made for the job. The workflow
+provisions the guests by running the
 collection itself — <code class="docutils literal notranslate"><span class="pre">ansible-playbook</span> <span class="pre">ci-site.yml</span> <span class="pre">--tags</span>
 <span class="pre">guest-setup</span></code> against a generated <code class="docutils literal notranslate"><span class="pre">instances.json</span></code> —
 rather than by copying sources in over <code class="docutils literal notranslate"><span class="pre">ssh</span></code>. The role is
@@ -1233,12 +1246,29 @@ before it starts the DKMS build.</p>
 <span id="id1"></span><h3>CI images<a class="headerlink" href="#ci-images" title="Link to this heading">#</a></h3>
 <p>The images CI runs in are defined under <code class="docutils literal notranslate"><span class="pre">ci/images/</span></code> and
 published to GHCR as <code class="docutils literal notranslate"><span class="pre">ghcr.io/rocm/rocm-ernic/NAME</span></code>, with
-the workflow’s <code class="docutils literal notranslate"><span class="pre">GITHUB_TOKEN</span></code>. Today that’s the builder,
-<code class="docutils literal notranslate"><span class="pre">ci-builder</span></code>: QEMU with the vfio-user client,
-libvfio-user, and the tools to boot, provision and fetch a
-guest. The guest image is still pulled from Docker Hub; see
-<a class="reference internal" href="#ansible-guest-image"><span class="std std-ref">The guest image</span></a>. The packages are public, so
-pulling needs no credentials.</p>
+the workflow’s <code class="docutils literal notranslate"><span class="pre">GITHUB_TOKEN</span></code>:</p>
+<dl class="simple">
+<dt><code class="docutils literal notranslate"><span class="pre">ci-builder</span></code></dt><dd><p>The container the VM lanes run in, defined in
+<code class="docutils literal notranslate"><span class="pre">ci/images/builder/</span></code>: QEMU with the vfio-user client,
+libvfio-user, and the tools to boot, provision and fetch
+a guest.</p>
+</dd>
+<dt><code class="docutils literal notranslate"><span class="pre">guest-ionic</span></code></dt><dd><p>The guest disk the lanes boot, defined in
+<code class="docutils literal notranslate"><span class="pre">ci/images/guest/</span></code> and published as an OCI artifact:
+the zstd-compressed qcow2, with its <code class="docutils literal notranslate"><span class="pre">vm-info.json</span></code>
+attached. <code class="docutils literal notranslate"><span class="pre">build.sh</span></code> builds it in the builder, with
+KVM: Ubuntu’s cloud image boots once while cloud-init
+installs <code class="docutils literal notranslate"><span class="pre">packages/ionic.txt</span></code>, then it gets the mainline
+kernel,
+<code class="docutils literal notranslate"><span class="pre">provision/ionic.sh</span></code>, a trim to that one kernel, and
+<code class="docutils literal notranslate"><span class="pre">checks/ionic.sh</span></code>. Last, it’s sealed: the build’s key
+and the host keys are removed, the password is locked,
+and cloud-init is reset, so the next boot is a new
+instance that takes its key from a seed (see
+<a class="reference internal" href="#ansible-guest-image"><span class="std std-ref">The guest image</span></a>).</p>
+</dd>
+</dl>
+<p>The packages are public, so pulling needs no credentials.</p>
 <p>An image’s tag names its contents: a readable prefix from
 its pins, then 12 hex digits of a SHA-256 over every file
 defining it. <code class="docutils literal notranslate"><span class="pre">ci/images/image-tag.sh</span> <span class="pre">NAME</span></code> prints it.
@@ -1249,32 +1279,48 @@ pull request that changed the image tested.</p>
 builder as <code class="docutils literal notranslate"><span class="pre">BUILDER_IMAGE</span></code> and <code class="docutils literal notranslate"><span class="pre">BUILDER_TAG</span></code>, and the
 lanes’ <code class="docutils literal notranslate"><span class="pre">container:</span></code> <code class="docutils literal notranslate"><span class="pre">image:</span></code> lines name it in full,
 because the security scan can’t tell that an image named by
-an expression is pinned. After changing an image’s
-definition, run</p>
+an expression is pinned. It pins the guest as
+<code class="docutils literal notranslate"><span class="pre">GUEST_ARTIFACT_REPO</span></code> and <code class="docutils literal notranslate"><span class="pre">GUEST_ARTIFACT_TAG</span></code>, with
+its disk, account and metadata type. After changing an
+image’s definition, run</p>
 <div class="highlight-bash notranslate"><div class="highlight"><pre><span></span>ci/images/image-tag.sh<span class="w"> </span>--write
 </pre></div>
 </div>
 <p>and commit the result. Every pull request runs
 <code class="docutils literal notranslate"><span class="pre">image-tag.sh</span> <span class="pre">--check</span></code>, which fails if any pin isn’t the
-tree’s, and <code class="docutils literal notranslate"><span class="pre">tools/check-guest-image-tag.sh</span></code>, which fails
-if a tag appears anywhere else (the <code class="docutils literal notranslate"><span class="pre">Image</span> <span class="pre">pins</span></code>
-workflow).</p>
+tree’s, or if the guest’s kernel isn’t <code class="docutils literal notranslate"><span class="pre">IONIC_KERNEL_REF</span></code>,
+and <code class="docutils literal notranslate"><span class="pre">tools/check-guest-image-tag.sh</span></code>, which fails if a tag
+appears anywhere else (the <code class="docutils literal notranslate"><span class="pre">Image</span> <span class="pre">pins</span></code> workflow).</p>
 <p><code class="docutils literal notranslate"><span class="pre">ci-images.yml</span></code>, which <code class="docutils literal notranslate"><span class="pre">system-tests.yml</span></code> calls before
 its lanes, publishes an image whose tag the registry hasn’t
 got, with <code class="docutils literal notranslate"><span class="pre">ci/images/ensure-image.sh</span></code>. That builds it,
-runs the image’s <code class="docutils literal notranslate"><span class="pre">check.sh</span></code> inside it, and pushes it only
-if it passes. So a pull request that changes the builder
-publishes it and runs every lane in it. A pull request from
-a fork can’t push, so one changing an image fails; a
-maintainer pushes the branch to <code class="docutils literal notranslate"><span class="pre">ROCm/rocm-ernic</span></code>
-instead.</p>
+runs the image’s <code class="docutils literal notranslate"><span class="pre">check.sh</span></code>, and pushes it only if it
+passes. The builder’s check runs inside it; the guest’s
+boots it with <code class="docutils literal notranslate"><span class="pre">ci/boot-guest.sh</span></code>, as the lanes do, and
+checks the seal holds: only the boot’s key logs in, the
+password is locked, and the guest made its own host keys.
+So a pull request that changes an image publishes it and
+runs every lane with it. A pull request from a fork can’t
+push, so one changing an image fails; a maintainer pushes
+the branch to <code class="docutils literal notranslate"><span class="pre">ROCm/rocm-ernic</span></code> instead.</p>
 <p>To rebuild an image whose definition hasn’t changed, for
-Ubuntu’s updates, bump <code class="docutils literal notranslate"><span class="pre">REBUILD</span></code> in its <code class="docutils literal notranslate"><span class="pre">pins.env</span></code>. To
-build and check one locally, with Docker’s buildx or
-podman, without touching the registry:</p>
+Ubuntu’s updates, or the guest’s newer cloud image, bump
+<code class="docutils literal notranslate"><span class="pre">REBUILD</span></code> in its <code class="docutils literal notranslate"><span class="pre">pins.env</span></code>. To build and check the
+builder locally, with Docker’s buildx or podman, without
+touching the registry:</p>
 <div class="highlight-bash notranslate"><div class="highlight"><pre><span></span>ci/images/ensure-image.sh<span class="w"> </span>--build-only<span class="w"> </span>builder
 </pre></div>
 </div>
+<p>The guest builds in the builder, with KVM, into
+<code class="docutils literal notranslate"><span class="pre">build-ci-images/guest/</span></code>; with rootless podman, <code class="docutils literal notranslate"><span class="pre">TAG</span></code>
+being <code class="docutils literal notranslate"><span class="pre">BUILDER_TAG</span></code> in <code class="docutils literal notranslate"><span class="pre">ci/guest-image.env</span></code>:</p>
+<div class="highlight-bash notranslate"><div class="highlight"><pre><span></span>podman<span class="w"> </span>run<span class="w"> </span>--rm<span class="w"> </span>--user<span class="w"> </span>root<span class="w"> </span>--group-add<span class="w"> </span>keep-groups<span class="w"> </span><span class="se">\</span>
+<span class="w">  </span>--device<span class="w"> </span>/dev/kvm<span class="w"> </span>-v<span class="w"> </span><span class="s2">"</span><span class="nv">$PWD</span><span class="s2">:/src"</span><span class="w"> </span>-w<span class="w"> </span>/src<span class="w"> </span><span class="se">\</span>
+<span class="w">  </span>ghcr.io/rocm/rocm-ernic/ci-builder:TAG<span class="w"> </span><span class="se">\</span>
+<span class="w">  </span>ci/images/ensure-image.sh<span class="w"> </span>--build-only<span class="w"> </span>guest
+</pre></div>
+</div>
+<p><code class="docutils literal notranslate"><span class="pre">ci/images/README.md</span></code> says what Docker needs as well.</p>
 <p><code class="docutils literal notranslate"><span class="pre">ci-images-prune.yml</span></code> deletes the versions nothing
 needs every Monday, with <code class="docutils literal notranslate"><span class="pre">ci/images/prune-images.sh</span></code>. It
 keeps the tags develop’s lockfile pins, the 10 newest, and
@@ -1285,7 +1331,8 @@ time a run needs it. Every run lists what it would delete;
 only runs on develop delete.</p>
 <p>The <code class="docutils literal notranslate"><span class="pre">ernic-ci-images</span></code>, <code class="docutils literal notranslate"><span class="pre">ernic-check-guest-image-tag</span></code>
 and <code class="docutils literal notranslate"><span class="pre">ernic-prune-images</span></code> tests check these scripts
-against stand-ins for Docker, <code class="docutils literal notranslate"><span class="pre">gh</span></code> and the registry. For
+against stand-ins for Docker, <code class="docutils literal notranslate"><span class="pre">oras</span></code>, <code class="docutils literal notranslate"><span class="pre">gh</span></code> and the
+registry. For
 the details, see <code class="docutils literal notranslate"><span class="pre">ci/images/README.md</span></code>.</p>
 </section>
 </section>
