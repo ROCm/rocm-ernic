@@ -2,7 +2,7 @@
 #
 # SPDX-License-Identifier: MIT
 #
-# The guest image pin, checked rather than asked for politely.
+# The image pins, checked rather than asked for politely.
 #
 # tools/check-guest-image-tag.sh existed but nothing ran it, so the comment
 # in ci/guest-image.env promising it "fails the build if a literal tag
@@ -10,13 +10,18 @@
 # lane quietly testing an older guest, which presents as a flaky backend
 # rather than as a stale pin.
 #
+# It also checks the lockfile: ci/images/image-tag.sh --check fails unless
+# ci/guest-image.env and the lanes' image: lines name the images ci/images/
+# defines. ci-images.yml checks the same, but only when System Tests runs,
+# which its paths filter decides.
+#
 # Its own workflow, and deliberately with no paths filter. The check greps
 # the whole tree, so a stray pin can arrive in any file; gating it on a
 # paths list would excuse exactly the files most likely to carry one --
 # ansible/, ci/, tools/ and the lane workflows, none of which appear in
 # build-and-test.yml's filter, where this job used to live. codespell.yml
 # is the precedent: a tree-wide check takes a tree-wide trigger.
-name: rocm-ernic - Guest image pin
+name: rocm-ernic - Image pins
 
 on:
   pull_request:
@@ -32,7 +37,7 @@ concurrency:
 
 jobs:
   guest-image-pin:
-    name: Guest image pin is single-sourced
+    name: Image pins are single-sourced and current
     runs-on: ubuntu-26.04
     timeout-minutes: 10
     steps:
@@ -41,5 +46,20 @@ jobs:
         with:
           persist-credentials: false
 
+      # The checks' own tests, CTest's ernic-check-guest-image-tag and
+      # ernic-ci-images, before their verdicts are trusted: Build and Test,
+      # which runs them too, doesn't run for most changes under tools/ or
+      # ci/images/
+      - name: Test the pin checks
+        shell: bash
+        run: |
+          tests/test_check_guest_image_tag.sh tools/check-guest-image-tag.sh
+          tests/test_ci_images.sh ci/images
+
       - name: No literal guest or builder image tag outside ci/guest-image.env
+        shell: bash
         run: tools/check-guest-image-tag.sh
+
+      - name: The pins name the images ci/images/ defines
+        shell: bash
+        run: ci/images/image-tag.sh --check

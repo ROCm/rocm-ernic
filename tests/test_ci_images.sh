@@ -258,6 +258,42 @@ if "$TAG_SH" --check --write builder >/dev/null 2>&1; then
 fi
 pass "a lockfile without one pin of each, or none, is refused"
 
+if "$TAG_SH" --check 2>"$WORK/err"; then
+    fail "--check with no image passed a lockfile pinning a stale tag"
+fi
+grep -qF -- "--write builder" "$WORK/err" ||
+    fail "--check with no image didn't check the builder: $(cat "$WORK/err")"
+"$TAG_SH" --write 2>/dev/null || fail "--write with no image failed"
+"$TAG_SH" --check builder 2>/dev/null ||
+    fail "--write with no image didn't pin the builder"
+"$TAG_SH" --check 2>/dev/null ||
+    fail "--check with no image failed right after --write"
+git -C "$REPO" checkout -q -- .github ci/guest-image.env
+
+# An image directory image-tag.sh doesn't know fails, and doesn't stop
+# the others being checked or written
+mkdir "$IMAGES/other"
+echo "X=1" >"$IMAGES/other/pins.env"
+for mode in check write; do
+    if "$TAG_SH" "--$mode" 2>"$WORK/err"; then
+        fail "--$mode with no image passed an image it doesn't know"
+    fi
+    grep -qF "no such image: 'other'" "$WORK/err" ||
+        fail "--$mode didn't name the unknown image: $(cat "$WORK/err")"
+done
+"$TAG_SH" --check builder 2>/dev/null ||
+    fail "--write with no image didn't pin the builder past an unknown image"
+rm -rf "$IMAGES/other"
+git -C "$REPO" checkout -q -- .github ci/guest-image.env
+
+if "$TAG_SH" >/dev/null 2>&1; then
+    fail "image-tag.sh with no image printed a tag"
+fi
+if "$TAG_SH" --ref >/dev/null 2>&1; then
+    fail "--ref with no image printed a reference"
+fi
+pass "--check and --write with no image cover every image directory"
+
 # ── ensure-image.sh ─────────────────────────────
 
 # docker: records each call, one argument to a line. FAKE_INSPECT says

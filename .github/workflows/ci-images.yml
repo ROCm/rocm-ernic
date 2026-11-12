@@ -40,10 +40,10 @@ jobs:
         run: tests/test_ci_images.sh ci/images
 
       # ci/guest-image.env and the lanes' image: lines must name this
-      # tree's builder, or the lanes would run in another
+      # tree's images, or the lanes would run in others
       - name: Check the pins name the images defined here
         shell: bash
-        run: ci/images/image-tag.sh --check builder
+        run: ci/images/image-tag.sh --check
 
       - name: Show the tags
         shell: bash
