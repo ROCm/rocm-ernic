@@ -148,6 +148,15 @@
 
 ### Added
 
+* CI defines its own builder image, the container the VM lanes will run
+  in, in `ci/images/builder/`, and the `CI images` workflow
+  (`ci-images.yml`) publishes it to `ghcr.io/rocm/rocm-ernic/ci-builder`
+  when a pull request changes it. Its tag names its contents, so a
+  published tag never changes: `ci/images/image-tag.sh` computes it, and
+  `ci/images/ensure-image.sh` builds, checks and pushes an image only if
+  the registry hasn't got it. `ensure-image.sh --build-only` builds one
+  locally, with Docker or podman. The lanes don't use the image yet. The
+  `ernic-ci-images` test checks both scripts.
 * `ci/boot-guest.sh` boots a guest image under QEMU with an SSH key made
   for that boot, which cloud-init authorizes from a NoCloud seed disk for
   the `--user` account (made, without sudo, if the image doesn't have it),
@@ -674,6 +683,10 @@
   the jobs' log artifacts. The jobs' containers run with `--init`, so a
   QEMU or server that exits is reaped rather than left a zombie that
   `kill -0` takes for a running process.
+* The libvfio-user commit CI builds the server against is pinned once,
+  in `ci/images/builder/pins.env`, rather than in each of eight
+  workflows, and a pull request that changes it runs the checks that
+  build against it. It's still 5b9c722.
 * **Breaking:** **The Ansible collection is now `rocm.ernic`, and it is not
   published to Ansible Galaxy.** It was `sbates130272.rocm_ernic`. Address
   the roles as `rocm.ernic.ernic_guest_setup` and so on, and install the

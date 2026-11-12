@@ -33,6 +33,8 @@ on:
       - '**.py'
       - '.github/workflows/**'
       - '.github/actions/**'
+      # LIBVFIO_USER_COMMIT, which this builds against
+      - 'ci/images/builder/pins.env'
   pull_request:
     branches: [ develop ]
   schedule:
@@ -94,14 +96,16 @@ jobs:
             libcmocka-dev
 
       # Built before CodeQL is initialized so that only rocm-ernic's own
-      # compilation is traced. Keep the pinned commit in sync with
-      # build-and-test.yml, which says why only the library is built.
+      # compilation is traced. The pin is LIBVFIO_USER_COMMIT in
+      # ci/images/builder/pins.env; build-and-test.yml says why only
+      # the library is built.
       - name: Build and install libvfio-user
         if: matrix.language == 'c-cpp'
         run: |
-          git clone https://github.com/nutanix/libvfio-user.git /tmp/libvfio-user
+          . ci/images/builder/pins.env
+          git clone "$LIBVFIO_USER_REPO" /tmp/libvfio-user
           cd /tmp/libvfio-user
-          git checkout 5b9c722
+          git checkout "$LIBVFIO_USER_COMMIT"
           meson setup build --prefix=/usr -Dwarning_level=0
           meson compile -C build vfio-user
           sudo meson install -C build --no-rebuild --tags runtime,devel

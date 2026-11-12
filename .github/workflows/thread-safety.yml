@@ -30,6 +30,8 @@ on:
       - 'cmake/**'
       - '.github/actions/apt-install/**'
       - '.github/workflows/thread-safety.yml'
+      # LIBVFIO_USER_COMMIT, which this builds against
+      - 'ci/images/builder/pins.env'
   push:
     branches: [ develop ]
     paths: *paths
@@ -123,17 +125,20 @@ jobs:
             /usr/lib/x86_64-linux-gnu/libvfio-user*
             /usr/lib/x86_64-linux-gnu/pkgconfig/libvfio-user.pc
             /usr/include/vfio-user
-          key: libvfio-user-5b9c722-ubuntu-26.04
+          # pins.env holds the libvfio-user pin; a change to any of its
+          # pins rebuilds this cache once, which is cheap
+          key: libvfio-user-${{ hashFiles('ci/images/builder/pins.env') }}-ubuntu-26.04
 
-      # Keep the pinned commit in step with build-and-test.yml, which says
-      # why only the library is built
+      # The pin is LIBVFIO_USER_COMMIT in ci/images/builder/pins.env;
+      # build-and-test.yml says why only the library is built
       - name: Clone and build libvfio-user
         if: steps.cache-libvfio-user.outputs.cache-hit != 'true'
         run: |
           sudo apt-get install -y meson libcmocka-dev
-          git clone https://github.com/nutanix/libvfio-user.git /tmp/libvfio-user
+          . ci/images/builder/pins.env
+          git clone "$LIBVFIO_USER_REPO" /tmp/libvfio-user
           cd /tmp/libvfio-user
-          git checkout 5b9c722
+          git checkout "$LIBVFIO_USER_COMMIT"
           meson setup build --prefix=/usr -Dwarning_level=0
           meson compile -C build vfio-user
           sudo meson install -C build --no-rebuild --tags runtime,devel
