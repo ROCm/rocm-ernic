@@ -106,6 +106,9 @@ struct rocm_ernic_dev {
 
     /* NIC identity and link: compat plus each --nic-profile layer */
     struct ionic_profile profile;
+
+    /* --cmb: the device has a Controller Memory Buffer, BAR4 */
+    bool cmb;
 };
 
 #endif /* ROCM_ERNIC_INTERNAL_H */

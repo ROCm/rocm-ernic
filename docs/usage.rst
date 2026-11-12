@@ -105,6 +105,17 @@ The two paths are independent: ``--backend`` governs the RDMA
 data path, ``--tap`` the Ethernet one. See :doc:`ionic` for
 the full picture.
 
+``--cmb`` gives the device an 8 MB Controller Memory Buffer
+(CMB), BAR 4, which the guest's RDMA driver may put queues
+in. It is off by default, so every queue is in guest memory.
+With it, rdma-core puts a QP's queues in the CMB unless the
+application opts out with ``ionic_dv_pd_set_sqcmb()`` and
+``ionic_dv_pd_set_rqcmb()``, as rocSHMEM does. Writing to a
+queue in the CMB costs more in emulation than on hardware:
+each store of up to 8 bytes into BAR 4 exits to QEMU and
+becomes a message to the server, where a queue in guest
+memory is written directly.
+
 ``nvmeof`` is the odd one out: rather than carrying guest
 RDMA traffic somewhere, it answers it, presenting an NVMe
 over Fabrics target the guest connects to with stock

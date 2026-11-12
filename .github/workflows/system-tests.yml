@@ -335,9 +335,13 @@ jobs:
         # Remove any existing socket
         rm -f /tmp/vfio-user-rocm-ernic.sock
 
+        # --cmb gives the device a CMB, which it has only on request, so
+        # that this lane runs the guest's RDMA with send queues in it (see
+        # the rdma_verify step). The other lanes run without one.
         ./build/rocm-ernic \
           --socket /tmp/vfio-user-rocm-ernic.sock \
           --backend loopback \
+          --cmb \
           --verbose > /tmp/vfu_server.log 2>&1 &
         
         SERVER_PID=$!
@@ -747,6 +751,17 @@ jobs:
         # It is plain libibverbs, so unlike the rocm_ernic direct-verbs
         # smoke tests it replaced it runs on the ionic path rather than
         # skipping there.
+        #
+        # The server was started with --cmb, so the device offers a CMB,
+        # BAR4, and the guest's rdma-core puts small send queues there
+        # unless told not to: this is also the lane's test of RDMA with
+        # send queues in the CMB. The QPs that have one are counted from
+        # the server's CREATE_QP lines before and after, so the ones that
+        # count are rdma_verify's: the kernel's GSI QP has its send queue
+        # in guest memory.
+        CMB_QP='ionic_adminq CREATE_QP .* sq_cmb=1'
+        cmb_before=$(grep -c "$CMB_QP" /tmp/vfu_server.log || true)
+
         ssh -F "$SSH_CONFIG" -p "$SSH_PORT" "${VM_USER}@localhost" \
           "mkdir -p /tmp/rdma-verify"
         scp -F "$SSH_CONFIG" -P "$SSH_PORT" \
@@ -771,6 +786,16 @@ jobs:
         timeout 120 ./rdma_verify "$RDMA_DEVICE"
         EOFVM
         echo "✓ RDMA payload verification passed on $RDMA_DEVICE"
+
+        # Without this, a driver that stopped putting send queues in the
+        # CMB would leave the CMB path untested and this step passing.
+        cmb_after=$(grep -c "$CMB_QP" /tmp/vfu_server.log || true)
+        if [ "$cmb_after" -le "$cmb_before" ]; then
+          echo "✗ rdma_verify created no QP with its send queue in the CMB"
+          grep 'ionic_adminq CREATE_QP' /tmp/vfu_server.log | tail -20 || true
+          exit 1
+        fi
+        echo "✓ $((cmb_after - cmb_before)) QP(s) ran with send queues in the CMB"
 
     - name: WRITE_WITH_IMM guest smoke (build and run test_write_imm)
       shell: bash

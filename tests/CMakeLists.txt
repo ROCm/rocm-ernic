@@ -526,6 +526,16 @@ ernic_add_test_program(ernic-test-ionic-adminq-maps
     HEADER_DEPS vfio-user glib ibverbs
 )
 
+# ionic admin queue CMB test. It links the admin queue and stubs the rest
+# with ionic_adminq_fakes.h, whose data path records where CREATE_QP put a
+# QP's rings in the CMB, so the offsets it passes on can be checked.
+ernic_add_test_program(ernic-test-ionic-adminq-cmb
+    SOURCES
+        test_ionic_adminq_cmb.c
+        ${ERNIC_TEST_ADMINQ_SOURCES}
+    HEADER_DEPS vfio-user glib ibverbs
+)
+
 # ionic SRQ adminq unit test: drives CREATE/MODIFY/QUERY/DESTROY_SRQ through
 # ionic_adminq_dispatch_wqe() against the same fake guest memory, so the
 # response buffer AND the reported length can both be inspected -- the pair
@@ -1003,6 +1013,12 @@ ernic_add_unit_test(ionic-adminq-poll-unit ernic-test-ionic-adminq-poll
 # whose map is full or whose id is in use is refused, and allocates nothing
 # that could never be freed.
 ernic_add_unit_test(ionic-adminq-maps-unit ernic-test-ionic-adminq-maps
+    TIMEOUT 30)
+
+# ionic admin queue CMB unit test: a ring CREATE_QP puts in the CMB is at
+# the offset the driver gave, whatever rings came before it, and one that
+# does not fit inside the CMB is refused before anything is allocated.
+ernic_add_unit_test(ionic-adminq-cmb-unit ernic-test-ionic-adminq-cmb
     TIMEOUT 30)
 
 # ionic SRQ adminq unit test: the four SRQ handlers had no in-process

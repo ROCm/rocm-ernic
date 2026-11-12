@@ -35,6 +35,7 @@
 #include "ernic_stats.h"
 #include "ionic/ionic_adminq.h"
 #include "ionic/ionic_adminq_priv.h"
+#include "ionic/ionic_bar.h"
 #include "ionic/ionic_datapath.h"
 #include "ionic/ionic_fault.h"
 #include "ionic/ionic_status.h"
@@ -807,6 +808,7 @@ static uint8_t handle_create_cq_op(struct ionic_adminq_ctx *ctx,
  *   u8   type_state   [62]     qp_type | (state<<4)
  * -------------------------------------------------------------------------
  */
+#define CREATE_QP_PRIV_FLAGS_OFF        4
 #define CREATE_QP_SQ_CQ_ID_OFF          8
 #define CREATE_QP_SQ_DEPTH_LOG2_OFF     12
 #define CREATE_QP_SQ_STRIDE_LOG2_OFF    13
@@ -1177,6 +1179,26 @@ static uint8_t handle_destroy_srq_op(struct ionic_adminq_ctx *ctx,
     return IONIC_RC_SUCCESS;
 }
 
+/*
+ * True if a ring CREATE_QP puts in the CMB lies wholly inside it.
+ *
+ * Such a ring is in BAR4, not guest memory, and its dma_addr is its offset
+ * there: the driver passes cmb_pgid << PAGE_SHIFT to ionic_pgtbl_init() as
+ * the only entry of the ring's page table. The data path reads the ring's
+ * WQEs out of the CMB at that offset, so the whole ring, depth times stride,
+ * must fit after it. Written so that no offset can wrap the sum back into
+ * range. The ring's geometry must already have been checked, which bounds
+ * the shift.
+ */
+static bool cmb_ring_ok(const struct ionic_dp_ring_desc *ring)
+{
+    uint64_t span = UINT64_C(1) << (ring->depth_log2 + ring->stride_log2);
+
+    return ring->buf.map_count <= 1 &&
+           ring->buf.dma_addr <= IONIC_BAR4_CMB_SIZE &&
+           span <= IONIC_BAR4_CMB_SIZE - ring->buf.dma_addr;
+}
+
 static uint8_t handle_create_qp_op(struct ionic_adminq_ctx *ctx,
                                    const uint8_t *body, uint16_t len)
 {
@@ -1192,12 +1214,16 @@ static uint8_t handle_create_qp_op(struct ionic_adminq_ctx *ctx,
         return IONIC_RC_EINVAL;
     }
 
+    uint32_t priv_flags = ernic_get_be32(body + CREATE_QP_PRIV_FLAGS_OFF);
     uint32_t sq_cq_id = ernic_get_le32(body + CREATE_QP_SQ_CQ_ID_OFF);
     uint32_t rq_cq_id = ernic_get_le32(body + CREATE_QP_RQ_CQ_ID_OFF);
     uint32_t qp_id = ernic_get_le32(body + CREATE_QP_ID_VER_OFF) & 0x00ffffffU;
 
     uint8_t type_state = body[CREATE_QP_TYPE_STATE_OFF];
     uint8_t ib_qp_type = ionic_qpt_to_ib(type_state & 0x0fU, qp_id);
+
+    bool sq_cmb = (priv_flags & IONIC_QPF_SQ_CMB) != 0;
+    bool rq_cmb = (priv_flags & IONIC_QPF_RQ_CMB) != 0;
 
     /* As for a CQ: the data path holds QP ids below the identity's count. */
     if (qp_id >= ERNIC_MAX_QP) {
@@ -1298,6 +1324,25 @@ static uint8_t handle_create_qp_op(struct ionic_adminq_ctx *ctx,
                 IONIC_WQE_MIN_STRIDE_LOG2, IONIC_WQE_MAX_STRIDE_LOG2);
         return IONIC_RC_ERANGE;
     }
+    /* The driver asks for a CMB ring only when the device has a CMB, BAR4.
+     * Without --cmb it has none, so there is nowhere for the ring to be. */
+    if ((sq_cmb || rq_cmb) && !ionic_datapath_has_cmb(ctx->dp)) {
+        vfu_log(ctx->vfu_ctx, LOG_ERR,
+                "ionic_adminq CREATE_QP %u: refusing a CMB ring: the device "
+                "has no CMB (sq_cmb=%d rq_cmb=%d)",
+                qp_id, (int)sq_cmb, (int)rq_cmb);
+        return IONIC_RC_ENOSUPP;
+    }
+    if ((sq_cmb && !cmb_ring_ok(&sq)) || (rq_cmb && !cmb_ring_ok(&rq))) {
+        vfu_log(ctx->vfu_ctx, LOG_ERR,
+                "ionic_adminq CREATE_QP %u: refusing a CMB ring outside the "
+                "%zu-byte CMB: sq(cmb=%d offset=%#" PRIx64 " map_count=%" PRIu32
+                ") rq(cmb=%d offset=%#" PRIx64 " map_count=%" PRIu32 ")",
+                qp_id, IONIC_BAR4_CMB_SIZE, (int)sq_cmb, sq.buf.dma_addr,
+                sq.buf.map_count, (int)rq_cmb, rq.buf.dma_addr,
+                rq.buf.map_count);
+        return IONIC_RC_ERANGE;
+    }
 
     uint32_t pd_handle;
     int ret = adminq_get_pd(ctx, &pd_handle);
@@ -1334,8 +1379,13 @@ static uint8_t handle_create_qp_op(struct ionic_adminq_ctx *ctx,
         return adminq_dp_status(ret);
     }
 
-    *entry =
-        (struct ionic_qp_map_entry){.valid = true, .qp_id = qp_id, .qpn = qpn};
+    *entry = (struct ionic_qp_map_entry){
+        .valid = true,
+        .qp_id = qp_id,
+        .qpn = qpn,
+        .sq_cmb = sq_cmb,
+        .rq_cmb = rq_cmb,
+    };
 
     /*
      * The id was read and checked before any of the above was allocated.
@@ -1348,11 +1398,21 @@ static uint8_t handle_create_qp_op(struct ionic_adminq_ctx *ctx,
         ionic_datapath_bind_qp_srq(ctx->dp, qp_id, rq_tbl_index_srq_id);
     }
 
+    if (sq_cmb || rq_cmb) {
+        /* A CMB ring's dma_addr is its offset in the CMB (cmb_ring_ok()) */
+        uint64_t sq_cmb_offset = sq_cmb ? sq.buf.dma_addr : 0;
+        uint64_t rq_cmb_offset = rq_cmb ? rq.buf.dma_addr : 0;
+        entry->sq_cmb_offset = sq_cmb_offset;
+        entry->rq_cmb_offset = rq_cmb_offset;
+        ionic_datapath_set_qp_cmb(ctx->dp, qp_id, sq_cmb, sq_cmb_offset, rq_cmb,
+                                  rq_cmb_offset);
+    }
+
     vfu_log(ctx->vfu_ctx, LOG_INFO,
             "ionic_adminq CREATE_QP qp_id=%u qpn=%u type=%u sq_cq=%u/%u "
-            "rq_cq=%u/%u pd=%u",
+            "rq_cq=%u/%u pd=%u sq_cmb=%d rq_cmb=%d",
             qp_id, qpn, ib_qp_type, sq_cq_id, send_cq, rq_cq_id, recv_cq,
-            pd_handle);
+            pd_handle, (int)sq_cmb, (int)rq_cmb);
     return IONIC_RC_SUCCESS;
 }
 

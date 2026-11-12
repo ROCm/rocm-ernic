@@ -190,6 +190,20 @@ struct ionic_eth_emu *ionic_eth_emu_create(vfu_ctx_t *vfu_ctx, size_t bar2_size)
     return emu;
 }
 
+int ionic_eth_emu_enable_cmb(struct ionic_eth_emu *emu)
+{
+    if (!emu->cmb_buf) {
+        emu->cmb_buf = calloc(1, IONIC_BAR4_CMB_SIZE);
+        if (!emu->cmb_buf) {
+            return -1;
+        }
+    }
+    if (emu->dp) {
+        ionic_datapath_set_cmb(emu->dp, emu->cmb_buf);
+    }
+    return 0;
+}
+
 void ionic_eth_emu_set_profile(struct ionic_eth_emu *emu,
                                const struct ionic_profile *profile)
 {
@@ -218,6 +232,7 @@ void ionic_eth_emu_destroy(struct ionic_eth_emu *emu)
     ionic_eth_net_close(emu->net);
     eth_inbox_clear(emu);
     ernic_dma_destroy(emu->dma);
+    free(emu->cmb_buf);
     free(emu->bar2);
     free(emu);
 }
@@ -254,6 +269,7 @@ static void eth_device_reset(struct ionic_eth_emu *emu)
            sizeof(emu->bar0) - IONIC_BAR0_INTR_STATUS_OFFSET);
     write_dev_info(emu);
     memset(emu->bar2, 0, emu->bar2_size);
+    ionic_eth_emu_clear_cmb(emu);
     eth_intr_init(emu);
 
     eth_lif_reset(emu);
@@ -369,6 +385,7 @@ void ionic_eth_emu_register_datapath(struct ionic_eth_emu *emu,
                                      struct ionic_datapath *dp)
 {
     emu->dp = dp;
+    ionic_datapath_set_cmb(dp, emu->cmb_buf);
 }
 
 void ionic_eth_emu_register_tx_filter(struct ionic_eth_emu *emu,
@@ -624,6 +641,43 @@ ssize_t ionic_eth_emu_bar2_access(struct ionic_eth_emu *emu, char *buf,
     return (ssize_t)count;
 }
 
+ssize_t ionic_eth_emu_bar4_access(struct ionic_eth_emu *emu, char *buf,
+                                  size_t count, loff_t offset, bool is_write)
+{
+    if (!emu->cmb_buf ||
+        !region_access_ok(offset, count, IONIC_BAR4_CMB_SIZE)) {
+        errno = EINVAL;
+        return -1;
+    }
+
+    if (!is_write) {
+        memcpy(buf, emu->cmb_buf + offset, count);
+        return (ssize_t)count;
+    }
+
+    memcpy(emu->cmb_buf + offset, buf, count);
+
+    /*
+     * Every write goes to the express doorbell, whatever its size: under
+     * QEMU a guest's 64-byte store arrives as writes of at most 8 bytes, and
+     * the one that ends a WQE's slot posts it. See
+     * ionic_datapath_expdb_write(), and why the guest must write a WQE front
+     * to back.
+     */
+    if (emu->dp) {
+        ionic_datapath_expdb_write(emu->dp, (uint64_t)offset, count);
+    }
+
+    return (ssize_t)count;
+}
+
+void ionic_eth_emu_clear_cmb(struct ionic_eth_emu *emu)
+{
+    if (emu && emu->cmb_buf) {
+        memset(emu->cmb_buf, 0, IONIC_BAR4_CMB_SIZE);
+    }
+}
+
 /* -------------------------------------------------------------------------
  * Statistics
  *
@@ -836,7 +890,9 @@ static void process_devcmd(struct ionic_eth_emu *emu)
          * The whole device, as an FLR leaves it but for the PCI function
          * (config space and the MSI-X table) and the P4 engine: every
          * queue, RDMA resource and info block the guest set up is gone, and
-         * nothing of them is read or written again.  The driver sends this
+         * nothing of them is read or written again.  The CMB is zeroed, so
+         * the next driver load, which places every CMB ring again, can't
+         * read what this one wrote there.  The driver sends this
          * from ionic_setup(), before pci_set_master(), so a kernel started
          * by kexec, whose predecessor left the device running, finds no
          * queue or info block of the old kernel's when it sets Bus Master
@@ -934,6 +990,18 @@ static void process_devcmd(struct ionic_eth_emu *emu)
     case IONIC_CMD_P4_RPC:
     case IONIC_CMD_P4_QUERY:
         handle_p4_cmd(emu, cmd, comp);
+        break;
+
+    case IONIC_CMD_DISCOVER_CMB:
+        /* The driver sends this only to a device whose identity has
+         * IONIC_DEV_CAP_DISC_CMB, which this one's doesn't, but a CMB
+         * that isn't there has no layout to report either way. */
+        if (emu->cmb_buf) {
+            ionic_eth_emu_handle_discover_cmb(data);
+            comp[0] = IONIC_RC_SUCCESS;
+        } else {
+            comp[0] = IONIC_RC_ENOSUPP;
+        }
         break;
 
     default:
@@ -1539,10 +1607,18 @@ void ionic_eth_emu_handle_q_identify(const struct ionic_eth_emu *emu,
         ernic_put_le16(data + QID_SG_DESC_STRIDE_OFF, RXQ_SG_MAX_ELEMS);
     }
 
-    /* features stays zero: no CMB, no 2x/4x descriptor rings, no expanded
-     * doorbell.  Every one of those changes a ring layout we would then have
-     * to decode differently. */
-    ernic_put_le64(data + QID_FEATURES_OFF, 0);
+    /* The RDMA driver takes express-doorbell support for its send and
+     * receive queues from the Tx and Rx queues' features (sq_expdb and
+     * rq_expdb in its ionic_lif_cfg.c), and there is none without a CMB.
+     * No other feature is offered: no Ethernet queue in the CMB, no 2x/4x
+     * descriptor rings.  Every one of those changes a ring layout we would
+     * then have to decode differently. */
+    if (emu->cmb_buf &&
+        (qtype == IONIC_QTYPE_TXQ || qtype == IONIC_QTYPE_RXQ)) {
+        ernic_put_le64(data + QID_FEATURES_OFF, IONIC_QIDENT_F_EXPDB);
+    } else {
+        ernic_put_le64(data + QID_FEATURES_OFF, 0);
+    }
 #undef QID_SG_DESC_STRIDE_OFF
 #undef QID_MAX_SG_ELEMS_OFF
 #undef QID_SG_DESC_SZ_OFF
@@ -1553,6 +1629,37 @@ void ionic_eth_emu_handle_q_identify(const struct ionic_eth_emu *emu,
     /* struct ionic_q_identify_comp: status@0, rsvd@1, comp_index@2, ver@4. */
     comp[0] = 0;
     comp[4] = 0;
+}
+
+/* -------------------------------------------------------------------------
+ * DISCOVER_CMB (opcode 80)
+ *
+ * Writes union ionic_discover_cmb_identity into data[].  We advertise two
+ * regions on PCI BAR4: a DEVMEM region covering the whole 8 MB CMB, and an
+ * EXPDB512 region over the same range, telling the kernel driver that the
+ * CMB carries 512-byte express-doorbell WQE slots.
+ * -------------------------------------------------------------------------
+ */
+void ionic_eth_emu_handle_discover_cmb(uint8_t *data)
+{
+    memset(data, 0, DEVCMD_DATA_SIZE);
+
+    ernic_put_le32(data + CMB_ID_NUM_REGIONS_OFF, 2);
+    ernic_put_le32(data + CMB_ID_FLAGS_OFF, IONIC_CMB_FLAG_EXPDB);
+
+    /* region[0]: DEVMEM — the whole CMB BAR as generic device memory */
+    uint8_t *r0 = data + CMB_ID_REGION_OFF;
+    r0[CMB_REGION_BAR_NUM_OFF] = 4;
+    r0[CMB_REGION_TYPE_OFF] = IONIC_CMB_TYPE_DEVMEM;
+    ernic_put_le32(r0 + CMB_REGION_OFFSET_OFF, 0);
+    ernic_put_le32(r0 + CMB_REGION_LENGTH_OFF, IONIC_CMB_ENTRY_PAGES);
+
+    /* region[1]: EXPDB512 — 512-byte express-doorbell WQE slots */
+    uint8_t *r1 = data + CMB_ID_REGION_OFF + CMB_ID_REGION_SIZE;
+    r1[CMB_REGION_BAR_NUM_OFF] = 4;
+    r1[CMB_REGION_TYPE_OFF] = IONIC_CMB_TYPE_EXPDB512;
+    ernic_put_le32(r1 + CMB_REGION_OFFSET_OFF, 0);
+    ernic_put_le32(r1 + CMB_REGION_LENGTH_OFF, IONIC_CMB_ENTRY_PAGES);
 }
 
 /* -------------------------------------------------------------------------

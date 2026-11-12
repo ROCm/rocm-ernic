@@ -53,6 +53,10 @@ struct ionic_device_cfg {
     /* The faults to inject (ionic_fault.h), or NULL for none.  It must
      * outlive the device. */
     struct ionic_fault_set *faults;
+    /* Whether the device has a Controller Memory Buffer (--cmb), which the
+     * guest driver may put rings in (ionic_eth_emu_enable_cmb()).  The
+     * caller sets up BAR4 to match. */
+    bool cmb;
     /* The clock, in milliseconds, that ionic_device_poll() times the
      * guest's statistics by, or NULL for CLOCK_MONOTONIC.  A test sets its
      * own to keep the periodic rewrite from landing in the middle of what

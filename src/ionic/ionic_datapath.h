@@ -8,6 +8,7 @@
 #ifndef IONIC_DATAPATH_H
 #define IONIC_DATAPATH_H
 
+#include <stddef.h>
 #include <stdint.h>
 #include <stdbool.h>
 #include <vfio-user/libvfio-user.h>
@@ -342,6 +343,41 @@ void ionic_datapath_set_stats(struct ionic_datapath *dp,
  */
 void ionic_datapath_doorbell(struct ionic_datapath *dp, int qtype,
                              uint64_t doorbell_val);
+
+/**
+ * Set the CMB (Controller Memory Buffer) shadow shared with ionic_eth_emu.
+ * Must be called before any CMB QP can receive a write.  @p cmb_buf is
+ * `IONIC_BAR4_CMB_SIZE` bytes, owned by the caller.
+ */
+void ionic_datapath_set_cmb(struct ionic_datapath *dp, uint8_t *cmb_buf);
+
+/**
+ * Whether the device has a CMB for a QP's rings to be in: whether
+ * ionic_datapath_set_cmb() has given the data path one.  False for a NULL
+ * @p dp.
+ */
+bool ionic_datapath_has_cmb(const struct ionic_datapath *dp);
+
+/**
+ * Mark a QP's rings as residing in the CMB and record their byte offsets
+ * within the CMB buffer.  Call after ionic_datapath_register_qp() succeeds.
+ */
+void ionic_datapath_set_qp_cmb(struct ionic_datapath *dp, uint32_t qp_id,
+                               bool sq_cmb, uint64_t sq_cmb_offset, bool rq_cmb,
+                               uint64_t rq_cmb_offset);
+
+/**
+ * Called by ionic_eth_emu_bar4_access() for every write into the CMB, once
+ * its bytes are in the CMB buffer. A write that ends at the end of a slot of
+ * a CMB ring posts that slot's WQE, whatever its size: the express doorbell.
+ * The WQE is taken to be complete then, so the guest must write it front to
+ * back.
+ *
+ * @param cmb_offset byte offset within the 8 MB CMB buffer of the write's start
+ * @param len        the write's length in bytes
+ */
+void ionic_datapath_expdb_write(struct ionic_datapath *dp, uint64_t cmb_offset,
+                                size_t len);
 
 /*
  * Do the work held while Bus Master Enable was clear, now that it is set:

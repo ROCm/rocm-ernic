@@ -10,8 +10,9 @@
  * Shared by tests/test_ionic_stats.c and the fuzz harness
  * nix/analysis/fuzz/fuzz_ionic_stats.c, so the table and the fuzzer run
  * the handler against the same fake device, and by
- * tests/test_ionic_adminq_poll.c and tests/test_ionic_adminq_maps.c.  It
- * defines functions, so include it once, in one translation unit.
+ * tests/test_ionic_adminq_poll.c, tests/test_ionic_adminq_maps.c and
+ * tests/test_ionic_adminq_cmb.c.  It defines functions, so include it once,
+ * in one translation unit.
  *
  * Copyright (C) Advanced Micro Devices, Inc.
  * SPDX-License-Identifier: GPL-2.0-or-later
@@ -430,6 +431,38 @@ void ionic_datapath_unregister_ah(struct ionic_datapath *dp, uint32_t ah_id)
     (void)dp;
     (void)ah_id;
 }
+/* Whether the device has a CMB; a row clears it for a device without */
+static bool g_has_cmb = true;
+
+bool ionic_datapath_has_cmb(const struct ionic_datapath *dp)
+{
+    (void)dp;
+    return g_has_cmb;
+}
+
+/* How many times a QP's rings were placed in the CMB, and the last
+ * placement */
+static unsigned g_set_qp_cmb_calls;
+static struct {
+    uint32_t qp_id;
+    bool sq_cmb;
+    uint64_t sq_offset;
+    bool rq_cmb;
+    uint64_t rq_offset;
+} g_qp_cmb;
+
+void ionic_datapath_set_qp_cmb(struct ionic_datapath *dp, uint32_t qp_id,
+                               bool sq_cmb, uint64_t sq_cmb_offset, bool rq_cmb,
+                               uint64_t rq_cmb_offset)
+{
+    (void)dp;
+    g_set_qp_cmb_calls++;
+    g_qp_cmb.qp_id = qp_id;
+    g_qp_cmb.sq_cmb = sq_cmb;
+    g_qp_cmb.sq_offset = sq_cmb_offset;
+    g_qp_cmb.rq_cmb = rq_cmb;
+    g_qp_cmb.rq_offset = rq_cmb_offset;
+}
 
 /*
  * The counter snapshots the handler reads.  Every value is distinct and
@@ -582,6 +615,9 @@ static void ctx_reset(void)
     g_register_mr_calls = 0;
     g_unregister_mr_calls = 0;
     g_unregister_mr_key = 0;
+    g_has_cmb = true;
+    g_set_qp_cmb_calls = 0;
+    memset(&g_qp_cmb, 0, sizeof(g_qp_cmb));
 }
 
 #endif /* IONIC_ADMINQ_FAKES_H */
