@@ -10,5 +10,16 @@ bugfixes:
     for the ionic driver sources, each of ``fetch-ionic-sources.sh``'s
     eight tries waiting on git's own connection timeout.  Each try now
     waits at most 30 seconds for the server to answer, and if it never
-    does, the script doesn't go on to fetch every branch and tag, so it
-    fails in about 3 minutes.
+    does, the script doesn't go on to fetch every branch and tag, but
+    after about 3 minutes tries Google's mirror of git.kernel.org's stable
+    tree instead, unless ``--repo`` names another repository.
+    ``--mirror URL`` adds others.
+minor_changes:
+  - >-
+    ``ernic_guest_setup`` - with the new
+    ``ernic_guest_ionic_fetch_on_controller``, the controller fetches and
+    patches the ionic sources, under
+    ``ernic_guest_ionic_controller_root``, and copies the tree into the
+    guest, rather than the guest fetching them through what may be
+    user-mode networking.  Off by default; the repository's playbooks set
+    it in ``group_vars``.  The controller then needs git and tar.

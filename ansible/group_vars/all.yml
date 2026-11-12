@@ -65,6 +65,11 @@ ernic_ionic_min_kernel: "6.18"
 # one package: iperf3, which packages/ionic.txt does not list and
 # tcp-performance-tests.yml measures with.
 ernic_guest_build_deps: true
+# Fetch the ionic sources on the controller, the VM host or the CI
+# runner, and copy them into the guests, whose only way out is QEMU's
+# user-mode networking: a guest that couldn't reach git.kernel.org
+# failed CI lanes where the runner could.
+ernic_guest_ionic_fetch_on_controller: true
 
 # ── QEMU / VM defaults ──────────────────────────
 ernic_qemu_path: /opt/qemu-10.2.2-pci-mmio-bridge-submit/bin/

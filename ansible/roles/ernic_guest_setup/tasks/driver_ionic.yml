@@ -6,9 +6,11 @@
 # upstream kernel sources and register them with DKMS as the
 # ionic-ernic package.
 #
-# The guest has outbound internet, so it sparse-clones the kernel
-# itself with the same fetch-ionic-sources.sh the host build uses,
-# staged from the collection by stage_sources.yml.  The script leaves a
+# The guest sparse-clones the kernel itself with the same
+# fetch-ionic-sources.sh the host build uses, staged from the collection
+# by stage_sources.yml, unless ernic_guest_ionic_fetch_on_controller is
+# set, when the controller does (ionic_fetch_controller.yml) and copies
+# the patched tree into the guest.  The script leaves a
 # sentinel named for the ref and a digest of the repository and the patch
 # series, and skips the fetch when it is present, so re-runs are cheap and
 # a changed repository or series is fetched again.  That is why the fetch
@@ -111,6 +113,7 @@
 # is not known here, and each needs its own --patches-dir.  The paths are
 # this role's own, not anything a guest supplies.
 - name: Fetch and patch the upstream ionic sources
+  when: not (ernic_guest_ionic_fetch_on_controller | bool)
   ansible.builtin.command:
     cmd: >-
       bash {{ ernic_guest_ionic_dir }}/fetch-ionic-sources.sh
@@ -120,6 +123,10 @@
       {% for d in ernic_guest_ionic_extra_patches %}--patches-dir {{ ernic_guest_ionic_dir }}/{{ d }} {% endfor %}
   register: ernic_ionic_fetch
   changed_when: "'nothing to do' not in ernic_ionic_fetch.stdout"
+
+- name: Fetch and patch the upstream ionic sources on the controller
+  when: ernic_guest_ionic_fetch_on_controller | bool
+  ansible.builtin.include_tasks: ionic_fetch_controller.yml
 
 - name: Install the ionic-ernic DKMS package
   ansible.builtin.command:

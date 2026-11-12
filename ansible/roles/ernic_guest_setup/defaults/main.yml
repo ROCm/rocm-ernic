@@ -49,7 +49,8 @@ ernic_guest_source_stamp: >-
 
 # ── ionic kernel modules ─────────────────────────
 # The patches and the two helper scripts are staged here; the
-# guest then fetches the upstream ionic sources itself.
+# guest then fetches the upstream ionic sources itself, unless
+# ernic_guest_ionic_fetch_on_controller, below, is set.
 ernic_guest_ionic_dir: /tmp/ionic
 # Where they are staged FROM, on the controller.  Both ship in the
 # collection (ansible/files/, see its README) rather than being read
@@ -77,6 +78,18 @@ ernic_guest_scripts_dir: "{{ role_path }}/../../files/scripts"
 # Where the sparse kernel checkout lands.  Outside /tmp so a
 # reboot does not force a re-clone.
 ernic_ionic_source_dir: /var/tmp/ionic-src
+# Fetch and patch the ionic sources on the controller, and copy the
+# patched tree into each guest, rather than fetching in the guest.  Off by
+# default, so a guest that can reach git.kernel.org needs nothing more
+# from the controller.  On where the guests' only way out is QEMU's
+# user-mode networking, as in the CI lanes and on a developer's VM host:
+# a fetch that can't get out there fails the guest's setup, where the
+# controller usually has a route of its own.
+ernic_guest_ionic_fetch_on_controller: false
+# Where the controller fetches and patches, under a directory per guest,
+# when the above is set.  The script's sentinel lets a rerun skip a fetch
+# whose ref and series haven't changed.
+ernic_guest_ionic_controller_root: /tmp/ionic-src-controller
 # The kernel ref itself (ernic_ionic_kernel_ref, defaulting to the
 # IONIC_KERNEL_REF pin in cmake/ErnicKernelModule.cmake) is owned
 # by the ernic_source role.

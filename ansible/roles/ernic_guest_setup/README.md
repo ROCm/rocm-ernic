@@ -43,7 +43,11 @@ Phases, each behind a flag:
 What the controller supplies comes from
 [`ernic_source`](../ernic_source/README.md), which this role includes. That is
 only the patch series and two helper scripts: the guest fetches
-the upstream kernel sources and rocm-xio itself. A tarball staged by
+the upstream kernel sources and rocm-xio itself. With
+`ernic_guest_ionic_fetch_on_controller`, the controller fetches and patches
+the kernel sources instead and copies the tree into the guest, for a guest
+whose user-mode networking can't be relied on to reach git.kernel.org; the
+repository's playbooks set it. A tarball staged by
 `ernic_host_setup` at `ernic_rocm_xio_tarball` is still used when it exists, so
 air-gapped guests keep working.
 
@@ -81,6 +85,7 @@ fork is only built under `ernic_gpu_passthrough`, which is off in CI, so the
 - `become: true`
 - `community.general` for `modprobe` / `make`
 - A rocm-ernic checkout on the controller, or network access to clone one
+- With `ernic_guest_ionic_fetch_on_controller`, git and tar on the controller
 
 ## Role Variables
 
@@ -90,6 +95,10 @@ fork is only built under `ernic_gpu_passthrough`, which is off in CI, so the
 # IONIC_KERNEL_REF pinned in cmake/ErnicKernelModule.cmake".
 ernic_ionic_source_dir: /var/tmp/ionic-src
 ernic_ionic_min_kernel: "6.18"
+# Fetch and patch on the controller, under a directory per guest, and
+# copy the tree in, rather than fetching in the guest
+ernic_guest_ionic_fetch_on_controller: false
+ernic_guest_ionic_controller_root: /tmp/ionic-src-controller
 ernic_ionic_min_vcpus: 4
 
 # Boot-time state. modules-load.d entries so a rebooted guest keeps

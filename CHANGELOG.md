@@ -70,11 +70,13 @@
   run. When it can't fetch the
   kernel ref on its own, it now says so and points to git's error, rather
   than claiming the ref can't be fetched directly, before it falls back
-  to fetching every branch and tag. And it gives up in about 3 minutes,
-  not 13, on a server that doesn't answer, as git.kernel.org sometimes
+  to fetching every branch and tag. And it moves on in about 3 minutes,
+  not 13, from a server that doesn't answer, as git.kernel.org sometimes
   didn't for a CI lane's guest: each try first waits at most 30 seconds
   for the server to answer at all, and a server that never answered
-  isn't asked again for every branch and tag.
+  isn't asked again for every branch and tag. It then tries Google's
+  mirror of git.kernel.org's stable tree, unless `--repo` names another
+  repository; `--mirror URL` adds others.
 
 * The device now honours Bus Master Enable in its PCI Command register,
   as the PCI Express specification requires. Before, it went on writing
@@ -679,6 +681,13 @@
 
 ### Changed
 
+* The playbooks' guest setup fetches and patches the ionic sources on the
+  controller, the VM host or a CI runner, and copies the tree into each
+  guest, rather than having every guest fetch from git.kernel.org through
+  QEMU's user-mode networking. Guests that couldn't get out that way
+  failed CI lanes. The `ernic_guest_setup` role does this with the new
+  `ernic_guest_ionic_fetch_on_controller`, which the playbooks set; the
+  controller then needs git and tar.
 * **Breaking:** **The guest image has no password and no SSH key.** The
   `ionic` guest CI boots, and `scripts/fetch-guest-image.sh` fetches, is
   now built here, from `ci/images/guest/`, and published to

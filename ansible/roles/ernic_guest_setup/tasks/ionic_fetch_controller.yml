@@ -1,0 +1,100 @@
+# Copyright (c) Advanced Micro Devices, Inc. All rights reserved.
+#
+# SPDX-License-Identifier: MIT
+#
+# Included from driver_ionic.yml when ernic_guest_ionic_fetch_on_controller
+# is set: fetch and patch the ionic sources on the controller, then copy
+# the patched tree into the guest, where setup-ionic-dkms.sh builds it
+# against the guest's kernel.  The controller runs the collection's own
+# copies of the script and the patches, the same ones stage_sources.yml
+# copies into the guest.
+#
+# The controller tasks run with delegate_to: localhost and become: false,
+# as ernic_srq_dkms's do, and each guest gets a directory of its own, so
+# guests built from different series don't share one.
+
+---
+- name: Note where the controller fetches for this guest
+  ansible.builtin.set_fact:
+    ernic_guest_ionic_ctl_dir: >-
+      {{ ernic_guest_ionic_controller_root }}/{{ inventory_hostname }}
+
+# The extra series are named as paths in the staged tree, patches/...,
+# which is ernic_guest_patches_dir on the controller
+- name: Check the extra patch series are under patches/
+  ansible.builtin.assert:
+    that:
+      - ernic_guest_ionic_extra_patches | reject('match', '^patches/') | list
+        | length == 0
+    fail_msg: >-
+      ernic_guest_ionic_extra_patches names paths under patches/, the staged
+      copy of ernic_guest_patches_dir: {{ ernic_guest_ionic_extra_patches }}
+    quiet: true
+
+# No creates:, for the reason driver_ionic.yml gives: the script decides
+# from its sentinel.  cmd rather than argv for the same reason too.
+- name: Fetch and patch the upstream ionic sources on the controller
+  delegate_to: localhost
+  become: false
+  ansible.builtin.command:
+    cmd: >-
+      bash {{ ernic_guest_scripts_dir }}/fetch-ionic-sources.sh
+      --source-dir {{ ernic_guest_ionic_ctl_dir }}
+      --kernel-ref {{ ernic_ionic_ref }}
+      --patches-dir {{ ernic_guest_patches_dir }}
+      {% for d in ernic_guest_ionic_extra_patches %}--patches-dir {{ ernic_guest_patches_dir }}/{{ d | regex_replace('^patches/', '') }} {% endfor %}
+  register: ernic_ionic_ctl_fetch
+  changed_when: "'nothing to do' not in ernic_ionic_ctl_fetch.stdout"
+
+# Archived rather than copied file by file, and without .git, which
+# setup-ionic-dkms.sh doesn't need: see ernic_srq_dkms's stage.yml.  Made
+# on every run, so an archive an earlier run left is never the one
+# shipped; the tree is a sparse checkout, so this is cheap.
+#
+# ansible-lint takes any tar for an extraction and suggests unarchive,
+# which can't make an archive.
+- name: Archive the patched tree on the controller
+  delegate_to: localhost
+  become: false
+  ansible.builtin.command: # noqa: command-instead-of-module
+    cmd: >-
+      tar -C {{ ernic_guest_ionic_ctl_dir }} --exclude=.git
+      -czf {{ ernic_guest_ionic_ctl_dir }}.tar.gz .
+  changed_when: true
+
+# Emptied first, so nothing an earlier fetch in the guest left behind
+# mixes with the tree
+- name: Empty the guest's ionic source directory
+  ansible.builtin.file:
+    path: "{{ ernic_ionic_source_dir }}"
+    state: absent
+
+- name: Create the guest's ionic source directory
+  ansible.builtin.file:
+    path: "{{ ernic_ionic_source_dir }}"
+    state: directory
+    mode: "0755"
+
+- name: Copy the patched tree into the guest
+  ansible.builtin.unarchive:
+    src: "{{ ernic_guest_ionic_ctl_dir }}.tar.gz"
+    dest: "{{ ernic_ionic_source_dir }}"
+    remote_src: false
+    owner: root
+    group: root
+
+# Checked rather than assumed: a wrong layout gives DKMS an empty source
+# directory and a far less obvious error
+- name: Check the tree landed where the build looks
+  ansible.builtin.stat:
+    path: "{{ ernic_ionic_source_dir }}/drivers/infiniband/hw/ionic"
+  register: ernic_ionic_staged
+
+- name: Fail when the tree didn't land there
+  ansible.builtin.assert:
+    that:
+      - ernic_ionic_staged.stat.isdir | default(false)
+    fail_msg: >-
+      {{ ernic_ionic_source_dir }}/drivers/infiniband/hw/ionic isn't there
+      after copying the tree fetched on the controller into the guest
+    quiet: true
