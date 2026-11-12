@@ -23,7 +23,10 @@
 #   key=   the private key made for this boot
 #   user=  the account to log in as
 #   port=  the forwarded SSH port, on 127.0.0.1
-# Everything else goes to stderr. On failure, QEMU is stopped.
+# Everything else goes to stderr. On failure, QEMU is stopped, except
+# that with --keep-on-timeout a guest that never accepts SSH is left
+# running and only its pid= is printed, so the caller can examine it
+# before stopping it.
 #
 # ernicctl vm-launch runs the installed copy,
 # libexec/rocm-ernic/rocm-ernic-boot-guest.
@@ -59,6 +62,9 @@ Guest:
   --shared-backing     don't lock the disk's backing file, which other
                        guests' overlays share
   --timeout SECS       how long to wait for SSH (default: 600)
+  --keep-on-timeout    if the guest never accepts SSH, leave QEMU running
+                       and print its pid= for the caller to examine and
+                       stop; the exit status is still 1
 
 QEMU:
   --qemu BINARY        qemu-system-x86_64 to run (default: from PATH)
@@ -163,6 +169,7 @@ MEM=4096
 SNAPSHOT=false
 SHARED_BACKING=false
 TIMEOUT=600
+KEEP_ON_TIMEOUT=false
 QEMU=qemu-system-x86_64
 QEMU_IMG=""
 CONSOLE=""
@@ -243,6 +250,10 @@ while [[ $# -gt 0 ]]; do
             need_value "$1" $#
             TIMEOUT=$2
             shift 2
+            ;;
+        --keep-on-timeout)
+            KEEP_ON_TIMEOUT=true
+            shift
             ;;
         --qemu)
             need_value "$1" $#
@@ -681,15 +692,17 @@ CMD=(
 
 QEMU_PID=""
 WAIT_PID=""
-BOOTED=false
+# Set once the guest is up, or once --keep-on-timeout hands a guest that
+# never came up to the caller
+KEEP_QEMU=false
 
-# Stop QEMU unless the guest came up, and whatever the wait was waiting on
+# Stop QEMU unless it's being kept, and whatever the wait was waiting on
 stop_qemu() {
     trap '' INT TERM HUP
     if [[ -n $WAIT_PID ]]; then
         kill -TERM "$WAIT_PID" 2>/dev/null || true
     fi
-    if $BOOTED || [[ -z $QEMU_PID ]]; then
+    if $KEEP_QEMU || [[ -z $QEMU_PID ]]; then
         return
     fi
     kill -TERM "$QEMU_PID" 2>/dev/null || return 0
@@ -752,6 +765,12 @@ while :; do
         cat -- "$OUT/ssh.log" >&2
         echo "$PROG: $CONSOLE ends:" >&2
         tail -n 20 -- "$CONSOLE" >&2 || true
+        if $KEEP_ON_TIMEOUT; then
+            echo "$PROG: leaving QEMU (PID $QEMU_PID) running for you to" \
+                "examine and stop" >&2
+            KEEP_QEMU=true
+            printf 'pid=%s\n' "$QEMU_PID"
+        fi
         exit 1
     fi
     if wait_for timeout "$((left < 60 ? left : 60))" "${SSH[@]}" \
@@ -767,7 +786,7 @@ while :; do
     fi
     wait_for sleep 2
 done
-BOOTED=true
+KEEP_QEMU=true
 
 # Only now, so a caller that has the results knows QEMU is running, even
 # if this is stopped before it exits
