@@ -17,6 +17,8 @@ on:
   pull_request:
     branches: [develop]
     paths:
+      # LIBVFIO_USER_COMMIT, which this builds against
+      - 'ci/images/builder/pins.env'
       - '.github/workflows/nightly.yml'
       - 'cmake/ErnicInstall.cmake'
       - 'cmake/ErnicPackage.cmake'
@@ -168,10 +170,11 @@ jobs:
         env:
           LDFLAGS: -Wl,-z,relro,-z,now
         run: |
-          git clone https://github.com/nutanix/libvfio-user.git \
-            "${RUNNER_TEMP}/libvfio-user"
+          # The pin is LIBVFIO_USER_COMMIT in ci/images/builder/pins.env
+          . ci/images/builder/pins.env
+          git clone "$LIBVFIO_USER_REPO" "${RUNNER_TEMP}/libvfio-user"
           cd "${RUNNER_TEMP}/libvfio-user"
-          git checkout 5b9c722
+          git checkout "$LIBVFIO_USER_COMMIT"
           meson setup build \
             --prefix="${RUNNER_TEMP}/libvfio-user-install" \
             --libdir=lib \

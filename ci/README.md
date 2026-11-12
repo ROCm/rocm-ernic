@@ -5,6 +5,12 @@ This directory holds what the GitHub-hosted workflows in
 
 - `guest-image.env` -- the pin for the guest image every VM
   lane boots.
+- `boot-guest.sh` -- boots a guest with a key made for the
+  boot; the lanes and `ernicctl vm-launch` both use it.
+- `images/` -- the CI images built and published here, and
+  the scripts that tag and publish them; see
+  `images/README.md`. `images/builder/pins.env` also holds
+  the libvfio-user commit every CI build uses.
 - `report/` -- `gen-report.py`, which turns a lane's results
   into a report, and `publish-perf.py`, which records the
   performance numbers and renders the trend page.

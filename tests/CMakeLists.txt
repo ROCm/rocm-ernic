@@ -1305,6 +1305,17 @@ add_test(
 )
 set_tests_properties(ernic-boot-guest PROPERTIES TIMEOUT 120)
 
+# ci/images/image-tag.sh and ensure-image.sh, on a scratch copy of
+# ci/images/ and against a stand-in for docker: what goes into an image's
+# tag, and that only a missing image that passes its checks is pushed.
+# Nothing is built.
+add_test(
+    NAME ernic-ci-images
+    COMMAND ${CMAKE_CURRENT_SOURCE_DIR}/test_ci_images.sh
+        ${PROJECT_SOURCE_DIR}/ci/images
+)
+set_tests_properties(ernic-ci-images PROPERTIES TIMEOUT 120)
+
 # The P4 engine on the live device: guest frames out of the Ethernet Tx
 # ring, through the pipeline, and out the far side. Starts a server per
 # case because the statistics it asserts on are reported at shutdown.

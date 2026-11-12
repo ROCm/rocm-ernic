@@ -1,0 +1,101 @@
+# Copyright (c) Advanced Micro Devices, Inc. All rights reserved.
+#
+# SPDX-License-Identifier: MIT
+#
+# Publishes the CI images defined under ci/images/ to GHCR, each under a
+# tag naming its contents (ci/images/image-tag.sh). One already published
+# under its tag isn't built again, so a run that changes no definition
+# only looks. See ci/images/README.md.
+#
+# Only the builder image so far, and nothing uses it yet.
+name: "rocm-ernic - CI images"
+
+on:
+  pull_request:
+    branches: [ develop ]
+    paths:
+      - 'ci/images/**'
+      - 'tests/test_ci_images.sh'
+      - '.github/workflows/ci-images.yml'
+  workflow_dispatch:
+
+permissions: {}
+
+jobs:
+  resolve:
+    name: Resolve the image tags
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    permissions:
+      contents: read
+    outputs:
+      builder_ref: ${{ steps.tags.outputs.builder_ref }}
+      builder_tag: ${{ steps.tags.outputs.builder_tag }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      # The scripts that tag and publish the images, before they're
+      # trusted to: the same test as CTest's ernic-ci-images, which Build
+      # and Test doesn't run for a change only under ci/images/
+      - name: Test the image scripts
+        shell: bash
+        run: tests/test_ci_images.sh ci/images
+
+      - name: Compute the tags
+        id: tags
+        shell: bash
+        env:
+          OWNER: ${{ github.repository_owner }}
+        run: |
+          # GHCR names are lowercase, and the owner is "ROCm"
+          export CI_IMAGES_REGISTRY="ghcr.io/${OWNER,,}/rocm-ernic"
+          ref=$(ci/images/image-tag.sh --ref builder)
+          echo "builder_ref=$ref" >> "$GITHUB_OUTPUT"
+          echo "builder_tag=${ref##*:}" >> "$GITHUB_OUTPUT"
+          echo "ci-builder: $ref"
+
+  builder:
+    name: Builder image
+    needs: resolve
+    runs-on: ubuntu-24.04
+    # A cold build compiles QEMU; a warm one reuses the registry cache
+    timeout-minutes: 60
+    permissions:
+      contents: read
+      packages: write
+    # Two runs that need the same image build it once: the second waits,
+    # then finds it published
+    concurrency:
+      group: ci-images-builder-${{ needs.resolve.outputs.builder_tag }}
+      cancel-in-progress: false
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Log in to GHCR
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          printf '%s\n' "$GH_TOKEN" |
+            docker login ghcr.io -u "$GITHUB_ACTOR" --password-stdin
+
+      # The default docker driver can't export a cache to the registry
+      - name: Set up a buildx builder
+        shell: bash
+        run: docker buildx create --name ernic-ci --driver docker-container --use
+
+      - name: Publish the builder image if it isn't already
+        shell: bash
+        env:
+          OWNER: ${{ github.repository_owner }}
+          # A pull request from a fork gets a read-only token
+          CI_IMAGES_CAN_PUSH: >-
+            ${{ github.event_name != 'pull_request' ||
+                !github.event.pull_request.head.repo.fork }}
+        run: |
+          export CI_IMAGES_REGISTRY="ghcr.io/${OWNER,,}/rocm-ernic"
+          ci/images/ensure-image.sh builder
