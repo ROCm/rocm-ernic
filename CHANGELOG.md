@@ -156,6 +156,8 @@
   for a vfio-user device, QMP and guest agent sockets, a multicast NIC,
   PCI passthrough and emulated NVMe, and stops QEMU if the guest doesn't
   come up or it's stopped by a signal, without waiting out an SSH probe.
+  With `--keep-on-timeout`, a guest that never accepts SSH is left running
+  instead, and its PID printed, so the caller can examine it.
   `ernicctl vm-launch` runs it, installed as
   `libexec/rocm-ernic/rocm-ernic-boot-guest`. The `ernic-boot-guest` test
   checks it, and `vm-launch` and `vm-stop` through it, against stand-ins
@@ -661,6 +663,17 @@
   launch owns its QEMU: `vm-stop` cancels the launch and waits for it to
   stop QEMU, and so does stopping `vm-launch` itself with `SIGINT`,
   `SIGTERM` or `SIGHUP`.
+* The system-test lanes (`system-tests.yml`, `nvmeof-lane.yml`,
+  `s3-lane.yml` and `p4-lane.yml`) boot their guests with
+  `ci/boot-guest.sh`, as `ernicctl vm-launch` does, rather than their own
+  QEMU command lines. So CI now tests the device behind a PCIe root port,
+  where deployments put it, rather than on the root bus, and the guests'
+  SSH is forwarded from 127.0.0.1 only. The lanes log in with a key made
+  for the job, which the helper authorizes, rather than the one published
+  with the guest image. QEMU's own log is now `/tmp/ernic-vmN/qemu.log` in
+  the jobs' log artifacts. The jobs' containers run with `--init`, so a
+  QEMU or server that exits is reaped rather than left a zombie that
+  `kill -0` takes for a running process.
 * **Breaking:** **The Ansible collection is now `rocm.ernic`, and it is not
   published to Ansible Galaxy.** It was `sbates130272.rocm_ernic`. Address
   the roles as `rocm.ernic.ernic_guest_setup` and so on, and install the

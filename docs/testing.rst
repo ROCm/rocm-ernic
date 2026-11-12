@@ -869,7 +869,12 @@ major.minor must equal the ref's, and no hosted runner
 carries such a kernel.
 
 ``.github/workflows/system-tests.yml`` boots guests under
-KVM on hosted runners and provisions them by running the
+KVM on hosted runners with ``ci/boot-guest.sh``, as
+``ernicctl vm-launch`` does, so the vfio-user device sits
+behind a PCIe root port and SSH is forwarded from
+127.0.0.1 only. The helper authorizes a key made for the
+job, not the one published with the guest image. The
+workflow provisions the guests by running the
 collection itself --- ``ansible-playbook ci-site.yml --tags
 guest-setup`` against a generated ``instances.json`` ---
 rather than by copying sources in over ``ssh``. The role is

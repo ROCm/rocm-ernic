@@ -323,6 +323,23 @@ PID=$(comm -13 <(sort "$FAKE_QEMU_PIDS.before") <(sort "$FAKE_QEMU_PIDS"))
 ! running "$PID" || fail "QEMU was left running after a timeout"
 pass "a guest that never accepts SSH times out, and QEMU is stopped"
 
+export FAKE_QEMU_ARGS="$WORK/qemu-args-keep"
+cp "$FAKE_QEMU_PIDS" "$FAKE_QEMU_PIDS.before"
+if FAKE_SSH_FAIL=1 "$HELPER" --disk "$DISK" --name test-vm --ssh-port 2299 \
+    --out "$WORK/vm-keep" --qemu "$QEMU" --timeout 3 --keep-on-timeout \
+    >"$WORK/out-keep" 2>"$WORK/err-keep"; then
+    fail "the helper succeeded though the guest never accepted SSH"
+fi
+grep -q "didn't accept SSH within 3s" "$WORK/err-keep" ||
+    fail "the timeout wasn't reported: $(cat "$WORK/err-keep")"
+PID=$(comm -13 <(sort "$FAKE_QEMU_PIDS.before") <(sort "$FAKE_QEMU_PIDS"))
+[[ -n $PID ]] || fail "QEMU didn't start"
+[[ $(cat "$WORK/out-keep") == "pid=$PID" ]] ||
+    fail "--keep-on-timeout printed '$(cat "$WORK/out-keep")', not pid=$PID"
+running "$PID" || fail "--keep-on-timeout didn't leave QEMU running"
+kill "$PID"
+pass "--keep-on-timeout leaves QEMU running after a timeout, and gives its PID"
+
 # A probe would answer, successfully, long after the wait ends
 export FAKE_QEMU_ARGS="$WORK/qemu-args-hang"
 start=$SECONDS

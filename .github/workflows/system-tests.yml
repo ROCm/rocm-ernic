@@ -104,7 +104,13 @@ jobs:
       image: sbates130272/batesste-ci-images-ubuntu-qemu-libvfio-user:20260918.g7438e48-qemu11.1.1-vfu.8039244
       # GitHub-hosted Linux runners expose /dev/kvm; pass it through so the
       # guests run accelerated instead of under TCG.
-      options: --device /dev/kvm
+      #
+      # --init makes PID 1 an init that reaps orphans.  QEMU, which
+      # ci/boot-guest.sh leaves running when it exits, and the server,
+      # which outlives the step that starts it, are both reparented to
+      # PID 1; without --init that is `tail -f /dev/null`, so one that
+      # dies stays a zombie, and kill -0 takes a zombie for a live process.
+      options: --device /dev/kvm --init
 
     steps:
     - name: Checkout code
@@ -208,12 +214,11 @@ jobs:
         out = sys.argv[1]
         d = json.load(open(os.path.join(out, "vm-info.json")))
         here = lambda p: os.path.join(out, os.path.basename(p)) if p else ""
+        # The image's own SSH key isn't read: ci/boot-guest.sh authorizes
+        # the job's key at boot.
         keys = {
             "VM_USER": d.get("username", "ci"),
             "VM_DISK": here(d.get("image_path", "")),
-            "SSH_KEY": d.get("ssh_key", ""),
-            "SSH_KEY_PRIVATE": here(d.get("ssh_keys", {}).get("private_key_path", "")),
-            "SSH_KEY_PUBLIC": here(d.get("ssh_keys", {}).get("public_key_path", "")),
             # Only the payload image sets these.  kernel_ref is nested
             # under provisioning in schema v2; reading it from the top
             # level is why this reported "ionic ref unknown".
@@ -260,7 +265,6 @@ jobs:
 
         echo "✓ VM username: $VM_USER"
         echo "✓ VM disk: $VM_DISK"
-        echo "✓ SSH key: ${SSH_KEY:-not specified}"
         echo "✓ Guest flavour: ${FLAVOUR:-unknown}"
         echo "✓ Guest kernel: ${KERNEL_RELEASE:-unknown} (ionic ref ${KERNEL_REF:-unknown})"
         qemu-img info "$VM_DISK" || true
@@ -268,9 +272,6 @@ jobs:
         {
           echo "vm_user=$VM_USER"
           echo "vm_disk=$VM_DISK"
-          echo "ssh_key=$SSH_KEY"
-          echo "ssh_key_private=$SSH_KEY_PRIVATE"
-          echo "ssh_key_public=$SSH_KEY_PUBLIC"
           echo "kernel_release=$KERNEL_RELEASE"
         } >> "$GITHUB_OUTPUT"
 
@@ -402,113 +403,35 @@ jobs:
         cat /tmp/vfu_server.log
         exit 1
     
-    - name: Start QEMU VM
+    - name: Make the job's SSH key
       shell: bash
-      env:
-        VM_INFO_DISK: ${{ steps.vm_info.outputs.vm_disk }}
       run: |
-        echo "=== Starting QEMU VM ==="
-        VM_DISK="${VM_INFO_DISK}"
-        SSH_PORT=2222
-        
-        # Start VM with vfio-user device
-        # NOTE: memory-backend-memfd is REQUIRED for vfio-user DMA to work
-        #
-        # hpet=off: now and then a nested guest's kernel hangs for good
-        # just after setting up the HPET.  See "boot hang" in
-        # scripts/qemu-vm-diagnose.sh, which says what to do if it
-        # still happens.
-        qemu-system-x86_64 \
-          -machine "q35,accel=${QEMU_ACCEL},memory-backend=mem0,hpet=off" \
-          -cpu "${QEMU_CPU}" \
-          -smp "${VM_VCPUS}" \
-          -m "${VM_MEM_MB}M" \
-          -object "memory-backend-memfd,id=mem0,share=on,size=${VM_MEM_MB}M" \
-          -nographic \
-          -drive file="$VM_DISK",format=qcow2,if=virtio \
-          -netdev user,id=net0,hostfwd=tcp::$SSH_PORT-:22 \
-          -device virtio-net-pci,netdev=net0 \
-          -device '{"driver":"vfio-user-pci","socket":{"type":"unix","path":"/tmp/vfio-user-rocm-ernic.sock"}}' \
-          -serial file:/tmp/qemu-console.log \
-          -monitor none \
-          -qmp unix:/tmp/qmp.sock,server=on,wait=off > /tmp/qemu.log 2>&1 &
+        echo "=== Making the job's SSH key ==="
+        # The guest image's own key isn't used.  ci/boot-guest.sh
+        # authorizes this one, made for the job, through cloud-init when
+        # the guest boots (--authorize).  The helper makes a key of its
+        # own for each boot too, but uses it only to wait for SSH.
+        SSH_DIR="$RUNNER_TEMP/ernic-ssh"
+        SSH_KEY_PRIVATE="$SSH_DIR/id_ed25519"
+        mkdir -p "$SSH_DIR"
+        chmod 700 "$SSH_DIR"
+        rm -f "$SSH_KEY_PRIVATE" "$SSH_KEY_PRIVATE.pub"
+        ssh-keygen -q -t ed25519 -N '' -C "gh-$GITHUB_JOB" \
+          -f "$SSH_KEY_PRIVATE" </dev/null
 
-        QEMU_PID=$!
-        echo "QEMU_PID=$QEMU_PID" >> "$GITHUB_ENV"
-        echo "SSH_PORT=$SSH_PORT" >> "$GITHUB_ENV"
-        echo "✓ QEMU started (PID: $QEMU_PID)"
-
-        # Early failure detection: check if QEMU dies within 5 seconds
-        echo "Monitoring QEMU for early failures..."
-        sleep 5
-        if ! kill -0 "$QEMU_PID" 2>/dev/null; then
-          echo "✗ QEMU process died within 5 seconds (PID: $QEMU_PID)"
-          echo "=== QEMU log ==="
-          cat /tmp/qemu.log || echo "Log file not found"
-          echo ""
-          echo "=== Guest console ==="
-          cat /tmp/qemu-console.log || echo "Console log not found"
-          echo ""
-          echo "=== QEMU exit code ==="
-          wait "$QEMU_PID" 2>&1 || echo "Exit code: $?"
-          exit 1
-        fi
-        echo "✓ QEMU still running after 5 seconds"
-    
-    - name: Setup SSH keys
-      shell: bash
-      env:
-        VM_INFO_SSH_KEY_PRIVATE: ${{ steps.vm_info.outputs.ssh_key_private }}
-        VM_INFO_SSH_KEY_PUBLIC: ${{ steps.vm_info.outputs.ssh_key_public }}
-      run: |
-        echo "=== Setting up SSH keys ==="
-        SSH_KEY_PRIVATE="${VM_INFO_SSH_KEY_PRIVATE}"
-        SSH_KEY_PUBLIC="${VM_INFO_SSH_KEY_PUBLIC}"
-        
-        mkdir -p ~/.ssh
-        chmod 700 ~/.ssh
-        
-        # Require SSH key file paths from vm-info.json
-        if [ -z "$SSH_KEY_PRIVATE" ] || [ -z "$SSH_KEY_PUBLIC" ]; then
-          echo "✗ SSH key paths (ssh_key_private and ssh_key_public) are required in vm-info.json"
-          echo "Found ssh_key_private: $([ -n "$SSH_KEY_PRIVATE" ] && echo "$SSH_KEY_PRIVATE" || echo 'not set')"
-          echo "Found ssh_key_public: $([ -n "$SSH_KEY_PUBLIC" ] && echo "$SSH_KEY_PUBLIC" || echo 'not set')"
-          exit 1
-        fi
-        
-        # Check if key files exist at the specified paths
-        if [ ! -f "$SSH_KEY_PRIVATE" ]; then
-          echo "✗ SSH private key file not found: $SSH_KEY_PRIVATE"
-          exit 1
-        fi
-        
-        if [ ! -f "$SSH_KEY_PUBLIC" ]; then
-          echo "✗ SSH public key file not found: $SSH_KEY_PUBLIC"
-          exit 1
-        fi
-        
-        echo "✓ Using SSH keys from vm-info.json"
-        echo "  Private key: $SSH_KEY_PRIVATE"
-        echo "  Public key: $SSH_KEY_PUBLIC"
-
-        ssh-keyscan -p "$SSH_PORT" localhost >> ~/.ssh/known_hosts 2>/dev/null || true
-
-        # Use the key where the fetch action left it rather than copying
-        # it into ~/.ssh and letting ssh find it by default, because ssh
-        # will not: ~ is $HOME, which a container job sets to
-        # /github/home, but OpenSSH builds its default identity and
-        # known_hosts paths from getpwuid() -- /root for us -- which is
-        # empty.  The copy therefore landed somewhere ssh never looked,
-        # and six runs died at "Permission denied (publickey,password)"
+        # Use the key where it lies rather than copying it into ~/.ssh:
+        # ~ is $HOME, which a container job sets to /github/home, but
+        # OpenSSH builds its default identity path from getpwuid() --
+        # /root for us.  A copy once landed where ssh never looked, and
+        # six runs died at "Permission denied (publickey,password)",
         # looking exactly like a guest that never booted.
         #
         # IdentitiesOnly stops an agent or those defaults from being
-        # offered as well, so this stays legible if it ever breaks again;
-        # BatchMode turns the password fallback into an immediate failure
-        # with a usable message instead of a read_passphrase error.
-        # The options go in a config file for ssh -F, so the later steps pass
-        # them as one quoted argument.  The paths are expanded here, since
-        # OpenSSH would resolve ~ with getpwuid() too.
+        # offered as well; BatchMode turns the password fallback into an
+        # immediate failure with a usable message.  Every boot makes new
+        # host keys, so there are none worth remembering.  The options go
+        # in a config file for ssh -F, so the later steps pass them as one
+        # quoted argument.
         SSH_CONFIG="$RUNNER_TEMP/ernic-ssh-config"
         cat > "$SSH_CONFIG" <<EOF
         Host *
@@ -516,49 +439,82 @@ jobs:
           IdentitiesOnly yes
           BatchMode yes
           StrictHostKeyChecking no
-          UserKnownHostsFile "$HOME/.ssh/known_hosts"
+          UserKnownHostsFile /dev/null
+          LogLevel ERROR
         EOF
+        # Both paths are made here, so unlike anything read from
+        # vm-info.json they're safe to export through $GITHUB_ENV.
         echo "SSH_CONFIG=$SSH_CONFIG" >> "$GITHUB_ENV"
         echo "SSH_KEY_PRIVATE=$SSH_KEY_PRIVATE" >> "$GITHUB_ENV"
         echo "✓ SSH_CONFIG=$SSH_CONFIG:"
         cat "$SSH_CONFIG"
-    
-    - name: Wait for VM SSH
+
+    - name: Boot the VM
       shell: bash
       env:
+        VM_INFO_DISK: ${{ steps.vm_info.outputs.vm_disk }}
         VM_INFO_USER: ${{ steps.vm_info.outputs.vm_user }}
       run: |
-        echo "=== Waiting for VM SSH ==="
-        VM_USER="${VM_INFO_USER}"
-        
-        # Keep ssh's stderr rather than discarding it: "Connection
-        # refused" and "Connection timed out" are different faults, and
-        # the old 2>/dev/null hid which one this was for five runs.
-        for i in {1..60}; do
-          if ssh -F "$SSH_CONFIG" -o ConnectTimeout=5 -p "$SSH_PORT" "${VM_USER}@localhost" 'echo VM Ready' 2>/tmp/ssh-attempt.err; then
-            echo "✓ VM SSH is ready (attempt $i/60)"
-            echo "VM_USER=$VM_USER" >> "$GITHUB_ENV"
-            exit 0
-          fi
-          echo "Attempt $i/60: $(tr '\n' ' ' < /tmp/ssh-attempt.err | cut -c1-160)"
-          sleep 5
-        done
+        echo "=== Booting the VM ==="
+        SSH_PORT=2222
+        VM_OUT=/tmp/ernic-vm1
+        echo "SSH_PORT=$SSH_PORT" >> "$GITHUB_ENV"
 
-        echo "✗ VM SSH timeout"
-        echo ""
-        echo "=== Final attempt, verbose ==="
-        ssh -vvv -F "$SSH_CONFIG" -o ConnectTimeout=5 \
-          -p "$SSH_PORT" "${VM_USER}@localhost" true 2>&1 | tail -40 || true
-
-        "${GITHUB_WORKSPACE}/scripts/qemu-vm-diagnose.sh" \
-          --label VM \
+        # ci/boot-guest.sh is what ernicctl vm-launch runs, so this boots
+        # the guest the way a deployment does: the vfio-user device
+        # behind a PCIe root port, the shared memfd memory vfio-user DMA
+        # needs, hpet=off, and SSH forwarded from 127.0.0.1 only.  It
+        # returns once the guest accepts SSH, and fails, saying why, if
+        # QEMU exits or the guest never answers.  --keep-on-timeout
+        # leaves a guest that never answers running, so
+        # qemu-vm-diagnose.sh can examine it.
+        status=0
+        "${GITHUB_WORKSPACE}/ci/boot-guest.sh" \
+          --disk "$VM_INFO_DISK" \
+          --name gh-loopback-vm1 \
           --ssh-port "$SSH_PORT" \
+          --out "$VM_OUT" \
+          --user "$VM_INFO_USER" \
+          --authorize "$SSH_KEY_PRIVATE.pub" \
+          --accel "$QEMU_ACCEL" \
+          --cpu "$QEMU_CPU" \
+          --cpus "$VM_VCPUS" \
+          --mem "$VM_MEM_MB" \
+          --vfio-user /tmp/vfio-user-rocm-ernic.sock \
           --qmp /tmp/qmp.sock \
           --console /tmp/qemu-console.log \
-          --qemu-log /tmp/qemu.log \
-          --pid "$QEMU_PID"
-        exit 1
-    
+          --keep-on-timeout > "$VM_OUT.result" || status=$?
+
+        # Cleanup stops QEMU by this PID, whether or not the guest came up
+        QEMU_PID=$(sed -n 's/^pid=//p' "$VM_OUT.result")
+        if [[ $QEMU_PID =~ ^[0-9]+$ ]]; then
+          echo "QEMU_PID=$QEMU_PID" >> "$GITHUB_ENV"
+        fi
+
+        if [ "$status" -ne 0 ]; then
+          echo "✗ The VM didn't come up"
+          if [ -n "$QEMU_PID" ]; then
+            echo ""
+            echo "=== Final attempt, verbose ==="
+            ssh -vvv -F "$SSH_CONFIG" -o ConnectTimeout=5 \
+              -p "$SSH_PORT" "${VM_INFO_USER}@localhost" true 2>&1 | tail -40 || true
+
+            "${GITHUB_WORKSPACE}/scripts/qemu-vm-diagnose.sh" \
+              --label VM \
+              --ssh-port "$SSH_PORT" \
+              --qmp /tmp/qmp.sock \
+              --console /tmp/qemu-console.log \
+              --qemu-log "$VM_OUT/qemu.log" \
+              --pid "$QEMU_PID"
+          fi
+          exit 1
+        fi
+        # user= is the helper's --user, which it checked is a plain user
+        # name, so unlike vm-info.json's value it's safe to export
+        VM_USER=$(sed -n 's/^user=//p' "$VM_OUT.result")
+        echo "VM_USER=$VM_USER" >> "$GITHUB_ENV"
+        echo "✓ VM is up (QEMU PID $QEMU_PID)"
+
     - name: Verify the ionic PCI function is present in the VM
       shell: bash
       run: |
@@ -1406,7 +1362,7 @@ jobs:
         tail -50 /tmp/vfu_server*.log || true
         echo ""
         echo "=== QEMU Log ==="
-        cat /tmp/qemu.log || echo "No QEMU log"
+        cat /tmp/ernic-vm1/qemu.log || echo "No QEMU log"
         echo ""
         # Whole file, not a tail: a boot log is under a thousand lines
         # and the network setup it has to explain is near the top.
@@ -1420,7 +1376,7 @@ jobs:
         name: loopback-backend-test-logs
         path: |
           /tmp/vfu_server.log
-          /tmp/qemu.log
+          /tmp/ernic-vm1/qemu.log
           /tmp/qemu-console.log
           bw.csv
           lat.csv
@@ -1577,7 +1533,12 @@ jobs:
       # node nor the capability is in a container's default set, and
       # without them ionic_eth_net_send() has no fd, so every frame the
       # guest transmits is dropped however healthy the RDMA mesh is.
-      options: --device /dev/kvm --device /dev/net/tun --cap-add=NET_ADMIN
+      #
+      # --init makes PID 1 an init that reaps orphans: see the loopback
+      # job.
+      options: >-
+        --device /dev/kvm --device /dev/net/tun --cap-add=NET_ADMIN
+        --init
 
     steps:
     - name: Checkout code
@@ -1720,12 +1681,11 @@ jobs:
         out = sys.argv[1]
         d = json.load(open(os.path.join(out, "vm-info.json")))
         here = lambda p: os.path.join(out, os.path.basename(p)) if p else ""
+        # The image's own SSH key isn't read: ci/boot-guest.sh authorizes
+        # the job's key at boot.
         keys = {
             "VM_USER": d.get("username", "ci"),
             "VM_DISK": here(d.get("image_path", "")),
-            "SSH_KEY": d.get("ssh_key", ""),
-            "SSH_KEY_PRIVATE": here(d.get("ssh_keys", {}).get("private_key_path", "")),
-            "SSH_KEY_PUBLIC": here(d.get("ssh_keys", {}).get("public_key_path", "")),
             # Only the payload image sets these.  kernel_ref is nested
             # under provisioning in schema v2; reading it from the top
             # level is why this reported "ionic ref unknown".
@@ -1772,7 +1732,6 @@ jobs:
 
         echo "✓ VM username: $VM_USER"
         echo "✓ VM disk: $VM_DISK"
-        echo "✓ SSH key: ${SSH_KEY:-not specified}"
         echo "✓ Guest flavour: ${FLAVOUR:-unknown}"
         echo "✓ Guest kernel: ${KERNEL_RELEASE:-unknown} (ionic ref ${KERNEL_REF:-unknown})"
         qemu-img info "$VM_DISK" || true
@@ -1780,9 +1739,6 @@ jobs:
         {
           echo "vm_user=$VM_USER"
           echo "vm_disk=$VM_DISK"
-          echo "ssh_key=$SSH_KEY"
-          echo "ssh_key_private=$SSH_KEY_PRIVATE"
-          echo "ssh_key_public=$SSH_KEY_PUBLIC"
           echo "kernel_release=$KERNEL_RELEASE"
         } >> "$GITHUB_OUTPUT"
     - name: Create the per-VM disk overlays
@@ -1815,51 +1771,29 @@ jobs:
         echo "vm_disk_2=$VM_DISK_2" >> "$GITHUB_OUTPUT"
         echo "✓ overlays created over $BASE"
     
-    - name: Setup SSH keys
+    - name: Make the job's SSH key
       shell: bash
-      env:
-        VM_INFO_SSH_KEY_PRIVATE: ${{ steps.vm_info.outputs.ssh_key_private }}
-        VM_INFO_SSH_KEY_PUBLIC: ${{ steps.vm_info.outputs.ssh_key_public }}
       run: |
-        echo "=== Setting up SSH keys ==="
-        SSH_KEY_PRIVATE="${VM_INFO_SSH_KEY_PRIVATE}"
-        SSH_KEY_PUBLIC="${VM_INFO_SSH_KEY_PUBLIC}"
-        
-        mkdir -p ~/.ssh
-        chmod 700 ~/.ssh
-        
-        # Require SSH key file paths from vm-info.json
-        if [ -z "$SSH_KEY_PRIVATE" ] || [ -z "$SSH_KEY_PUBLIC" ]; then
-          echo "✗ SSH key paths (ssh_key_private and ssh_key_public) are required in vm-info.json"
-          echo "Found ssh_key_private: $([ -n "$SSH_KEY_PRIVATE" ] && echo "$SSH_KEY_PRIVATE" || echo 'not set')"
-          echo "Found ssh_key_public: $([ -n "$SSH_KEY_PUBLIC" ] && echo "$SSH_KEY_PUBLIC" || echo 'not set')"
-          exit 1
-        fi
-        
-        # Check if key files exist at the specified paths
-        if [ ! -f "$SSH_KEY_PRIVATE" ]; then
-          echo "✗ SSH private key file not found: $SSH_KEY_PRIVATE"
-        exit 1
-        fi
-        
-        if [ ! -f "$SSH_KEY_PUBLIC" ]; then
-          echo "✗ SSH public key file not found: $SSH_KEY_PUBLIC"
-          exit 1
-        fi
-        
-        echo "✓ Using SSH keys from vm-info.json"
-        echo "  Private key: $SSH_KEY_PRIVATE"
-        echo "  Public key: $SSH_KEY_PUBLIC"
-        ssh-keyscan -p 2222 localhost >> ~/.ssh/known_hosts 2>/dev/null || true
-        ssh-keyscan -p 2223 localhost >> ~/.ssh/known_hosts 2>/dev/null || true
+        echo "=== Making the job's SSH key ==="
+        # The guest image's own key isn't used.  ci/boot-guest.sh
+        # authorizes this one in both guests, through cloud-init when
+        # they boot (--authorize), so one key reaches either.  The helper
+        # makes a key of its own for each boot too, but uses it only to
+        # wait for SSH.
+        SSH_DIR="$RUNNER_TEMP/ernic-ssh"
+        SSH_KEY_PRIVATE="$SSH_DIR/id_ed25519"
+        mkdir -p "$SSH_DIR"
+        chmod 700 "$SSH_DIR"
+        rm -f "$SSH_KEY_PRIVATE" "$SSH_KEY_PRIVATE.pub"
+        ssh-keygen -q -t ed25519 -N '' -C "gh-$GITHUB_JOB" \
+          -f "$SSH_KEY_PRIVATE" </dev/null
 
         # See the loopback job: ~ is $HOME (/github/home in a container
         # job) but OpenSSH builds its defaults from getpwuid(), so the key
         # is used where it lies rather than copied somewhere ssh will
-        # never look for it.
-        # The options go in a config file for ssh -F, so the later steps pass
-        # them as one quoted argument.  The paths are expanded here, since
-        # OpenSSH would resolve ~ with getpwuid() too.
+        # never look for it.  Every boot makes new host keys, so there are
+        # none worth remembering.  The options go in a config file for
+        # ssh -F, so the later steps pass them as one quoted argument.
         SSH_CONFIG="$RUNNER_TEMP/ernic-ssh-config"
         cat > "$SSH_CONFIG" <<EOF
         Host *
@@ -1867,8 +1801,11 @@ jobs:
           IdentitiesOnly yes
           BatchMode yes
           StrictHostKeyChecking no
-          UserKnownHostsFile "$HOME/.ssh/known_hosts"
+          UserKnownHostsFile /dev/null
+          LogLevel ERROR
         EOF
+        # Both paths are made here, so unlike anything read from
+        # vm-info.json they're safe to export through $GITHUB_ENV.
         echo "SSH_CONFIG=$SSH_CONFIG" >> "$GITHUB_ENV"
         echo "SSH_KEY_PRIVATE=$SSH_KEY_PRIVATE" >> "$GITHUB_ENV"
         echo "✓ SSH_CONFIG=$SSH_CONFIG:"
@@ -1885,7 +1822,7 @@ jobs:
           [ -n "$d" ] || continue
           mkdir -p "$d/.ssh"
           chmod 700 "$d/.ssh"
-          install -m 600 "$SSH_KEY_PRIVATE" "$d/.ssh/id_rsa"
+          install -m 600 "$SSH_KEY_PRIVATE" "$d/.ssh/id_ed25519"
         done
         echo "✓ key installed for default-path ssh in $PW_HOME and $HOME"
 
@@ -2291,144 +2228,93 @@ jobs:
         
         echo "✓ All server sockets verified and ready for VM connections"
 
-    - name: Start VM 1
-      shell: bash
-      env:
-        COPY_VM_DISK_1: ${{ steps.copy_vm_disk.outputs.vm_disk_1 }}
-      run: |
-        echo "=== Starting VM 1 ==="
-        VM_DISK_1="${COPY_VM_DISK_1}"
-        SSH_PORT_1=2222
-
-        # hpet=off: now and then a nested guest's kernel hangs for good
-        # just after setting up the HPET.  See "boot hang" in
-        # scripts/qemu-vm-diagnose.sh, which says what to do if it
-        # still happens.
-        qemu-system-x86_64 \
-          -machine "q35,accel=${QEMU_ACCEL},memory-backend=mem1,hpet=off" \
-          -cpu "${QEMU_CPU}" \
-          -smp "${VM_VCPUS}" \
-          -m "${VM_MEM_MB}M" \
-          -object "memory-backend-memfd,id=mem1,share=on,size=${VM_MEM_MB}M" \
-          -nographic \
-          -drive file="$VM_DISK_1",format=qcow2,if=virtio \
-          -netdev user,id=net0,hostfwd=tcp::$SSH_PORT_1-:22 \
-          -device virtio-net-pci,netdev=net0 \
-          -device '{"driver":"vfio-user-pci","socket":{"type":"unix","path":"/tmp/vfio-user-server1.sock"}}' \
-          -serial file:/tmp/qemu-vm1-console.log \
-          -monitor none \
-          -qmp unix:/tmp/qmp-vm1.sock,server=on,wait=off > /tmp/qemu-vm1.log 2>&1 &
-
-        QEMU_VM1_PID=$!
-        echo "QEMU_VM1_PID=$QEMU_VM1_PID" >> "$GITHUB_ENV"
-        echo "✓ VM 1 started (PID: $QEMU_VM1_PID)"
-        
-        # Early failure detection: check if QEMU dies within 5 seconds
-        echo "Monitoring VM 1 for early failures..."
-        sleep 5
-        if ! kill -0 "$QEMU_VM1_PID" 2>/dev/null; then
-          echo "✗ VM 1 QEMU process died within 5 seconds (PID: $QEMU_VM1_PID)"
-          echo "=== VM 1 QEMU log ==="
-          cat /tmp/qemu-vm1.log || echo "Log file not found"
-          echo ""
-          echo "=== VM 1 guest console ==="
-          cat /tmp/qemu-vm1-console.log || echo "Console log not found"
-          echo ""
-          echo "=== VM 1 QEMU exit code ==="
-          wait "$QEMU_VM1_PID" 2>&1 || echo "Exit code: $?"
-          exit 1
-        fi
-        echo "✓ VM 1 still running after 5 seconds"
-
-    - name: Start VM 2
-      shell: bash
-      env:
-        COPY_VM_DISK_2: ${{ steps.copy_vm_disk.outputs.vm_disk_2 }}
-      run: |
-        echo "=== Starting VM 2 ==="
-        VM_DISK_2="${COPY_VM_DISK_2}"
-        SSH_PORT_2=2223
-
-        # hpet=off: see Start VM 1.
-        qemu-system-x86_64 \
-          -machine "q35,accel=${QEMU_ACCEL},memory-backend=mem2,hpet=off" \
-          -cpu "${QEMU_CPU}" \
-          -smp "${VM_VCPUS}" \
-          -m "${VM_MEM_MB}M" \
-          -object "memory-backend-memfd,id=mem2,share=on,size=${VM_MEM_MB}M" \
-          -nographic \
-          -drive file="$VM_DISK_2",format=qcow2,if=virtio \
-          -netdev user,id=net0,hostfwd=tcp::$SSH_PORT_2-:22 \
-          -device virtio-net-pci,netdev=net0 \
-          -device '{"driver":"vfio-user-pci","socket":{"type":"unix","path":"/tmp/vfio-user-server2.sock"}}' \
-          -serial file:/tmp/qemu-vm2-console.log \
-          -monitor none \
-          -qmp unix:/tmp/qmp-vm2.sock,server=on,wait=off > /tmp/qemu-vm2.log 2>&1 &
-
-        QEMU_VM2_PID=$!
-        echo "QEMU_VM2_PID=$QEMU_VM2_PID" >> "$GITHUB_ENV"
-        echo "✓ VM 2 started (PID: $QEMU_VM2_PID)"
-        
-        # Early failure detection: check if QEMU dies within 5 seconds
-        echo "Monitoring VM 2 for early failures..."
-        sleep 5
-        if ! kill -0 "$QEMU_VM2_PID" 2>/dev/null; then
-          echo "✗ VM 2 QEMU process died within 5 seconds (PID: $QEMU_VM2_PID)"
-          echo "=== VM 2 QEMU log ==="
-          cat /tmp/qemu-vm2.log || echo "Log file not found"
-          echo ""
-          echo "=== VM 2 guest console ==="
-          cat /tmp/qemu-vm2-console.log || echo "Console log not found"
-          echo ""
-          echo "=== VM 2 QEMU exit code ==="
-          wait "$QEMU_VM2_PID" 2>&1 || echo "Exit code: $?"
-          exit 1
-        fi
-        echo "✓ VM 2 still running after 5 seconds"
-
-    - name: Wait for VMs to boot
+    - name: Boot the VMs
       shell: bash
       env:
         VM_INFO_USER: ${{ steps.vm_info.outputs.vm_user }}
+        COPY_VM_DISK_1: ${{ steps.copy_vm_disk.outputs.vm_disk_1 }}
+        COPY_VM_DISK_2: ${{ steps.copy_vm_disk.outputs.vm_disk_2 }}
       run: |
-        echo "=== Waiting for VMs to boot ==="
-        VM_USER="${VM_INFO_USER}"
+        echo "=== Booting both VMs ==="
 
-        # Keep ssh's stderr rather than discarding it: "Connection
-        # refused" and "Connection timed out" are different faults, and
-        # the old 2>/dev/null hid which one this was for five runs.
-        wait_for_vm() {
-          local label="$1" port="$2" pid="$3" console="$4" qemu_log="$5" qmp="$6"
-          local i
-
-          for i in {1..60}; do
-            if ssh -F "$SSH_CONFIG" -o ConnectTimeout=5 \
-                 -p "$port" "${VM_USER}@localhost" "echo ${label} Ready" \
-                 2>/tmp/ssh-attempt.err; then
-              echo "✓ ${label} is accessible via SSH"
-              return 0
-            fi
-            echo "${label} attempt $i/60: $(tr '\n' ' ' < /tmp/ssh-attempt.err | cut -c1-160)"
-            sleep 10
-          done
-
-          echo "✗ ${label} boot timeout"
-          echo ""
-          echo "=== ${label}: final attempt, verbose ==="
-          ssh -vvv -F "$SSH_CONFIG" -o ConnectTimeout=5 \
-            -p "$port" "${VM_USER}@localhost" true 2>&1 | tail -40 || true
-
-          "${GITHUB_WORKSPACE}/scripts/qemu-vm-diagnose.sh" \
-            --label "$label" --ssh-port "$port" --qmp "$qmp" \
-            --console "$console" --qemu-log "$qemu_log" --pid "$pid"
-          return 1
+        # ci/boot-guest.sh is what ernicctl vm-launch runs, so this boots
+        # the guests the way a deployment does: the vfio-user device
+        # behind a PCIe root port, the shared memfd memory vfio-user DMA
+        # needs, hpet=off, and SSH forwarded from 127.0.0.1 only.  Each
+        # call returns once its guest accepts SSH, and fails, saying why,
+        # if QEMU exits or the guest never answers.  --keep-on-timeout
+        # leaves a guest that never answers running, so
+        # qemu-vm-diagnose.sh can examine it.
+        #
+        # VM N gets SSH port 2221 + N (2222 and 2223, which the later
+        # steps name), server N's socket, and a hostname of its own.
+        # --shared-backing, because both overlays share one base.
+        boot_vm() {
+          local n="$1" disk="$2"
+          "${GITHUB_WORKSPACE}/ci/boot-guest.sh" \
+            --disk "$disk" \
+            --name "gh-tcp-vm$n" \
+            --ssh-port "$((2221 + n))" \
+            --out "/tmp/ernic-vm$n" \
+            --user "$VM_INFO_USER" \
+            --authorize "$SSH_KEY_PRIVATE.pub" \
+            --accel "$QEMU_ACCEL" \
+            --cpu "$QEMU_CPU" \
+            --cpus "$VM_VCPUS" \
+            --mem "$VM_MEM_MB" \
+            --shared-backing \
+            --vfio-user "/tmp/vfio-user-server$n.sock" \
+            --qmp "/tmp/qmp-vm$n.sock" \
+            --console "/tmp/qemu-vm$n-console.log" \
+            --timeout 900 \
+            --keep-on-timeout \
+            > "/tmp/ernic-vm$n.result" 2> "/tmp/ernic-vm$n-boot.log"
         }
 
-        wait_for_vm "VM1" 2222 "$QEMU_VM1_PID" \
-          /tmp/qemu-vm1-console.log /tmp/qemu-vm1.log /tmp/qmp-vm1.sock
+        # Both at once: each waits on its own guest, and they share the
+        # runner while they boot
+        boot_vm 1 "$COPY_VM_DISK_1" &
+        BOOT1=$!
+        boot_vm 2 "$COPY_VM_DISK_2" &
+        BOOT2=$!
+        STATUS1=0
+        wait "$BOOT1" || STATUS1=$?
+        STATUS2=0
+        wait "$BOOT2" || STATUS2=$?
 
-        wait_for_vm "VM2" 2223 "$QEMU_VM2_PID" \
-          /tmp/qemu-vm2-console.log /tmp/qemu-vm2.log /tmp/qmp-vm2.sock
+        FAILED=0
+        for n in 1 2; do
+          if [ "$n" -eq 1 ]; then status=$STATUS1; else status=$STATUS2; fi
+          port=$((2221 + n))
+          echo "--- VM $n: ci/boot-guest.sh ---"
+          cat "/tmp/ernic-vm$n-boot.log"
+
+          # Cleanup stops QEMU by this PID, whether or not the guest
+          # came up
+          pid=$(sed -n 's/^pid=//p' "/tmp/ernic-vm$n.result")
+          if [[ $pid =~ ^[0-9]+$ ]]; then
+            echo "QEMU_VM${n}_PID=$pid" >> "$GITHUB_ENV"
+          fi
+
+          if [ "$status" -eq 0 ]; then
+            echo "✓ VM $n is up (QEMU PID $pid)"
+            continue
+          fi
+          FAILED=1
+          echo "✗ VM $n didn't come up"
+          if [ -n "$pid" ]; then
+            echo ""
+            echo "=== VM $n: final attempt, verbose ==="
+            ssh -vvv -F "$SSH_CONFIG" -o ConnectTimeout=5 \
+              -p "$port" "${VM_INFO_USER}@localhost" true 2>&1 | tail -40 || true
+
+            "${GITHUB_WORKSPACE}/scripts/qemu-vm-diagnose.sh" \
+              --label "VM$n" --ssh-port "$port" --qmp "/tmp/qmp-vm$n.sock" \
+              --console "/tmp/qemu-vm$n-console.log" \
+              --qemu-log "/tmp/ernic-vm$n/qemu.log" --pid "$pid"
+          fi
+        done
+        exit "$FAILED"
 
     - name: Install kernel headers and build tools in VMs (parallel)
       shell: bash
@@ -2743,8 +2629,10 @@ jobs:
         path: |
           /tmp/server1.log
           /tmp/server2.log
-          /tmp/qemu-vm1.log
-          /tmp/qemu-vm2.log
+          /tmp/ernic-vm1/qemu.log
+          /tmp/ernic-vm2/qemu.log
+          /tmp/ernic-vm1-boot.log
+          /tmp/ernic-vm2-boot.log
           /tmp/qemu-vm1-console.log
           /tmp/qemu-vm2-console.log
         retention-days: 7
