@@ -625,6 +625,8 @@
 </li>
       <li><a href="api.html#c.IONIC_BAR2_DB_SIZE">IONIC_BAR2_DB_SIZE (C macro)</a>
 </li>
+      <li><a href="api.html#c.IONIC_BAR4_CMB_SIZE">IONIC_BAR4_CMB_SIZE (C macro)</a>
+</li>
       <li><a href="api.html#c.IONIC_CMD_RDMA_CREATE_ADMINQ">IONIC_CMD_RDMA_CREATE_ADMINQ (C macro)</a>
 </li>
       <li><a href="api.html#c.IONIC_CMD_RDMA_CREATE_CQ">IONIC_CMD_RDMA_CREATE_CQ (C macro)</a>
@@ -647,11 +649,15 @@
 </li>
       <li><a href="api.html#_CPPv423ionic_datapath_doorbellP14ionic_datapathi8uint64_t">ionic_datapath_doorbell (C++ function)</a>
 </li>
+      <li><a href="api.html#_CPPv426ionic_datapath_expdb_writeP14ionic_datapath8uint64_t6size_t">ionic_datapath_expdb_write (C++ function)</a>
+</li>
       <li><a href="api.html#_CPPv423ionic_datapath_flush_qpP14ionic_datapath8uint32_t">ionic_datapath_flush_qp (C++ function)</a>
 </li>
       <li><a href="api.html#_CPPv426ionic_datapath_fmt_convertP14ionic_datapath7uint8_t7uint8_t8uint32_t8uint64_t8uint32_t8uint32_t8uint64_t">ionic_datapath_fmt_convert (C++ function)</a>
 </li>
       <li><a href="api.html#_CPPv422ionic_datapath_fp8_mapP14ionic_datapath7uint8_t8uint32_t8uint64_t8uint32_t8uint64_t8uint32_t8uint32_t8uint64_t">ionic_datapath_fp8_map (C++ function)</a>
+</li>
+      <li><a href="api.html#_CPPv422ionic_datapath_has_cmbPK14ionic_datapath">ionic_datapath_has_cmb (C++ function)</a>
 </li>
       <li><a href="api.html#_CPPv423ionic_datapath_has_workP14ionic_datapath">ionic_datapath_has_work (C++ function)</a>
 </li>
@@ -679,6 +685,8 @@
 </li>
       <li><a href="api.html#_CPPv421ionic_datapath_resumeP14ionic_datapath">ionic_datapath_resume (C++ function)</a>
 </li>
+      <li><a href="api.html#_CPPv422ionic_datapath_set_cmbP14ionic_datapathP7uint8_t">ionic_datapath_set_cmb (C++ function)</a>
+</li>
       <li><a href="api.html#_CPPv430ionic_datapath_set_cq_event_cbP14ionic_datapath22ionic_dp_cq_event_fn_tPv">ionic_datapath_set_cq_event_cb (C++ function)</a>
 </li>
       <li><a href="api.html#_CPPv423ionic_datapath_set_destP14ionic_datapath8uint32_t8uint32_t8uint32_t">ionic_datapath_set_dest (C++ function)</a>
@@ -688,6 +696,8 @@
       <li><a href="api.html#_CPPv425ionic_datapath_set_pvrdmaP14ionic_datapath15pvrdma_handle_t">ionic_datapath_set_pvrdma (C++ function)</a>
 </li>
       <li><a href="api.html#_CPPv423ionic_datapath_set_qkeyP14ionic_datapath8uint32_t8uint32_t">ionic_datapath_set_qkey (C++ function)</a>
+</li>
+      <li><a href="api.html#_CPPv425ionic_datapath_set_qp_cmbP14ionic_datapath8uint32_tb8uint64_tb8uint64_t">ionic_datapath_set_qp_cmb (C++ function)</a>
 </li>
       <li><a href="api.html#_CPPv424ionic_datapath_set_statsP14ionic_datapathP11ernic_stats">ionic_datapath_set_stats (C++ function)</a>
 </li>
@@ -722,6 +732,8 @@
       <li><a href="api.html#_CPPv416ionic_device_cfg">ionic_device_cfg (C++ struct)</a>
 </li>
       <li><a href="api.html#_CPPv4N16ionic_device_cfg7backendE">ionic_device_cfg::backend (C++ member)</a>
+</li>
+      <li><a href="api.html#_CPPv4N16ionic_device_cfg3cmbE">ionic_device_cfg::cmb (C++ member)</a>
 </li>
       <li><a href="api.html#_CPPv4N16ionic_device_cfg6faultsE">ionic_device_cfg::faults (C++ member)</a>
 </li>
@@ -775,12 +787,12 @@
 </li>
       <li><a href="api.html#_CPPv421ionic_dp_rdma_counter">ionic_dp_rdma_counter (C++ enum)</a>
 </li>
+  </ul></td>
+  <td style="width: 33%; vertical-align: top;"><ul>
       <li><a href="api.html#_CPPv4N21ionic_dp_rdma_counter19IONIC_DP_RDMA_COUNTE">ionic_dp_rdma_counter::IONIC_DP_RDMA_COUNT (C++ enumerator)</a>
 </li>
       <li><a href="api.html#_CPPv4N21ionic_dp_rdma_counter23IONIC_DP_REQ_RX_CQE_ERRE">ionic_dp_rdma_counter::IONIC_DP_REQ_RX_CQE_ERR (C++ enumerator)</a>
 </li>
-  </ul></td>
-  <td style="width: 33%; vertical-align: top;"><ul>
       <li><a href="api.html#_CPPv4N21ionic_dp_rdma_counter29IONIC_DP_REQ_RX_CQE_FLUSH_ERRE">ionic_dp_rdma_counter::IONIC_DP_REQ_RX_CQE_FLUSH_ERR (C++ enumerator)</a>
 </li>
       <li><a href="api.html#_CPPv4N21ionic_dp_rdma_counter29IONIC_DP_REQ_RX_DUP_RESPONSESE">ionic_dp_rdma_counter::IONIC_DP_REQ_RX_DUP_RESPONSES (C++ enumerator)</a>
@@ -859,11 +871,17 @@
 </li>
       <li><a href="api.html#_CPPv425ionic_eth_emu_bar2_accessP13ionic_eth_emuPc6size_t6loff_tb">ionic_eth_emu_bar2_access (C++ function)</a>
 </li>
+      <li><a href="api.html#_CPPv425ionic_eth_emu_bar4_accessP13ionic_eth_emuPc6size_t6loff_tb">ionic_eth_emu_bar4_access (C++ function)</a>
+</li>
+      <li><a href="api.html#_CPPv423ionic_eth_emu_clear_cmbP13ionic_eth_emu">ionic_eth_emu_clear_cmb (C++ function)</a>
+</li>
       <li><a href="api.html#_CPPv424ionic_eth_emu_count_rdmaP13ionic_eth_emu8uint64_tb">ionic_eth_emu_count_rdma (C++ function)</a>
 </li>
       <li><a href="api.html#_CPPv420ionic_eth_emu_createP9vfu_ctx_t6size_t">ionic_eth_emu_create (C++ function)</a>
 </li>
       <li><a href="api.html#_CPPv421ionic_eth_emu_destroyP13ionic_eth_emu">ionic_eth_emu_destroy (C++ function)</a>
+</li>
+      <li><a href="api.html#_CPPv424ionic_eth_emu_enable_cmbP13ionic_eth_emu">ionic_eth_emu_enable_cmb (C++ function)</a>
 </li>
       <li><a href="api.html#_CPPv423ionic_eth_emu_get_statsP13ionic_eth_emu">ionic_eth_emu_get_stats (C++ function)</a>
 </li>
@@ -1026,6 +1044,8 @@
       <li><a href="api.html#_CPPv4N14rocm_ernic_dev13cfg_log_limitE">rocm_ernic_dev::cfg_log_limit (C++ member)</a>
 </li>
       <li><a href="api.html#_CPPv4N14rocm_ernic_dev11client_lostE">rocm_ernic_dev::client_lost (C++ member)</a>
+</li>
+      <li><a href="api.html#_CPPv4N14rocm_ernic_dev3cmbE">rocm_ernic_dev::cmb (C++ member)</a>
 </li>
       <li><a href="api.html#_CPPv4N14rocm_ernic_dev7commandE">rocm_ernic_dev::command (C++ member)</a>
 </li>

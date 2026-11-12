@@ -922,8 +922,9 @@ can’t get on the bus would, rather than dropping it:</p>
 <ul class="simple">
 <li><p><code class="docutils literal notranslate"><span class="pre">ionic_device_poll()</span></code> does nothing, and the server doesn’t
 skip its idle sleep for work it may not do.</p></li>
-<li><p>A doorbell only notes its producer index, and arming a CQ
-raises no event.</p></li>
+<li><p>A doorbell only notes its producer index, as does a write
+into the CMB that posts a WQE (the express doorbell), and
+arming a CQ raises no event.</p></li>
 <li><p>An interrupt is latched, as if its vector were masked.</p></li>
 <li><p><code class="docutils literal notranslate"><span class="pre">PORT_INIT</span></code> and <code class="docutils literal notranslate"><span class="pre">LIF_INIT</span></code> complete, but write their
 blocks later.</p></li>
@@ -1007,10 +1008,10 @@ writing into the LIF block</p></td>
 <td><p>Resets the whole device as a function-level reset does,
 but for the PCI function’s registers and the P4 engine:
 every queue and RDMA resource goes, nothing more is
-written into the blocks, and every counter restarts at
-zero. The driver sends it before it sets Bus Master
-Enable, so a kernel started by kexec finds nothing of
-its predecessor’s still running</p></td>
+written into the blocks, every counter restarts at
+zero, and the CMB is zeroed. The driver sends it before
+it sets Bus Master Enable, so a kernel started by kexec
+finds nothing of its predecessor’s still running</p></td>
 </tr>
 <tr class="row-odd"><td><p>Q_INIT</p></td>
 <td><p>Records where an Ethernet queue’s descriptor and
@@ -1025,24 +1026,30 @@ only to enabled receive queues</p></td>
 <tr class="row-odd"><td><p>Q_IDENTIFY</p></td>
 <td><p>Reports descriptor and scatter-gather sizes for the
 admin, notify, receive and transmit queues; advertises
-no offloads. Fails for any other queue type</p></td>
+no offloads, and the express doorbell for the receive
+and transmit queues, but only with <code class="docutils literal notranslate"><span class="pre">--cmb</span></code>. Fails for
+any other queue type</p></td>
 </tr>
-<tr class="row-even"><td><p>LIF_GETATTR, LIF_SETATTR</p></td>
+<tr class="row-even"><td><p>DISCOVER_CMB</p></td>
+<td><p>With <code class="docutils literal notranslate"><span class="pre">--cmb</span></code>, reports the CMB’s two regions on BAR 4
+(see <a class="reference internal" href="ionic.html"><span class="doc">The ionic Device</span></a>). Fails as unsupported without it</p></td>
+</tr>
+<tr class="row-odd"><td><p>LIF_GETATTR, LIF_SETATTR</p></td>
 <td><p>Read or set the MAC; other attributes succeed without
 effect</p></td>
 </tr>
-<tr class="row-odd"><td><p>50 to 53</p></td>
+<tr class="row-even"><td><p>50 to 53</p></td>
 <td><p>The RDMA bootstrap commands (see <a class="reference internal" href="#rdma-bootstrap">RDMA Bootstrap</a>)</p></td>
 </tr>
-<tr class="row-even"><td><p>70 to 72</p></td>
+<tr class="row-odd"><td><p>70 to 72</p></td>
 <td><p>The P4 engine’s control surface; unknown opcodes when the
 guest hasn’t been given it (see <a class="reference internal" href="p4.html"><span class="doc">P4 Match-Action Engine</span></a>)</p></td>
 </tr>
-<tr class="row-odd"><td><p>INIT, GETATTR, SETATTR, PORT_IDENTIFY, PORT_GETATTR,
+<tr class="row-even"><td><p>INIT, GETATTR, SETATTR, PORT_IDENTIFY, PORT_GETATTR,
 PORT_SETATTR, NOP</p></td>
 <td><p>Succeed with a zeroed completion</p></td>
 </tr>
-<tr class="row-even"><td><p>others</p></td>
+<tr class="row-odd"><td><p>others</p></td>
 <td><p>Fail as unknown opcodes</p></td>
 </tr>
 </tbody>

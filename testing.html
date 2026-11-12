@@ -586,7 +586,7 @@ puts back</p></li>
 <li><p><code class="docutils literal notranslate"><span class="pre">check.py</span></code> – the small test runner the suites report
 through</p></li>
 </ul>
-<p>Six suites are registered with CTest:</p>
+<p>Seven suites are registered with CTest:</p>
 <ul class="simple">
 <li><p><code class="docutils literal notranslate"><span class="pre">ernic-vfu-client</span></code>: version negotiation, device and
 region info, PCI configuration space, BAR access, DMA
@@ -597,6 +597,11 @@ reconnect each returning the device and the configuration
 registers a driver writes to their initial state – and
 the offsets, counts, addresses and vector ranges a client
 must not get away with</p></li>
+<li><p><code class="docutils literal notranslate"><span class="pre">ernic-cmb</span></code>: the Controller Memory Buffer, BAR 4, with
+<code class="docutils literal notranslate"><span class="pre">--cmb</span></code> and without – what <code class="docutils literal notranslate"><span class="pre">DISCOVER_CMB</span></code> and
+<code class="docutils literal notranslate"><span class="pre">Q_IDENTIFY</span></code> report, a QP with its send ring in it, and
+that a device reset, <code class="docutils literal notranslate"><span class="pre">RESET</span></code> and a client’s going each
+clear it</p></li>
 <li><p><code class="docutils literal notranslate"><span class="pre">ernic-ionic-driver</span></code>: bring-up, connected queue pairs,
 memory regions whose pages are deliberately out of order,
 sends with several SGEs or an inline payload, RDMA reads
@@ -779,7 +784,7 @@ cmake<span class="w"> </span>--build<span class="w"> </span>build
 <span class="nv">skip</span><span class="o">+=</span><span class="s1">'|server-lifecycle|ionic-server-smoke|ionic-ci|tcp-mesh-ci'</span>
 <span class="nv">skip</span><span class="o">+=</span><span class="s1">'|nvmeof-ci|s3-ci|ionic-stats-interval-cli|ionic-eth-queues-cli'</span>
 <span class="nv">skip</span><span class="o">+=</span><span class="s1">'|cmake-subproject|ernic-package-deb|ernic-package-deb-config-paths'</span>
-<span class="nv">skip</span><span class="o">+=</span><span class="s1">'|ernic-vfu-client|ernic-ionic-driver|ernic-p4-driver'</span>
+<span class="nv">skip</span><span class="o">+=</span><span class="s1">'|ernic-vfu-client|ernic-cmb|ernic-ionic-driver|ernic-p4-driver'</span>
 <span class="nv">skip</span><span class="o">+=</span><span class="s1">'|ernic-ionic-hw-stats|ernic-mesh-stress|ernic-mesh-flow'</span>
 <span class="nv">skip</span><span class="o">+=</span><span class="s1">'|ernic-mesh-flr'</span>
 <span class="nv">skip</span><span class="o">+=</span><span class="s1">'|ernic-feature-macros'</span>
@@ -805,7 +810,7 @@ the scripts don’t all check how the server exited. With <code class="docutils 
 as above:</p>
 <div class="highlight-bash notranslate"><div class="highlight"><pre><span></span><span class="nv">srv</span><span class="o">=</span><span class="s1">'pci-config-test|ionic-server-smoke'</span>
 <span class="nv">srv</span><span class="o">+=</span><span class="s1">'|ionic-ci|tcp-mesh-ci|nvmeof-ci|s3-ci'</span>
-<span class="nv">srv</span><span class="o">+=</span><span class="s1">'|ernic-vfu-client|ernic-ionic-driver|ernic-p4-driver'</span>
+<span class="nv">srv</span><span class="o">+=</span><span class="s1">'|ernic-vfu-client|ernic-cmb|ernic-ionic-driver|ernic-p4-driver'</span>
 <span class="nv">srv</span><span class="o">+=</span><span class="s1">'|ernic-ionic-hw-stats|ernic-mesh-flow|ernic-mesh-flr'</span>
 <span class="nv">srv</span><span class="o">+=</span><span class="s1">'|ionic-stats-interval-cli|ionic-eth-queues-cli'</span>
 <span class="nv">logs</span><span class="o">=</span><span class="s2">"</span><span class="nv">$PWD</span><span class="s2">/build/valgrind-server"</span>

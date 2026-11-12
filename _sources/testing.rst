@@ -172,7 +172,7 @@ The modules under ``tests/py/ernic/`` are:
 - ``check.py`` -- the small test runner the suites report
   through
 
-Six suites are registered with CTest:
+Seven suites are registered with CTest:
 
 - ``ernic-vfu-client``: version negotiation, device and
   region info, PCI configuration space, BAR access, DMA
@@ -183,6 +183,11 @@ Six suites are registered with CTest:
   registers a driver writes to their initial state -- and
   the offsets, counts, addresses and vector ranges a client
   must not get away with
+- ``ernic-cmb``: the Controller Memory Buffer, BAR 4, with
+  ``--cmb`` and without -- what ``DISCOVER_CMB`` and
+  ``Q_IDENTIFY`` report, a QP with its send ring in it, and
+  that a device reset, ``RESET`` and a client's going each
+  clear it
 - ``ernic-ionic-driver``: bring-up, connected queue pairs,
   memory regions whose pages are deliberately out of order,
   sends with several SGEs or an inline payload, RDMA reads
@@ -394,7 +399,7 @@ valgrind would only check the script for:
    skip+='|server-lifecycle|ionic-server-smoke|ionic-ci|tcp-mesh-ci'
    skip+='|nvmeof-ci|s3-ci|ionic-stats-interval-cli|ionic-eth-queues-cli'
    skip+='|cmake-subproject|ernic-package-deb|ernic-package-deb-config-paths'
-   skip+='|ernic-vfu-client|ernic-ionic-driver|ernic-p4-driver'
+   skip+='|ernic-vfu-client|ernic-cmb|ernic-ionic-driver|ernic-p4-driver'
    skip+='|ernic-ionic-hw-stats|ernic-mesh-stress|ernic-mesh-flow'
    skip+='|ernic-mesh-flr'
    skip+='|ernic-feature-macros'
@@ -423,7 +428,7 @@ as above:
 
    srv='pci-config-test|ionic-server-smoke'
    srv+='|ionic-ci|tcp-mesh-ci|nvmeof-ci|s3-ci'
-   srv+='|ernic-vfu-client|ernic-ionic-driver|ernic-p4-driver'
+   srv+='|ernic-vfu-client|ernic-cmb|ernic-ionic-driver|ernic-p4-driver'
    srv+='|ernic-ionic-hw-stats|ernic-mesh-flow|ernic-mesh-flr'
    srv+='|ionic-stats-interval-cli|ionic-eth-queues-cli'
    logs="$PWD/build/valgrind-server"
