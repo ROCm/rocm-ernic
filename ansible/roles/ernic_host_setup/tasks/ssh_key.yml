@@ -3,20 +3,49 @@
 # SPDX-License-Identifier: MIT
 #
 # The guest image has no SSH key or password: ernicctl vm-launch
-# authorizes a key at each boot, the .pub beside ERNIC_VM_SSH_IDENTITY,
-# or else beside the first of id_rsa, id_ed25519 and id_ecdsa in the
-# ~/.ssh of the user who runs it with sudo.  Without one, nobody can log
-# in to the guests it boots, so fail now, before anything is built.
+# authorizes a key at each boot, the .pub beside ERNIC_VM_SSH_IDENTITY
+# (ernic_vm_ssh_identity, which the env file then sets), or else beside
+# the first of id_rsa, id_ed25519 and id_ecdsa in the ~/.ssh, from the
+# passwd database, of SUDO_USER, the user who ran it with sudo.  Run as
+# root without sudo, it has no user to look in.  Without a key, nobody
+# can log in to the guests it boots, so fail now, before anything is
+# built.
 
 ---
+# ernic_vm_launch_user, or whoever runs this play, or if that's root,
+# whoever ran it with sudo
+- name: Work out who will run ernicctl vm-launch with sudo
+  ansible.builtin.set_fact:
+    ernic_vm_key_user: >-
+      {{ ernic_vm_launch_user | default('', true)
+         or (ansible_user_id if ansible_user_id != 'root'
+             else ansible_env.SUDO_USER | default('', true)) }}
+
+- name: Look up their home directory
+  ansible.builtin.getent:
+    database: passwd
+    key: "{{ ernic_vm_key_user }}"
+  when:
+    - not (ernic_vm_ssh_identity | default('') | trim)
+    - ernic_vm_key_user | length > 0
+
+- name: Note their home directory
+  ansible.builtin.set_fact:
+    ernic_vm_key_home: "{{ ansible_facts.getent_passwd[ernic_vm_key_user][4] }}"
+  when:
+    - not (ernic_vm_ssh_identity | default('') | trim)
+    - ernic_vm_key_user | length > 0
+
 - name: List the SSH keys ernicctl vm-launch would look for
   ansible.builtin.set_fact:
     ernic_vm_key_candidates: >-
       {{ [ernic_vm_ssh_identity]
          if (ernic_vm_ssh_identity | default('') | trim)
-         else [ansible_env.HOME ~ '/.ssh/id_rsa',
-               ansible_env.HOME ~ '/.ssh/id_ed25519',
-               ansible_env.HOME ~ '/.ssh/id_ecdsa'] }}
+         else (['id_rsa', 'id_ed25519', 'id_ecdsa']
+               | map('regex_replace', '^', ernic_vm_key_home ~ '/.ssh/')
+               | list)
+         if ernic_vm_key_user | length > 0
+         else [] }}
 
 - name: Look for the private keys
   ansible.builtin.stat:
@@ -51,7 +80,14 @@
       {% elif ernic_vm_ssh_identity | default('') | trim %}{{
       ernic_vm_ssh_identity }} doesn't exist; set ernic_vm_ssh_identity to a
       private key with its .pub beside it.
-      {% else %}Make one with: ssh-keygen -t ed25519 -f
-      {{ ansible_env.HOME }}/.ssh/id_ed25519
+      {% elif ernic_vm_key_user | length == 0 %}This play runs as root, not
+      under sudo, and vm-launch run that way looks for no key of its own:
+      set ernic_vm_ssh_identity to a private key with its .pub beside it, or
+      ernic_vm_launch_user to the user who will run vm-launch with sudo.
+      {% else %}{{ ernic_vm_key_user }}, who will run vm-launch with sudo,
+      has none of id_rsa, id_ed25519 and id_ecdsa in
+      {{ ernic_vm_key_home }}/.ssh.
+      Make one with: ssh-keygen -t ed25519, as {{ ernic_vm_key_user }}, or
+      set ernic_vm_launch_user or ernic_vm_ssh_identity.
       {% endif %}
     quiet: true

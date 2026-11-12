@@ -65,6 +65,11 @@ ernic_vm_mem: 32768
 ernic_vm_ssh_user: ubuntu
 ernic_vm_ssh_host: local-vm
 ernic_vm_ssh_base_port: 2250
+# Who will run ernicctl vm-launch with sudo, whose ~/.ssh it looks in
+# for a key to authorize in the guests when ernic_vm_ssh_identity is
+# empty.  Empty means whoever runs the play, or if that's root, whoever
+# ran it with sudo; the role fails early if there's no key.
+ernic_vm_launch_user: ""
 
 # ── GPU passthrough (vfio-pci) ──────────────────
 # Bind the listed GPUs to vfio-pci so QEMU can pass them into

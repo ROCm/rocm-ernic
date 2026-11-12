@@ -11,9 +11,11 @@ to GHCR, pulled by `scripts/fetch-guest-image.sh`. It boots
 mainline kernel 7.2.6 on Ubuntu 26.04 and has the RDMA
 userspace, the DKMS toolchain and `perftest`. It has no password
 and no SSH key: `ernicctl vm-launch` authorizes yours at each
-boot, the first of `id_rsa`, `id_ed25519` and `id_ecdsa` in your
-`~/.ssh` (or `ernic_vm_ssh_identity`), and the plays connect with
-it. `playbooks/host-setup.yml` fails early if there's none.
+boot, the first of `id_rsa`, `id_ed25519` and `id_ecdsa` in the
+`~/.ssh` of the user running it with `sudo` (or
+`ernic_vm_ssh_identity`), and the plays connect with it.
+`playbooks/host-setup.yml` fails early if that user, by default
+whoever runs it (`ernic_vm_launch_user`), has none.
 
 The reusable parts — everything needed to turn that image into a
 rocm-ernic node — are packaged as the [`rocm.ernic`](README.md)
