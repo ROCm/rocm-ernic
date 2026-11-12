@@ -371,8 +371,10 @@ void ionic_datapath_set_qp_cmb(struct ionic_datapath *dp, uint32_t qp_id,
  * its bytes are in the CMB buffer. A write that ends at the end of a slot of
  * a CMB ring posts that slot's WQE, whatever its size: the express doorbell.
  * The WQE is taken to be complete then, so the guest must write it front to
- * back.
+ * back. Like a doorbell, one that comes while Bus Master Enable is clear
+ * only notes its index.
  *
+ * @param dp         the data path
  * @param cmb_offset byte offset within the 8 MB CMB buffer of the write's start
  * @param len        the write's length in bytes
  */
@@ -382,8 +384,8 @@ void ionic_datapath_expdb_write(struct ionic_datapath *dp, uint64_t cmb_offset,
 /*
  * Do the work held while Bus Master Enable was clear, now that it is set:
  * each send queue up to its last doorbell, and the event of each armed CQ
- * that has completions.  A doorbell that comes while BME is clear only
- * notes its index.  Main loop thread only.
+ * that has completions.  A doorbell, or an express doorbell, that comes
+ * while BME is clear only notes its index.  Main loop thread only.
  */
 void ionic_datapath_resume(struct ionic_datapath *dp);
 

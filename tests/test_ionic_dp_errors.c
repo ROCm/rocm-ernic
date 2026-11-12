@@ -3855,6 +3855,7 @@ enum ex_scenario {
     EX_PIECES, /* the slot in 8-byte writes, in order */
     EX_WHOLE,  /* the slot in one write */
     EX_WRAPS,  /* one write whose end wraps 2^64 to the slot's end */
+    EX_HELD,   /* the slot in one write, with Bus Master Enable clear */
 };
 
 /* Whether QP_A's WRITE has landed */
@@ -3876,6 +3877,20 @@ static const char *ex_run(struct ionic_datapath *dp, enum ex_scenario s)
     if (s == EX_WRAPS) {
         ionic_datapath_expdb_write(dp, UINT64_MAX - 63U, (size_t)EX_OFF + 128U);
         return write_landed() ? "the WRITE ran" : NULL;
+    }
+    if (s == EX_HELD) {
+        fake_pci_config_set_bus_master(false);
+        ionic_datapath_expdb_write(dp, EX_OFF, (size_t)slot_len);
+        const bool early = write_landed() || dp->cq[CQ_ID].prod != 0;
+        fake_pci_config_set_bus_master(true);
+        if (early) {
+            return "the WRITE ran with Bus Master Enable clear";
+        }
+        ionic_datapath_resume(dp);
+        if (!write_landed()) {
+            return "the held WRITE didn't run once Bus Master Enable was set";
+        }
+        return cq_has_error(dp) ? "the held WRITE completed in error" : NULL;
     }
     for (uint64_t off = 0; off < slot_len; off += piece) {
         if (write_landed()) {
@@ -3909,6 +3924,10 @@ static void check_cmb_expdb(void)
          "a write into the CMB whose offset plus its length wraps 2^64 to the "
          "end of an SQ's slot",
          "nothing runs", EX_WRAPS},
+        {"positive",
+         "a WRITE in an SQ in the CMB, its slot written with Bus Master "
+         "Enable clear",
+         "it waits, and runs once Bus Master Enable is set", EX_HELD},
     };
 
     for (size_t row = 0; row < sizeof(rows) / sizeof(rows[0]); row++) {

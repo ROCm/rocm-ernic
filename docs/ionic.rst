@@ -94,6 +94,8 @@ upstream driver expects:
        write that ends a WQE's slot posts it, whatever its size,
        since QEMU delivers the guest's stores at most 8 bytes at
        a time, so the guest must write each WQE front to back.
+       While Bus Master Enable is clear, or the function is in
+       D3hot, the WQE waits, as one posted by a doorbell does.
 
 The MSI-X table has room for 128 vectors; the device
 advertises the profile's ``queues.intr_vectors`` of them (32

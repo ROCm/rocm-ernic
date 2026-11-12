@@ -4572,10 +4572,15 @@ void ionic_datapath_expdb_write(struct ionic_datapath *dp, uint64_t cmb_offset,
             continue;
         }
 
+        /* Running the queue reads and writes guest memory, so without Bus
+         * Master Enable it waits for ionic_datapath_resume(), as after an
+         * SQ doorbell */
         if (q->sq_cmb && dp_expdb_slot(end, q->sq_cmb_buf_offset, q->sq_depth,
                                        q->sq_stride_log2, &slot)) {
             q->sq_prod = (slot + 1U) % q->sq_depth;
-            sq_service(dp, q, qp_id);
+            if (ernic_dma_bus_master(dp->vfu_ctx)) {
+                sq_service(dp, q, qp_id);
+            }
         }
 
         /* rq_cons runs free, so rq_prod must too: the slot index alone

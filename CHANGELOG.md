@@ -248,7 +248,10 @@
   and whenever a client disconnects, so what one guest, boot, or driver load
   wrote there can't be read by the next. A QP's rings in the CMB are zeroed
   when it's destroyed, since the driver maps them into the process that
-  created the QP and gives their pages to the next QP as they are.
+  created the QP and gives their pages to the next QP as they are. A WQE
+  posted by the express doorbell while Bus Master Enable is clear, or the
+  function is in D3hot, waits until the guest sets the bit or returns the
+  function to D0, as one posted by a doorbell does.
 
 * `--backend nvmeof:kv=1[,keys=...,maxval=...]` serves the namespace with the
   NVM Express Key Value command set instead of the block one: Store (01h),
@@ -595,7 +598,8 @@
   * `tests/py/` drives real server processes over the vfio-user socket from
     Python, the way a VMM does, with guest memory in a shared `memfd` and
     nothing outside the standard library: `ernic-vfu-client` (the protocol,
-    and what a client mustn't get away with), `ernic-ionic-driver` (QPs,
+    and what a client mustn't get away with), `ernic-cmb` (the CMB, with
+    `--cmb` and without), `ernic-ionic-driver` (QPs,
     MRs, work requests and completions), `ernic-ionic-hw-stats` (the four
     statistics commands and the counts they report), `ernic-p4-driver`, and
     `ernic-mesh-stress` (a three-node mesh under traffic, hostile peers, the

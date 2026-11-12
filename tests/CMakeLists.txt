@@ -1294,6 +1294,20 @@ set_tests_properties(ernic-vfu-client PROPERTIES
     RUN_SERIAL TRUE
 )
 
+# The Controller Memory Buffer, BAR4, with --cmb and without: what
+# DISCOVER_CMB and Q_IDENTIFY report, a QP placed in it, and its clearing
+# on a reset and between clients.
+add_test(
+    NAME ernic-cmb
+    COMMAND ${ERNIC_PY_RUN}
+        ${CMAKE_CURRENT_SOURCE_DIR}/py/test_cmb.py
+        --server $<TARGET_FILE:rocm-ernic>
+)
+set_tests_properties(ernic-cmb PROPERTIES
+    TIMEOUT 180
+    RUN_SERIAL TRUE
+)
+
 # The ionic driver over that protocol: bring-up, queue pairs, memory
 # regions, work requests and completions, through a server process
 # rather than the in-process harness in ionic_harness.c.
