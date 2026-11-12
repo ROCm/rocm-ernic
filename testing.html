@@ -1198,7 +1198,12 @@ that move between minor releases, so the guest kernel’s
 major.minor must equal the ref’s, and no hosted runner
 carries such a kernel.</p>
 <p><code class="docutils literal notranslate"><span class="pre">.github/workflows/system-tests.yml</span></code> boots guests under
-KVM on hosted runners and provisions them by running the
+KVM on hosted runners with <code class="docutils literal notranslate"><span class="pre">ci/boot-guest.sh</span></code>, as
+<code class="docutils literal notranslate"><span class="pre">ernicctl</span> <span class="pre">vm-launch</span></code> does, so the vfio-user device sits
+behind a PCIe root port and SSH is forwarded from
+127.0.0.1 only. The helper authorizes a key made for the
+job, not the one published with the guest image. The
+workflow provisions the guests by running the
 collection itself — <code class="docutils literal notranslate"><span class="pre">ansible-playbook</span> <span class="pre">ci-site.yml</span> <span class="pre">--tags</span>
 <span class="pre">guest-setup</span></code> against a generated <code class="docutils literal notranslate"><span class="pre">instances.json</span></code> —
 rather than by copying sources in over <code class="docutils literal notranslate"><span class="pre">ssh</span></code>. The role is
