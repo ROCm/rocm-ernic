@@ -40,10 +40,14 @@ pass() {
 
 command -v git >/dev/null || fail "git is needed and not installed"
 
-GUEST_TAG=20261024.g9d2be1e-vm.resolute-ionic-qm.c079195-qcow2
+# Each tag is built from parts, so no line of this file holds one: the
+# check searches every tracked file, this one included
+GUEST_TAG=20261024.g9d2be1e
+GUEST_TAG+=-vm.resolute-ionic-qm.c079195-qcow2
 BUILDER=ghcr.io/rocm/rocm-ernic/ci-builder
-BUILDER_TAG=qemu11.1.1-vfu.5b9c722-0123456789ab
-OTHER_TAG=qemu11.1.1-vfu.5b9c722-ba9876543210
+BUILDER_PREFIX=qemu11.1.1-vfu.5b9c722-
+BUILDER_TAG=${BUILDER_PREFIX}0123456789ab
+OTHER_TAG=${BUILDER_PREFIX}ba9876543210
 
 REPO="$WORK/repo"
 mkdir -p "$REPO/ci" "$REPO/tools" "$REPO/.github/workflows" "$REPO/docs"
