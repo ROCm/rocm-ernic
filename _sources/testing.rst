@@ -868,7 +868,15 @@ that move between minor releases, so the guest kernel's
 major.minor must equal the ref's, and no hosted runner
 carries such a kernel.
 
-``.github/workflows/system-tests.yml`` boots guests under
+``.github/workflows/system-tests.yml`` runs its jobs in the
+CI builder image, ``ghcr.io/rocm/rocm-ernic/ci-builder``,
+defined in ``ci/images/builder/``. It first calls
+``ci-images.yml``, which publishes the image if this tree's
+definition of it isn't published yet, so a pull request that
+changes the builder runs every lane in the new image; see
+``ci/images/README.md``.
+
+The workflow boots guests under
 KVM on hosted runners with ``ci/boot-guest.sh``, as
 ``ernicctl vm-launch`` does, so the vfio-user device sits
 behind a PCIe root port and SSH is forwarded from

@@ -1197,7 +1197,14 @@ themselves are not built there: they need headers matching
 that move between minor releases, so the guest kernel’s
 major.minor must equal the ref’s, and no hosted runner
 carries such a kernel.</p>
-<p><code class="docutils literal notranslate"><span class="pre">.github/workflows/system-tests.yml</span></code> boots guests under
+<p><code class="docutils literal notranslate"><span class="pre">.github/workflows/system-tests.yml</span></code> runs its jobs in the
+CI builder image, <code class="docutils literal notranslate"><span class="pre">ghcr.io/rocm/rocm-ernic/ci-builder</span></code>,
+defined in <code class="docutils literal notranslate"><span class="pre">ci/images/builder/</span></code>. It first calls
+<code class="docutils literal notranslate"><span class="pre">ci-images.yml</span></code>, which publishes the image if this tree’s
+definition of it isn’t published yet, so a pull request that
+changes the builder runs every lane in the new image; see
+<code class="docutils literal notranslate"><span class="pre">ci/images/README.md</span></code>.</p>
+<p>The workflow boots guests under
 KVM on hosted runners with <code class="docutils literal notranslate"><span class="pre">ci/boot-guest.sh</span></code>, as
 <code class="docutils literal notranslate"><span class="pre">ernicctl</span> <span class="pre">vm-launch</span></code> does, so the vfio-user device sits
 behind a PCIe root port and SSH is forwarded from
