@@ -17,21 +17,27 @@
 # (untracked ones not ignored), read from the working tree, so the tag is
 # the same before and after a commit.
 #
-# Two places pin each image defined here, and --check fails unless both
-# name what the tree defines:
-#   - ci/guest-image.env, the lockfile, as PREFIX_IMAGE (the image in the
-#     default registry) and PREFIX_TAG;
-#   - every workflow line that is only `image: IMAGE:TAG`, IMAGE being
-#     the image in the default registry: the lanes' container images,
-#     written out because the security scan can't tell an image named by
-#     an expression is pinned.
+# The lockfile, ci/guest-image.env, pins each image defined here, and
+# --check fails unless it names what the tree defines:
+#   - the builder as BUILDER_IMAGE (the image in the default registry) and
+#     BUILDER_TAG, and so does every workflow line that is only
+#     `image: IMAGE:TAG`, IMAGE being the builder in the default registry:
+#     the lanes' container images, written out because the security scan
+#     can't tell an image named by an expression is pinned;
+#   - the guest as GUEST_ARTIFACT_REPO and GUEST_ARTIFACT_TAG, with
+#     GUEST_ARTIFACT_INFO_TYPE, the type guest/push.sh attaches its
+#     vm-info.json as, and GUEST_ARTIFACT_DISK and GUEST_ARTIFACT_USER,
+#     its disk's name and login account, from its pins.
+# --check also fails unless the guest boots the kernel the lanes build the
+# ionic sources for: its KERNEL_REF must be IONIC_KERNEL_REF, in
+# cmake/ErnicKernelModule.cmake.
 #
 # Usage: image-tag.sh [--ref] NAME
 #        image-tag.sh (--check | --write) [NAME]
-#   NAME     an image's directory under ci/images/ (builder); --check and
-#            --write without one cover every directory holding a
-#            pins.env, so one this script doesn't know fails rather than
-#            going unchecked
+#   NAME     an image's directory under ci/images/ (builder, guest);
+#            --check and --write without one cover every directory
+#            holding a pins.env, so one this script doesn't know fails
+#            rather than going unchecked
 #   --ref    print the full reference, REGISTRY/IMAGE:TAG, not the tag
 #   --check  fail unless every pin names the image as the tree defines it
 #   --write  make every pin name the image as the tree defines it
@@ -93,13 +99,10 @@ if [[ -z $NAME ]]; then
     exit "$status"
 fi
 
-# The published image's name for each definition, and its keys' prefix in
-# the lockfile
+# The published image's name for each definition
 case $NAME in
-    builder)
-        IMAGE=ci-builder
-        LOCK_KEY=BUILDER
-        ;;
+    builder) IMAGE=ci-builder ;;
+    guest) IMAGE=guest-ionic ;;
     *) die "no such image: '$NAME'" ;;
 esac
 
@@ -141,6 +144,16 @@ case $NAME in
         [[ $vfu =~ ^[0-9a-f]{40}$ ]] ||
             die "LIBVFIO_USER_COMMIT must be a full SHA: '$vfu'"
         PREFIX="qemu$qemu-vfu.${vfu:0:7}"
+        ;;
+    guest)
+        release=$(pin RELEASE)
+        kernel=$(pin KERNEL_REF)
+        [[ $release =~ ^[a-z]+$ ]] ||
+            die "RELEASE must be an Ubuntu codename: '$release'"
+        [[ $kernel =~ ^v([0-9]+(\.[0-9]+)+)$ ]] ||
+            die "KERNEL_REF must be a mainline version tag, vX.Y.Z:" \
+                "'$kernel'"
+        PREFIX="$release-k${BASH_REMATCH[1]}"
         ;;
 esac
 
@@ -185,34 +198,67 @@ case $MODE in
         ;;
     check | write)
         [[ -f $LOCKFILE ]] || die "$LOCKFILE is missing"
-        IMAGE_KEY=${LOCK_KEY}_IMAGE
-        TAG_KEY=${LOCK_KEY}_TAG
         want_image="$DEFAULT_REGISTRY/$IMAGE"
+        # What the lockfile must say, KEY=VALUE, and whether the
+        # workflows' image: lines name the image too
+        case $NAME in
+            builder)
+                WANT=("BUILDER_IMAGE=$want_image" "BUILDER_TAG=$TAG")
+                WORKFLOW_PINS=true
+                ;;
+            guest)
+                # The type push.sh attaches vm-info.json as, which the
+                # lanes look for
+                info_type=$(sed -n 's/^INFO_TYPE=//p' \
+                    "$IMAGES_DIR/guest/push.sh")
+                [[ $info_type =~ ^application/[a-z0-9.+-]+$ ]] ||
+                    die "guest/push.sh sets no INFO_TYPE"
+                WANT=(
+                    "GUEST_ARTIFACT_REPO=$want_image"
+                    "GUEST_ARTIFACT_TAG=$TAG"
+                    "GUEST_ARTIFACT_INFO_TYPE=$info_type"
+                    "GUEST_ARTIFACT_DISK=$(pin VM_NAME).qcow2"
+                    "GUEST_ARTIFACT_USER=$(pin USERNAME)"
+                )
+                WORKFLOW_PINS=false
+                ;;
+        esac
         # Each pin naming anything else, as FILE or FILE:LINE
         stale=()
 
-        # The lockfile's lines, and what it pins now. Each key must be
-        # there once; --write changes it in place and adds nothing.
+        # The lockfile's lines. Each key must be there once; --write
+        # changes it in place and adds nothing.
         mapfile -t LINES <"$LOCKFILE"
-        pinned_image="" pinned_tag="" n_image=0 n_tag=0
-        for i in "${!LINES[@]}"; do
-            case ${LINES[i]} in
-                "$IMAGE_KEY="*)
-                    pinned_image=${LINES[i]#*=}
-                    n_image=$((n_image + 1))
-                    LINES[i]="$IMAGE_KEY=$want_image"
-                    ;;
-                "$TAG_KEY="*)
-                    pinned_tag=${LINES[i]#*=}
-                    n_tag=$((n_tag + 1))
-                    LINES[i]="$TAG_KEY=$TAG"
-                    ;;
-            esac
+        declare -A SEEN=()
+        lock_stale=false
+        for want in "${WANT[@]}"; do
+            key=${want%%=*}
+            SEEN[$key]=0
+            for i in "${!LINES[@]}"; do
+                if [[ ${LINES[i]} == "$key="* ]]; then
+                    SEEN[$key]=$((SEEN[$key] + 1))
+                    if [[ ${LINES[i]} != "$want" ]]; then
+                        lock_stale=true
+                        LINES[i]=$want
+                    fi
+                fi
+            done
         done
-        [[ $n_image -eq 1 && $n_tag -eq 1 ]] ||
-            die "$LOCKFILE must set $IMAGE_KEY and $TAG_KEY once each"
-        if [[ $pinned_image != "$want_image" ||
-            $pinned_tag != "$TAG" ]]; then
+        keys=()
+        once=true
+        for want in "${WANT[@]}"; do
+            keys+=("${want%%=*}")
+            [[ ${SEEN[${want%%=*}]} -eq 1 ]] || once=false
+        done
+        if ! $once; then
+            last=${keys[-1]}
+            unset 'keys[-1]'
+            list=$(printf '%s, ' "${keys[@]}")
+            list=${list%, }
+            [[ ${#keys[@]} -lt 2 ]] || list+=","
+            die "$LOCKFILE must set $list and $last once each"
+        fi
+        if $lock_stale; then
             stale+=("${LOCKFILE#"$REPO_ROOT/"}")
             if [[ $MODE == write ]]; then
                 # Rewritten in place, so it keeps its mode
@@ -225,7 +271,11 @@ case $MODE in
         # nothing but the tag.
         pin_re='^([[:space:]]*image:[[:space:]]+)([^[:space:]]+)$'
         shopt -s nullglob
-        for wf in "$WORKFLOWS"/*.yml "$WORKFLOWS"/*.yaml; do
+        workflows=()
+        if $WORKFLOW_PINS; then
+            workflows=("$WORKFLOWS"/*.yml "$WORKFLOWS"/*.yaml)
+        fi
+        for wf in "${workflows[@]}"; do
             mapfile -t LINES <"$wf"
             changed=false
             for i in "${!LINES[@]}"; do
@@ -249,6 +299,21 @@ case $MODE in
                 die "the tree defines $want_image:$TAG, but these pin" \
                     "another: ${stale[*]}. Run ci/images/image-tag.sh" \
                     "--write $NAME and commit the result."
+            fi
+            # The lanes build the ionic sources at IONIC_KERNEL_REF into
+            # the guest, against its kernel's headers
+            if [[ $NAME == guest ]]; then
+                cmake=$REPO_ROOT/cmake/ErnicKernelModule.cmake
+                [[ -f $cmake ]] || die "$cmake is missing"
+                ionic_ref=$(sed -n \
+                    's/^set(IONIC_KERNEL_REF "\([^"]*\)".*/\1/p' "$cmake")
+                [[ -n $ionic_ref ]] ||
+                    die "$cmake doesn't set IONIC_KERNEL_REF"
+                [[ $ionic_ref == "$(pin KERNEL_REF)" ]] ||
+                    die "the guest boots $(pin KERNEL_REF), its" \
+                        "KERNEL_REF in $PINS, but the lanes build the" \
+                        "ionic sources at $ionic_ref, IONIC_KERNEL_REF in" \
+                        "$cmake. Change one to match the other."
             fi
             echo "$PROG: every pin names $want_image:$TAG" >&2
         else

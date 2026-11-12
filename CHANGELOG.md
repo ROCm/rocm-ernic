@@ -70,7 +70,14 @@
   run. When it can't fetch the
   kernel ref on its own, it now says so and points to git's error, rather
   than claiming the ref can't be fetched directly, before it falls back
-  to fetching every branch and tag.
+  to fetching every branch and tag. And it moves on in about 3 minutes,
+  not 13, from a server that doesn't answer, as git.kernel.org sometimes
+  didn't for a CI lane's guest: each try first waits at most 30 seconds
+  for the server to answer at all, and a server that never answered
+  isn't asked again for every branch and tag. It then tries Google's
+  mirror of the repository, kernel.googlesource.com, which mirrors every
+  repository on git.kernel.org at the same path; `--mirror URL` adds
+  others. git.kernel.org doesn't always answer GitHub's runners.
 
 * The device now honours Bus Master Enable in its PCI Command register,
   as the PCI Express specification requires. Before, it went on writing
@@ -160,6 +167,18 @@
   builder` fails if any isn't the tree's, and `image-tag.sh --write
   builder` updates them all. The `ernic-ci-images` test checks both
   scripts.
+* CI defines its guest image too, in `ci/images/guest/`, and `CI images`
+  publishes it to `ghcr.io/rocm/rocm-ernic/guest-ionic` as an OCI artifact,
+  the compressed disk with its `vm-info.json` attached, when a pull request
+  changes it, then runs the lanes on it. `build.sh` builds it in the
+  builder image, under KVM, from Ubuntu's cloud image and the mainline
+  kernel, both checked against their published checksums, then seals it,
+  removing every key and locking the password. `check.sh` boots the result
+  with `ci/boot-guest.sh` and fails unless only that boot's key logs in, and
+  `push.sh` tags it only once its `vm-info.json` is attached.
+  `ci/guest-image.env` pins it, and `image-tag.sh --check` also fails if
+  its kernel isn't `IONIC_KERNEL_REF`. `ernic-ci-images` now tests the
+  guest's tag, publishing and `push.sh`, and needs `jq`.
 * The `Image pins` workflow (`guest-image-pin.yml`, formerly `Guest image
   pin`), which runs on every pull request, now also fails if
   `ci/guest-image.env` or a lane's container `image:` line doesn't name
@@ -697,6 +716,45 @@
 
 ### Changed
 
+* The playbooks' guest setup fetches and patches the ionic sources on the
+  controller, the VM host or a CI runner, and copies the tree into each
+  guest, rather than having every guest fetch from git.kernel.org through
+  QEMU's user-mode networking. Guests that couldn't get out that way
+  failed CI lanes. The `ernic_guest_setup` role does this with the new
+  `ernic_guest_ionic_fetch_on_controller`, which the playbooks set; the
+  controller then needs git and tar.
+* **Breaking:** **The guest image has no password and no SSH key.** The
+  `ionic` guest CI boots, and `scripts/fetch-guest-image.sh` fetches, is
+  now built here, from `ci/images/guest/`, and published to
+  `ghcr.io/rocm/rocm-ernic/guest-ionic`, replacing Stephen Bates' image
+  on Docker Hub, which trusted a key whose private half was published
+  with it and shared one set of host keys among every copy. Log in with
+  your own key: `ernicctl vm-launch` authorizes the public half of
+  `ERNIC_VM_SSH_IDENTITY`, or of the first of `id_rsa`, `id_ed25519`
+  and `id_ecdsa` in the `~/.ssh` of the user running it with `sudo`, at
+  every boot, and each boot makes the guest's host keys. If you have no
+  key, make one (`ssh-keygen -t ed25519`); host setup now fails until
+  you do. Anything else booting the image must authorize a key through
+  a NoCloud seed, as `ci/boot-guest.sh` does. The Ansible defaults no
+  longer point at the old image's `id_rsa`, and `fetch-guest-image.sh`
+  no longer prints `key=` and `pubkey=`. Fetch the new image with
+  `scripts/fetch-guest-image.sh --dest DIR`; `--tag` now defaults to
+  the pinned one. The guest is otherwise the one CI booted before: Ubuntu
+  26.04 on mainline kernel 7.2.6, with rdma-core 61.0, DKMS and
+  `perftest`. It also loads `ionic_rdma` at boot, raises the memlock limit
+  for RDMA, and has a newer PCI ID database; its time zone is UTC. It no
+  longer has the tools only qemu-minimal's default list brought, such as
+  emacs, mutt, gh, gnuplot, expect, sysstat and moreutils; it keeps fio,
+  nvme-cli, the guest agent and pahole.
+
+  A VM you launched before keeps booting the old image, published key and
+  all: `vm-launch` reuses an instance's existing overlay,
+  `ERNIC_VM_IMAGE_DIR/ERNIC_VM_NAME-N.qcow2`, and makes one on
+  `ERNIC_VM_BACKING` only when it's missing. To move one to the new image,
+  fetch the image, then rerun host setup, or point `ERNIC_VM_BACKING` at its
+  disk; copy anything you want to keep out of the guest; stop it with
+  `sudo ernicctl vm-stop N`; and move its overlay aside. The next
+  `sudo ernicctl vm-launch N` makes a new overlay on the new image.
 * **Breaking:** **`ernicctl`'s default `ERNIC_VM_IMAGE_DIR` is now
   `/opt/qemu-images`**, the directory the Ansible roles already use, and
   `ERNIC_QEMU_MINIMAL` is gone. The default was

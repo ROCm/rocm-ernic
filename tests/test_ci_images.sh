@@ -1,14 +1,16 @@
 #!/usr/bin/env bash
 #
-# ci/images/image-tag.sh and ci/images/ensure-image.sh, on a copy of
-# ci/images/ in a scratch git repository: that the tag names exactly the
-# files that define an image, wherever the directory is, and that
-# ensure-image.sh builds and pushes only an image the registry says it
-# hasn't got, and never one that fails its checks. A stand-in for docker
-# records what it's asked to do; nothing is built.
+# ci/images/image-tag.sh, ci/images/ensure-image.sh and
+# ci/images/guest/push.sh, on a copy of ci/images/ in a scratch git
+# repository: that the tag names exactly the files that define an image,
+# wherever the directory is; that ensure-image.sh builds and pushes only
+# an image the registry says it hasn't got, and never one that fails its
+# checks; and that push.sh tags the guest only once its metadata is
+# attached. Stand-ins for docker, oras, zstd and the guest's build, check
+# and push scripts record what they're asked to do; nothing is built.
 #
 # Everything runs on the copy, so IMAGES_DIR needn't be in a git checkout,
-# as the nightly build's isn't. git itself is needed.
+# as the nightly build's isn't. git and jq are needed.
 #
 # Copyright (C) Advanced Micro Devices, Inc.
 # SPDX-License-Identifier: GPL-2.0-or-later
@@ -38,17 +40,30 @@ pass() {
     echo "PASS: $*"
 }
 
-command -v git >/dev/null || fail "git is needed and not installed"
+for tool in git jq; do
+    command -v "$tool" >/dev/null || fail "$tool is needed and not installed"
+done
 
-# A git repository holding a copy of ci/images/, and a lockfile and a
-# workflow pinning a stale builder, all committed
+# The lockfile's lines for a stale guest
+STALE_GUEST="GUEST_ARTIFACT_REPO=ghcr.io/rocm/rocm-ernic/guest-ionic
+GUEST_ARTIFACT_TAG=stale
+GUEST_ARTIFACT_INFO_TYPE=application/x-stale
+GUEST_ARTIFACT_DISK=stale.qcow2
+GUEST_ARTIFACT_USER=stale"
+
+# A git repository holding a copy of ci/images/, the IONIC_KERNEL_REF the
+# guest's kernel must be, and a lockfile and a workflow pinning a stale
+# builder and guest, all committed
 #   $1  where
 make_repo() {
-    mkdir -p "$1/ci" "$1/.github/workflows"
+    mkdir -p "$1/ci" "$1/.github/workflows" "$1/cmake"
     cp -R "$SRC" "$1/ci/images"
-    cat >"$1/ci/guest-image.env" <<'EOF'
+    printf 'set(IONIC_KERNEL_REF "%s"\n    CACHE STRING "")\n' \
+        "$(sed -n 's/^KERNEL_REF=//p' "$SRC/guest/pins.env")" \
+        >"$1/cmake/ErnicKernelModule.cmake"
+    cat >"$1/ci/guest-image.env" <<EOF
 # The lockfile
-GUEST_ARTIFACT_TAG=guest-tag
+$STALE_GUEST
 
 BUILDER_IMAGE=ghcr.io/rocm/rocm-ernic/ci-builder
 BUILDER_TAG=stale
@@ -179,7 +194,7 @@ grep -qF -- "--write builder" "$WORK/err" ||
 CI_IMAGES_REGISTRY=ghcr.io/example/proj "$TAG_SH" --write builder 2>/dev/null ||
     fail "--write failed"
 [[ $(cat "$LOCK") == "# The lockfile
-GUEST_ARTIFACT_TAG=guest-tag
+$STALE_GUEST
 
 $WANT_LOCK" ]] || fail "--write left the lockfile as: $(cat "$LOCK")"
 "$TAG_SH" --check builder 2>/dev/null ||
@@ -293,6 +308,142 @@ if "$TAG_SH" --ref >/dev/null 2>&1; then
     fail "--ref with no image printed a reference"
 fi
 pass "--check and --write with no image cover every image directory"
+
+# ── image-tag.sh, the guest ─────────────────────
+
+GTAG=$("$TAG_SH" guest)
+KREF=$(sed -n 's/^KERNEL_REF=//p' "$IMAGES/guest/pins.env")
+[[ $GTAG =~ ^[a-z]+-k${KREF#v}-[0-9a-f]{12}$ ]] ||
+    fail "the guest's tag is '$GTAG'"
+[[ $("$TAG_SH" --ref guest) == "ghcr.io/rocm/rocm-ernic/guest-ionic:$GTAG" ]] ||
+    fail "--ref guest doesn't give REGISTRY/guest-ionic:TAG"
+pass "the guest's tag names its release and kernel: $GTAG"
+
+# Check that a change to the tree changes one image's tag and not the
+# other's, then undo it.
+#   $1  what the change is, for the message
+#   $2  the image whose tag it changes, or "none"
+#   $3  a command making it, run in $IMAGES
+changes_only() {
+    local builder guest
+    builder=$("$TAG_SH" builder)
+    guest=$("$TAG_SH" guest)
+    (cd "$IMAGES" && eval "$3")
+    case $2 in
+        builder)
+            [[ $("$TAG_SH" builder) != "$builder" ]] ||
+                fail "$1 didn't change the builder's tag"
+            [[ $("$TAG_SH" guest) == "$guest" ]] ||
+                fail "$1 changed the guest's tag"
+            ;;
+        guest)
+            [[ $("$TAG_SH" guest) != "$guest" ]] ||
+                fail "$1 didn't change the guest's tag"
+            [[ $("$TAG_SH" builder) == "$builder" ]] ||
+                fail "$1 changed the builder's tag"
+            ;;
+        none)
+            [[ $("$TAG_SH" guest) == "$guest" &&
+                $("$TAG_SH" builder) == "$builder" ]] ||
+                fail "$1 changed a tag"
+            ;;
+    esac
+    git -C "$REPO" checkout -q -- .
+    git -C "$REPO" clean -q -fd
+}
+
+changes_only "editing build.sh" guest 'echo "# x" >> guest/build.sh'
+changes_only "editing the guest's pins.env" guest \
+    'sed -i "s/^REBUILD=.*/REBUILD=999/" guest/pins.env'
+changes_only "editing checks/ionic.sh" guest \
+    'echo "# x" >> guest/checks/ionic.sh'
+changes_only "an untracked file in guest/" guest 'echo x > guest/new-file'
+changes_only "editing the Dockerfile" builder \
+    'echo "# x" >> builder/Dockerfile'
+changes_only "editing ci/boot-guest.sh, outside ci/images/" none \
+    'echo x > ../boot-guest.sh'
+GTAG=$("$TAG_SH" guest)
+(cd "$IMAGES" && echo "# x" >>image-tag.sh)
+[[ $("$TAG_SH" guest) != "$GTAG" ]] ||
+    fail "editing image-tag.sh didn't change the guest's tag"
+git -C "$REPO" checkout -q -- .
+pass "each image's tag names its own files, and the scripts all use"
+
+# Check that image-tag.sh refuses the guest's pins.env with a line in it.
+#   $1  what it should say
+#   $2  a sed expression editing pins.env
+refuses_guest_pins() {
+    sed -i "$2" "$IMAGES/guest/pins.env"
+    if "$TAG_SH" guest >/dev/null 2>"$WORK/err"; then
+        fail "image-tag.sh accepted the guest's pins.env edited with '$2'"
+    fi
+    grep -qF -- "$1" "$WORK/err" ||
+        fail "for '$2', image-tag.sh said '$(cat "$WORK/err")', not '$1'"
+    git -C "$REPO" checkout -q -- ci/images/guest/pins.env
+}
+
+refuses_guest_pins "KERNEL_REF must be" 's/^KERNEL_REF=v/KERNEL_REF=/'
+refuses_guest_pins "RELEASE must be" 's/^RELEASE=.*/RELEASE=26.04/'
+refuses_guest_pins "doesn't set KERNEL_REF" '/^KERNEL_REF=/d'
+pass "the guest's malformed pins are refused"
+
+INFO_TYPE=$(sed -n 's/^INFO_TYPE=//p' "$IMAGES/guest/push.sh")
+[[ -n $INFO_TYPE ]] || fail "guest/push.sh sets no INFO_TYPE"
+WANT_GUEST="GUEST_ARTIFACT_REPO=ghcr.io/rocm/rocm-ernic/guest-ionic
+GUEST_ARTIFACT_TAG=$GTAG
+GUEST_ARTIFACT_INFO_TYPE=$INFO_TYPE
+GUEST_ARTIFACT_DISK=$(sed -n 's/^VM_NAME=//p' "$IMAGES/guest/pins.env").qcow2
+GUEST_ARTIFACT_USER=$(sed -n 's/^USERNAME=//p' "$IMAGES/guest/pins.env")"
+
+if "$TAG_SH" --check guest 2>"$WORK/err"; then
+    fail "--check guest passed a lockfile pinning a stale guest"
+fi
+grep -qF -- "--write guest" "$WORK/err" ||
+    fail "--check guest didn't say how to fix it: $(cat "$WORK/err")"
+"$TAG_SH" --write guest 2>/dev/null || fail "--write guest failed"
+[[ $(cat "$LOCK") == "# The lockfile
+$WANT_GUEST
+
+BUILDER_IMAGE=ghcr.io/rocm/rocm-ernic/ci-builder
+BUILDER_TAG=stale" ]] || fail "--write guest left the lockfile as: $(cat "$LOCK")"
+git -C "$REPO" diff --quiet -- .github ||
+    fail "--write guest changed a workflow"
+"$TAG_SH" --check guest 2>/dev/null ||
+    fail "--check guest failed right after --write guest"
+pass "--write guest pins the guest's repository, tag, type, disk and account"
+
+CMAKE="$REPO/cmake/ErnicKernelModule.cmake"
+sed -i 's/"v[^"]*"/"v1.2.3"/' "$CMAKE"
+if "$TAG_SH" --check guest 2>"$WORK/err"; then
+    fail "--check guest passed a guest kernel that isn't IONIC_KERNEL_REF"
+fi
+grep -qF "IONIC_KERNEL_REF" "$WORK/err" ||
+    fail "--check guest didn't name IONIC_KERNEL_REF: $(cat "$WORK/err")"
+"$TAG_SH" --write guest 2>/dev/null ||
+    fail "--write guest failed over IONIC_KERNEL_REF, which it can't fix"
+rm "$CMAKE"
+if "$TAG_SH" --check guest 2>/dev/null; then
+    fail "--check guest passed with no cmake/ErnicKernelModule.cmake"
+fi
+git -C "$REPO" checkout -q -- cmake
+"$TAG_SH" --check guest 2>/dev/null || fail "--check guest failed once restored"
+pass "--check guest fails unless the guest boots IONIC_KERNEL_REF"
+
+sed -i '/^GUEST_ARTIFACT_DISK=/d' "$LOCK"
+if "$TAG_SH" --check guest 2>"$WORK/err"; then
+    fail "--check guest passed a lockfile with no GUEST_ARTIFACT_DISK"
+fi
+grep -qF "must set GUEST_ARTIFACT_REPO, GUEST_ARTIFACT_TAG," "$WORK/err" ||
+    fail "--check guest: $(cat "$WORK/err")"
+git -C "$REPO" checkout -q -- ci/guest-image.env
+sed -i '/^INFO_TYPE=/d' "$IMAGES/guest/push.sh"
+if "$TAG_SH" --check guest 2>"$WORK/err"; then
+    fail "--check guest passed with no INFO_TYPE in push.sh"
+fi
+grep -qF "sets no INFO_TYPE" "$WORK/err" ||
+    fail "--check guest: $(cat "$WORK/err")"
+git -C "$REPO" checkout -q -- ci/images
+pass "a lockfile without each guest pin, or a push.sh without its type, fails"
 
 # ── ensure-image.sh ─────────────────────────────
 
@@ -505,5 +656,262 @@ fi
 grep -q "docker with buildx not found" "$WORK/err" ||
     fail "it didn't say docker is missing: $(cat "$WORK/err")"
 pass "podman-docker's docker is podman: only --build-only uses it"
+
+# ── guest/push.sh ───────────────────────────────
+
+# oras: records each call, one argument to a line. FAKE_ORAS says what the
+# registry answers a manifest fetch (published, missing, missing-repo,
+# denied), and FAKE_ORAS_AGAIN, if set, what it answers when asked again;
+# FAKE_ORAS_FAIL names a command (push, attach, tag) that fails.
+DIGEST=sha256:$(printf 'a%.0s' {1..64})
+cat >"$BIN/oras" <<EOF
+#!/usr/bin/env bash
+{ echo oras; printf '%s\n' "\$@"; echo --; } >>"\$FAKE_DOCKER_LOG"
+if [[ \${FAKE_ORAS_FAIL:-} == "\$1" ]]; then
+    echo "Error: \$1 failed" >&2
+    exit 1
+fi
+case \$1 in
+    manifest)
+        answer=\$FAKE_ORAS
+        if [[ -n \${FAKE_ORAS_AGAIN:-} &&
+            \$(grep -cx manifest "\$FAKE_DOCKER_LOG") -gt 1 ]]; then
+            answer=\$FAKE_ORAS_AGAIN
+        fi
+        case \$answer in
+            published) echo '{"digest":"$DIGEST"}' ;;
+            missing)
+                echo "Error: \$4: not found" >&2
+                exit 1
+                ;;
+            missing-repo)
+                echo "Error: NAME_UNKNOWN: repository name not known" >&2
+                exit 1
+                ;;
+            denied)
+                echo "Error: denied: permission_denied" >&2
+                exit 1
+                ;;
+        esac
+        ;;
+    push) echo "$DIGEST" ;;
+    attach | tag) ;;
+    *)
+        echo "unexpected oras call: \$*" >&2
+        exit 99
+        ;;
+esac
+EOF
+# zstd: records its arguments, and "compresses" by copying
+cat >"$BIN/zstd" <<'EOF'
+#!/usr/bin/env bash
+{ echo zstd; printf '%s\n' "$@"; echo --; } >>"$FAKE_DOCKER_LOG"
+out="" in=""
+while [[ $# -gt 0 ]]; do
+    case $1 in
+        -o) out=$2; shift 2 ;;
+        --) in=$2; shift 2 ;;
+        *) shift ;;
+    esac
+done
+cp -- "$in" "$out"
+EOF
+chmod +x "$BIN/oras" "$BIN/zstd"
+
+VM_NAME=$(sed -n 's/^VM_NAME=//p' "$IMAGES/guest/pins.env")
+GOUT="$WORK/guest-out"
+mkdir -p "$GOUT"
+echo disk >"$GOUT/$VM_NAME.qcow2"
+jq -n --arg image "$VM_NAME.qcow2" '{
+    image_path: $image, release: "resolute", flavour: "ionic",
+    username: "ubuntu", kernel_release: "7.2.6-070206-generic",
+    build_info: {build_timestamp: "2026-11-12T00:00:00Z",
+                 source_revision: "0123abc"}
+}' >"$GOUT/vm-info.json"
+PUSH="$IMAGES/guest/push.sh"
+PREF=ghcr.io/example/proj/guest-ionic
+
+# Run push.sh with the stand-ins, its output in $WORK/out and $WORK/err,
+# and their calls in $WORK/docker.log.
+#   $@  environment as NAME=VALUE, then -- and its arguments
+push() {
+    local env=()
+    while [[ $1 != -- ]]; do
+        env+=("$1")
+        shift
+    done
+    shift
+    : >"$WORK/docker.log"
+    env PATH="$BIN:$PATH" FAKE_DOCKER_LOG="$WORK/docker.log" \
+        FAKE_ORAS=missing VM_NAME="$VM_NAME" "${env[@]}" "$PUSH" "$@" \
+        >"$WORK/out" 2>"$WORK/err"
+}
+
+# The line number of an oras command's call in the log
+#   $1  the command
+oras_at() {
+    grep -nxA1 oras "$WORK/docker.log" | sed -n "s/^\([0-9]*\)-$1\$/\1/p" |
+        head -n 1
+}
+
+push -- "$GOUT" "$PREF:t1" || fail "push.sh failed: $(cat "$WORK/err")"
+called_with "$PREF" || fail "the disk wasn't pushed untagged"
+called_with "application/vnd.rocm-ernic.vm-image.v1" ||
+    fail "the disk wasn't pushed as a rocm-ernic VM image"
+called_with "$VM_NAME.qcow2.zst:application/vnd.rocm-ernic.vm-image.layer.v1+zstd" ||
+    fail "the compressed disk wasn't the layer"
+called_with "--long=27" || fail "the disk wasn't compressed with --long=27"
+called_with "vm.kernel_release=7.2.6-070206-generic" ||
+    fail "the kernel wasn't an annotation"
+called_with "$PREF@$DIGEST" || fail "nothing was done to the pushed digest"
+called_with "$INFO_TYPE" || fail "vm-info.json wasn't attached as $INFO_TYPE"
+called_with "vm-info.json:application/json" ||
+    fail "vm-info.json wasn't attached"
+called_with t1 || fail "the digest wasn't tagged"
+pushed_at=$(oras_at push)
+attached_at=$(oras_at attach)
+tagged_at=$(oras_at tag)
+[[ -n $pushed_at && $pushed_at -lt $attached_at &&
+    $attached_at -lt $tagged_at ]] ||
+    fail "not pushed, then attached, then tagged: $pushed_at $attached_at $tagged_at"
+[[ $(ls -A "$GOUT") == $'ubuntu-ci-vm.qcow2\nvm-info.json' ]] ||
+    fail "push.sh left files behind: $(ls -A "$GOUT")"
+looked_at=$(oras_at manifest)
+[[ -n $looked_at && $attached_at -lt $looked_at &&
+    $looked_at -lt $tagged_at ]] ||
+    fail "it didn't look for the tag again just before tagging"
+pass "push.sh pushes the disk by digest, attaches vm-info.json, then tags it"
+
+push FAKE_ORAS=published -- "$GOUT" "$PREF:t1" ||
+    fail "push.sh failed when the tag appeared meanwhile: $(cat "$WORK/err")"
+[[ -z $(oras_at tag) ]] || fail "a tag that appeared meanwhile was moved"
+if push FAKE_ORAS=denied -- "$GOUT" "$PREF:t1"; then
+    fail "push.sh tagged on an unclear answer from the registry"
+fi
+[[ -z $(oras_at tag) ]] || fail "it tagged on an unclear answer"
+pass "push.sh leaves a tag that appeared while it pushed where it is"
+
+for step in push attach; do
+    if push FAKE_ORAS_FAIL=$step -- "$GOUT" "$PREF:t1"; then
+        fail "push.sh succeeded though oras $step failed"
+    fi
+    [[ -z $(oras_at tag) ]] || fail "a failed $step was tagged"
+done
+pass "a push that fails part way leaves no tag"
+
+jq '.image_path = "other.qcow2"' "$GOUT/vm-info.json" >"$WORK/info"
+cp "$WORK/info" "$GOUT/vm-info.json"
+if push -- "$GOUT" "$PREF:t1"; then
+    fail "push.sh pushed a disk vm-info.json doesn't describe"
+fi
+[[ -z $(oras_at push) ]] || fail "a disk vm-info.json doesn't describe was pushed"
+jq '.image_path = "ubuntu-ci-vm.qcow2"' "$WORK/info" >"$GOUT/vm-info.json"
+if push -- "$GOUT" "$PREF"; then
+    fail "push.sh took a reference with no tag"
+fi
+pass "push.sh refuses a disk vm-info.json doesn't describe, or no tag"
+
+# ── ensure-image.sh, the guest ──────────────────
+
+# Stand-ins for the guest's scripts, recording their arguments and the
+# pins and settings they're given. FAKE_CHECK_FAIL fails the check.
+for script in build check push; do
+    cat >"$IMAGES/guest/$script.sh" <<EOF
+#!/usr/bin/env bash
+{
+    echo $script.sh
+    printf '%s\n' "\$@"
+    echo "VM_NAME=\${VM_NAME:-}"
+    echo "ROOT_CA=\${CI_IMAGES_ROOT_CA:-}"
+    echo --
+} >>"\$FAKE_DOCKER_LOG"
+EOF
+done
+cat >>"$IMAGES/guest/build.sh" <<'EOF'
+if [[ -e $1 ]]; then
+    printf '%s\n' "out exists" -- >>"$FAKE_DOCKER_LOG"
+fi
+mkdir -p "$1"
+EOF
+cat >>"$IMAGES/guest/check.sh" <<'EOF'
+[[ -z ${FAKE_CHECK_FAIL:-} ]]
+EOF
+chmod +x "$IMAGES/guest/"{build,check,push}.sh
+GREF=$("$TAG_SH" --ref guest)
+GOUT_DEFAULT="$REPO/build-ci-images/guest"
+
+ensure FAKE_ORAS=published -- guest ||
+    fail "a published guest failed: $(cat "$WORK/err")"
+[[ $(cat "$WORK/out") == "$GREF" ]] || fail "it didn't print $GREF"
+called_with "$GREF" || fail "it didn't look for $GREF"
+! called_with build.sh || fail "a published guest was built again"
+! called_with push.sh || fail "a published guest was pushed again"
+pass "a published guest is left alone"
+
+for answer in missing missing-repo; do
+    mkdir -p "$GOUT_DEFAULT"
+    echo stale >"$GOUT_DEFAULT/stale"
+    ensure FAKE_ORAS=$answer -- guest ||
+        fail "$answer: building the guest failed: $(cat "$WORK/err")"
+    [[ $(cat "$WORK/out") == "$GREF" ]] || fail "$answer: it didn't print $GREF"
+    called_with build.sh || fail "$answer: a missing guest wasn't built"
+    ! called_with "out exists" ||
+        fail "$answer: the build's directory wasn't emptied first"
+    called_with "$GOUT_DEFAULT" ||
+        fail "$answer: it wasn't built in build-ci-images/guest"
+    called_with "VM_NAME=$VM_NAME" ||
+        fail "$answer: the pins weren't in the scripts' environment"
+    built_at=$(grep -nx build.sh "$WORK/docker.log" | cut -d: -f1)
+    checked_at=$(grep -nx check.sh "$WORK/docker.log" | cut -d: -f1)
+    looked_at=$(grep -nx manifest "$WORK/docker.log" | tail -1 | cut -d: -f1)
+    pushed_at=$(grep -nx push.sh "$WORK/docker.log" | cut -d: -f1)
+    [[ -n $pushed_at && $built_at -lt $checked_at &&
+        $checked_at -lt $looked_at && $looked_at -lt $pushed_at ]] ||
+        fail "$answer: not built, checked, looked for again, then pushed"
+    called_with "$GREF" || fail "$answer: push.sh wasn't given $GREF"
+done
+pass "a missing guest is built, checked, then pushed"
+
+ensure FAKE_ORAS=missing FAKE_ORAS_AGAIN=published -- guest ||
+    fail "a guest published during the build failed: $(cat "$WORK/err")"
+! called_with push.sh || fail "a guest published during the build was pushed"
+if ensure FAKE_ORAS=denied -- guest; then
+    fail "an unclear answer from the registry was taken as missing"
+fi
+! called_with build.sh || fail "a guest was built on an unclear answer"
+if ensure FAKE_ORAS=missing FAKE_CHECK_FAIL=1 -- guest; then
+    fail "a guest that failed its check succeeded"
+fi
+! called_with push.sh || fail "a guest that failed its check was pushed"
+if ensure FAKE_ORAS=missing CI_IMAGES_CAN_PUSH=false -- guest; then
+    fail "a run that can't push succeeded with the guest missing"
+fi
+! called_with build.sh || fail "a run that can't push built the guest"
+pass "a guest is pushed only if it's missing, passes its check, and can be"
+
+ensure FAKE_ORAS=denied CI_IMAGES_ROOT_CA="$WORK/root-ca.crt" \
+    -- --build-only guest ||
+    fail "--build-only guest failed: $(cat "$WORK/err")"
+! called_with oras || fail "--build-only guest used oras"
+called_with build.sh || fail "--build-only guest didn't build"
+called_with check.sh || fail "--build-only guest didn't check"
+! called_with push.sh || fail "--build-only guest pushed"
+called_with "ROOT_CA=$WORK/root-ca.crt" ||
+    fail "the root CA wasn't passed to build.sh"
+mkdir -p "$WORK/my-out"
+echo keep >"$WORK/my-out/keep"
+ensure CI_IMAGES_OUT="$WORK/my-out" -- --build-only guest ||
+    fail "--build-only guest into CI_IMAGES_OUT failed: $(cat "$WORK/err")"
+called_with "$WORK/my-out" || fail "the guest wasn't built in CI_IMAGES_OUT"
+[[ -f $WORK/my-out/keep ]] || fail "CI_IMAGES_OUT was emptied"
+pass "--build-only builds and checks the guest, and touches no registry"
+
+rm "$IMAGES/guest/build.sh"
+if ensure FAKE_ORAS=missing -- guest; then
+    fail "an image with neither a Dockerfile nor build.sh was built"
+fi
+grep -qF "neither a Dockerfile nor a build.sh and push.sh" "$WORK/err" ||
+    fail "it didn't say what's missing: $(cat "$WORK/err")"
+pass "an image with no Dockerfile or build.sh isn't built"
 
 echo "All CI image tests passed."

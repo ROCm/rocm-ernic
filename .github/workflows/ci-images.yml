@@ -3,15 +3,17 @@
 # SPDX-License-Identifier: MIT
 #
 # Publishes the CI images defined under ci/images/ to GHCR, each under a
-# tag naming its contents (ci/images/image-tag.sh). One already published
-# under its tag isn't built again, so a run that changes no definition
-# only looks. See ci/images/README.md.
+# tag naming its contents (ci/images/image-tag.sh): the builder, the
+# container the VM lanes run in, and the guest, the disk they boot. One
+# already published under its tag isn't built again, so a run that
+# changes no definition only looks. See ci/images/README.md.
 #
 # System Tests calls it before its lanes, whose container image: lines
-# name the builder's tag (ci/images/image-tag.sh --write builder keeps
-# them), so a pull request that changes the builder publishes it and
-# tests the lanes in it. It has no pull_request trigger of its own:
-# System Tests runs for every change under ci/.
+# name the builder's tag and which fetch the guest ci/guest-image.env
+# names (ci/images/image-tag.sh --write keeps both), so a pull request
+# that changes either publishes it and tests the lanes with it. It has no
+# pull_request trigger of its own: System Tests runs for every change
+# under ci/.
 name: "rocm-ernic - CI images"
 
 on:
@@ -49,6 +51,7 @@ jobs:
         shell: bash
         run: |
           echo "ci-builder: $(ci/images/image-tag.sh builder)"
+          echo "guest-ionic: $(ci/images/image-tag.sh guest)"
 
   builder:
     name: Builder image
@@ -93,3 +96,63 @@ jobs:
           # GHCR names are lowercase, and the owner is "ROCm"
           export CI_IMAGES_REGISTRY="ghcr.io/${OWNER,,}/rocm-ernic"
           ci/images/ensure-image.sh builder
+
+  guest:
+    name: Guest image
+    # Built in the builder, which has what build.sh needs, so after it
+    needs: builder
+    runs-on: ubuntu-26.04
+    # A cold build boots the guest six times and installs a kernel; it
+    # takes about 25 minutes
+    timeout-minutes: 90
+    permissions:
+      contents: read
+      packages: write
+    # As root, for /dev/kvm; --init reaps the QEMU check.sh's boot leaves
+    # running, as in the lanes
+    container:
+      image: ghcr.io/rocm/rocm-ernic/ci-builder:qemu11.1.1-vfu.5b9c722-a25528b96bfc
+      options: --user root --device /dev/kvm --init
+    # No concurrency group, for the builder job's reason
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      # The workspace belongs to the runner's user, not this container's
+      # root, so git refuses it as dubious ownership, and image-tag.sh
+      # lists the files that define the image with git
+      - name: Trust the checkout
+        shell: bash
+        run: git config --global --add safe.directory "$GITHUB_WORKSPACE"
+
+      - name: Log in to GHCR
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          printf '%s\n' "$GH_TOKEN" |
+            oras login ghcr.io -u "$GITHUB_ACTOR" --password-stdin
+
+      - name: Publish the guest image if it isn't already
+        shell: bash
+        env:
+          OWNER: ${{ github.repository_owner }}
+          # A pull request from a fork gets a read-only token
+          CI_IMAGES_CAN_PUSH: >-
+            ${{ github.event_name != 'pull_request' ||
+                !github.event.pull_request.head.repo.fork }}
+        run: |
+          # GHCR names are lowercase, and the owner is "ROCm"
+          export CI_IMAGES_REGISTRY="ghcr.io/${OWNER,,}/rocm-ernic"
+          ci/images/ensure-image.sh guest
+
+      # The build's consoles and logs, when there was a build
+      - name: Upload the guest build's logs
+        if: ${{ !cancelled() }}
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: guest-image-build-logs
+          path: build-ci-images/guest/logs/
+          if-no-files-found: ignore
+          retention-days: 14

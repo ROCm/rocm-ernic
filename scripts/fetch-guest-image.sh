@@ -10,11 +10,13 @@
 # registry, for use by hand.  It lands the same bytes in the same layout
 # as .github/actions/fetch-guest-vm, which does this for the hosted jobs.
 #
-# The image is the "ionic" flavour published by
-# https://github.com/sbates130272/batesste-ci-images.
+# The image is the CI guest, defined in ci/images/guest/, and by default
+# the one ci/guest-image.env pins.  It has no password and no key: boot
+# it with ci/boot-guest.sh (or ernicctl vm-launch), which authorizes a
+# key for that boot.
 #
-# On success DEST holds the decompressed qcow2, vm-info.json, id_rsa and
-# id_rsa.pub, and k=v lines naming them are written to stdout.
+# On success DEST holds the decompressed qcow2 and vm-info.json, and k=v
+# lines naming them are written to stdout.
 #
 # The image's own metadata is then checked against this checkout's pins
 # -- see verify_image() below.  Those assertions used to live in the
@@ -22,7 +24,7 @@
 # 0.2.0; they belong here, where every caller gets them.
 #
 # Usage:
-#   fetch-guest-image.sh --tag TAG --dest DIR
+#   fetch-guest-image.sh --dest DIR [--tag TAG]
 #                        [--repo REF] [--info-type TYPE] [--force]
 #                        [--project-root DIR] [--min-kernel VER]
 #                        [--expect-user U] [--expect-disk NAME]
@@ -33,13 +35,15 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 
-REPO="docker.io/sbates130272/batesste-ci-images-ubuntu-qcow2-gen-ionic"
+# Empty means ci/guest-image.env's, read once the options are.
+REPO=""
 TAG=""
 DEST=""
-INFO_TYPE="application/vnd.batesste.vm-info.v1"
+INFO_TYPE=""
 FORCE=false
 
-# Where README.md and cmake/ErnicKernelModule.cmake are read from.
+# Where ci/guest-image.env, README.md and cmake/ErnicKernelModule.cmake
+# are read from.
 PROJECT_ROOT="$(dirname -- "$SCRIPT_DIR")"
 # drivers/infiniband/hw/ionic was merged for 6.18.  Kept in step with
 # ernic_ionic_min_kernel in ansible/group_vars/all.yml and
@@ -55,14 +59,18 @@ VERIFY=true
 
 usage() {
     cat <<EOF
-Usage: $0 --tag TAG --dest DIR [options]
+Usage: $0 --dest DIR [options]
 
-  --repo REF           artifact repository (default: ${REPO})
-  --info-type TYPE     vm-info referrer artifactType
+  --tag TAG            artifact tag (default: GUEST_ARTIFACT_TAG in
+                       ci/guest-image.env)
+  --repo REF           artifact repository (default: GUEST_ARTIFACT_REPO)
+  --info-type TYPE     vm-info referrer artifactType (default:
+                       GUEST_ARTIFACT_INFO_TYPE)
   --force              re-pull and re-decompress even on a cache hit
+  --project-root DIR   where ci/guest-image.env, README.md and cmake/
+                       live (default: this script's checkout)
 
 Verification (on by default, on the cached path too):
-  --project-root DIR   where README.md and cmake/ live
   --min-kernel VER     guest kernel floor (default: ${MIN_KERNEL})
   --expect-user U      assert vm-info username
   --expect-disk NAME   assert vm-info image_path basename
@@ -91,8 +99,29 @@ while [[ $# -gt 0 ]]; do
     esac
 done
 
-[ -n "$TAG" ]  || { echo "✗ --tag is required" >&2; exit 1; }
 [ -n "$DEST" ] || { echo "✗ --dest is required" >&2; exit 1; }
+
+# The pins, read rather than sourced: the file is KEY=VALUE, and nothing
+# in it should run.
+PIN="${PROJECT_ROOT}/ci/guest-image.env"
+pin() {
+    sed -n "s/^$1=//p" "$PIN" | tail -n 1
+}
+if [ -z "$REPO" ] || [ -z "$TAG" ] || [ -z "$INFO_TYPE" ]; then
+    [ -f "$PIN" ] || {
+        echo "✗ no ci/guest-image.env under ${PROJECT_ROOT}; pass" \
+             "--project-root, or --repo, --tag and --info-type" >&2
+        exit 1
+    }
+    REPO="${REPO:-$(pin GUEST_ARTIFACT_REPO)}"
+    TAG="${TAG:-$(pin GUEST_ARTIFACT_TAG)}"
+    INFO_TYPE="${INFO_TYPE:-$(pin GUEST_ARTIFACT_INFO_TYPE)}"
+fi
+[ -n "$REPO" ] && [ -n "$TAG" ] && [ -n "$INFO_TYPE" ] || {
+    echo "✗ ${PIN} doesn't set GUEST_ARTIFACT_REPO, GUEST_ARTIFACT_TAG" \
+         "and GUEST_ARTIFACT_INFO_TYPE" >&2
+    exit 1
+}
 
 for tool in oras jq zstd qemu-img; do
     command -v "$tool" >/dev/null 2>&1 || {
@@ -129,8 +158,6 @@ report() {
     echo "dir=${DEST}"
     echo "disk=${DEST}/${disk}"
     echo "user=$(jq -r '.username // ""' "${DEST}/vm-info.json")"
-    echo "key=${DEST}/id_rsa"
-    echo "pubkey=${DEST}/id_rsa.pub"
     echo "kernel=$(jq -r '.kernel_release // ""' "${DEST}/vm-info.json")"
     echo "flavour=$(jq -r '.flavour // ""' "${DEST}/vm-info.json")"
 }
@@ -173,7 +200,7 @@ major_minor() { cut -d. -f1,2 <<<"$1"; }
 verify_image() {
     local info="${DEST}/vm-info.json"
     local kernel kver release username flavour disk
-    local cmake ref refver readme badge key
+    local cmake ref refver readme badge
 
     [ -f "$info" ] || fail "no vm-info.json in ${DEST}"
 
@@ -181,7 +208,6 @@ verify_image() {
     release=$(jq -r '.release // ""'              "$info")
     username=$(jq -r '.username // ""'            "$info")
     flavour=$(jq -r '.flavour // ""'              "$info")
-    key=$(jq -r '.ssh_keys.private_key_path // ""' "$info")
     disk=$(basename -- "$(jq -r '.image_path // ""' "$info")")
 
     [ -n "$kernel" ] || fail "vm-info.json for ${TAG} carries no kernel_release"
@@ -249,28 +275,15 @@ verify_image() {
         "image flavour is '${flavour}', expected '${EXPECT_FLAVOUR}'" \
         "An 'ionic' image ships no ROCm, so the GPU roles fail deep in rocm-smi."
 
-    # 5. The key has to be called id_rsa, because report() and this
-    #    script's header both say it is.  A rename upstream would
-    #    otherwise be silent: every login fails on publickey after the
-    #    VM has already booted.
-    key=$(basename -- "${key:-id_rsa}")
-    [ "$key" = id_rsa ] || fail \
-        "image declares its private key as '${key}', not id_rsa" \
-        "report() and the script header both name id_rsa."
-    # oras does not preserve modes and OpenSSH refuses a group-readable
-    # key.  The pull path chmods what it pulled; this also covers a
-    # directory somebody populated by hand.
-    [ -f "${DEST}/${key}" ] || fail "no private key at ${DEST}/${key}"
-    chmod 600 "${DEST}/${key}"
-
     echo "✓ ${TAG}: ${release}, kernel ${kernel}, user ${username}," \
          "flavour ${flavour}" >&2
 }
 
 # A 1.6 GB pull per run is not acceptable for a per-commit CI job, so the
-# stamp records which tag the directory holds.  Tags are pinned and
-# date-prefixed, and DEST is tag-scoped by every caller, so a matching
-# stamp with the disk present means there is nothing to do.
+# stamp records which tag the directory holds.  A tag names its image's
+# contents and is never published twice, and DEST is tag-scoped by every
+# caller, so a matching stamp with the disk present means there is
+# nothing to do.
 if [ "$FORCE" = false ] && [ -f "$STAMP" ] \
    && [ "$(cat "$STAMP")" = "$TAG" ] && [ -f "${DEST}/vm-info.json" ]; then
     CACHED=$(jq -r '.image_path // ""' "${DEST}/vm-info.json")
@@ -284,10 +297,19 @@ fi
 
 cd "$DEST"
 
+# The tag, resolved once, so the metadata and the disk are the same
+# image's even if the tag moves between the two pulls
+SUBJECT=$(retry oras manifest fetch --descriptor "$REF" | jq -r .digest)
+if ! [[ $SUBJECT =~ ^sha256:[0-9a-f]{64}$ ]]; then
+    echo "✗ couldn't resolve ${REF} to a digest" >&2
+    exit 1
+fi
+echo "${REF} is ${REPO}@${SUBJECT}" >&2
+
 echo "=== Fetching metadata for ${REF} ===" >&2
 # Referrer first: it is kilobytes, so a bad reference fails in seconds
 # rather than after a 1.6 GB download.
-DIGEST=$(retry oras discover --format json "$REF" \
+DIGEST=$(retry oras discover --format json "${REPO}@${SUBJECT}" \
     | jq -r --arg t "$INFO_TYPE" \
         '[.referrers[] | select(.artifactType==$t)]
          | sort_by(.annotations["org.opencontainers.image.created"])
@@ -297,19 +319,6 @@ if [ -z "$DIGEST" ] || [ "$DIGEST" = "null" ]; then
     exit 1
 fi
 retry oras pull "${REPO}@${DIGEST}"
-
-# oras does not preserve modes; OpenSSH refuses a group-readable key.
-# Take the key name from the metadata for the same reason the disk name
-# is globbed below: a rename upstream should not abort under set -e on a
-# hardcoded filename.
-KEY=$(jq -r '.ssh_keys.private_key_path // ""' vm-info.json)
-KEY=$(basename -- "${KEY:-id_rsa}")
-if [ ! -f "$KEY" ]; then
-    echo "✗ referrer carries no private key named ${KEY}" >&2
-    ls -la >&2
-    exit 1
-fi
-chmod 600 "$KEY"
 
 # Here rather than after the disk pull.  Every assertion reads vm-info.json
 # or a file in this checkout, all of which are on disk now, and a rejection
@@ -321,7 +330,7 @@ chmod 600 "$KEY"
 [ "$VERIFY" = false ] || verify_image
 
 echo "=== Fetching disk for ${REF} ===" >&2
-retry oras pull "$REF"
+retry oras pull "${REPO}@${SUBJECT}"
 
 # Take the disk name from what actually landed rather than pinning it,
 # so a renamed guest fails here instead of at first boot.

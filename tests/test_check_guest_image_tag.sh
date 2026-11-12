@@ -42,8 +42,11 @@ command -v git >/dev/null || fail "git is needed and not installed"
 
 # Each tag is built from parts, so no line of this file holds one: the
 # check searches every tracked file, this one included
-GUEST_TAG=20261024.g9d2be1e
-GUEST_TAG+=-vm.resolute-ionic-qm.c079195-qcow2
+GUEST_TAG=resolute-k7.2.6-
+GUEST_TAG+=0123456789ab
+# The Docker Hub guest's tag, which the check still refuses
+OLD_GUEST_TAG=20261024.g9d2be1e
+OLD_GUEST_TAG+=-vm.resolute-ionic-qm.c079195-qcow2
 BUILDER=ghcr.io/rocm/rocm-ernic/ci-builder
 BUILDER_PREFIX=qemu11.1.1-vfu.5b9c722-
 BUILDER_TAG=${BUILDER_PREFIX}0123456789ab
@@ -54,7 +57,7 @@ mkdir -p "$REPO/ci" "$REPO/tools" "$REPO/.github/workflows" "$REPO/docs"
 cp "$SRC" "$REPO/tools/check-guest-image-tag.sh"
 cat >"$REPO/ci/guest-image.env" <<EOF
 # The lockfile
-GUEST_ARTIFACT_REPO=docker.io/example/guest
+GUEST_ARTIFACT_REPO=ghcr.io/rocm/rocm-ernic/guest-ionic
 GUEST_ARTIFACT_TAG=$GUEST_TAG
 BUILDER_IMAGE=$BUILDER
 BUILDER_TAG=$BUILDER_TAG
@@ -107,6 +110,8 @@ pass "tags only in the lockfile and the lanes' image: lines pass"
 
 fails_with "a guest tag in another file" docs/ci.md:2 \
     "echo 'pull $GUEST_TAG' >> docs/ci.md"
+fails_with "a Docker Hub guest tag" docs/ci.md:2 \
+    "echo 'pull $OLD_GUEST_TAG' >> docs/ci.md"
 fails_with "a copy of the lockfile" some-lane/guest-image.env:3 \
     "mkdir some-lane && cp ci/guest-image.env some-lane/"
 fails_with "a builder tag in another file" docs/ci.md:2 \

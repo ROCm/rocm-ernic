@@ -18,9 +18,15 @@
 # all replaces the default rather than adding to it, so a caller that
 # names a directory gets exactly what it named.
 #
+# If the repository never answers, the script tries each mirror in turn.
+# A repository on git.kernel.org, as the default is, is mirrored at the
+# same path on kernel.googlesource.com, which comes first; --mirror adds
+# others.  git.kernel.org doesn't always answer GitHub's runners.
+#
 # Usage:
 #   fetch-ionic-sources.sh --source-dir DIR --kernel-ref REF
-#                          [--patches-dir DIR]... [--repo URL] [--force]
+#                          [--patches-dir DIR]... [--repo URL]
+#                          [--mirror URL]... [--force]
 #
 # The "-eu" on the shebang is redundant with the "set" below and is there
 # for ansible-test's shebang check, which runs over everything in the
@@ -36,12 +42,21 @@ SOURCE_DIR=""
 KERNEL_REF=""
 PATCHES_DIRS=()
 KERNEL_REPO="https://git.kernel.org/pub/scm/linux/kernel/git/stable/linux.git"
+MIRRORS=()
 FORCE=false
 
 # How many times git_fetch_retry() tries a fetch, and how long it waits
 # before the first retry; the wait doubles after each one.
 FETCH_ATTEMPTS=4
 FETCH_RETRY_DELAY=10
+# How long each attempt waits for the server to answer at all, in seconds.
+# git has no connect timeout of its own, and a server it can't reach costs
+# about 77 s an attempt, and 13 minutes in all.
+FETCH_CONNECT_TIMEOUT=30
+# The repository git_fetch_retry() fetches from, and whether one of its
+# attempts has reached it
+FETCH_URL=""
+REACHED_SERVER=false
 
 while [[ $# -gt 0 ]]; do
     case "$1" in
@@ -49,10 +64,12 @@ while [[ $# -gt 0 ]]; do
         --kernel-ref)  KERNEL_REF="$2";  shift 2 ;;
         --patches-dir) PATCHES_DIRS+=("$2"); shift 2 ;;
         --repo)        KERNEL_REPO="$2"; shift 2 ;;
+        --mirror)      MIRRORS+=("$2");  shift 2 ;;
         --force)       FORCE=true;       shift ;;
         -h|--help)
             echo "Usage: $0 --source-dir DIR --kernel-ref REF" \
-                 "[--patches-dir DIR]... [--repo URL] [--force]"
+                 "[--patches-dir DIR]... [--repo URL] [--mirror URL]..." \
+                 "[--force]"
             exit 0 ;;
         *) echo "Unknown option: $1" >&2; exit 1 ;;
     esac
@@ -61,6 +78,13 @@ done
 if [[ -z "${SOURCE_DIR}" || -z "${KERNEL_REF}" ]]; then
     echo "ERROR: --source-dir and --kernel-ref are required" >&2
     exit 1
+fi
+
+# Google mirrors every repository on git.kernel.org at the same path,
+# without the .git
+if [[ ${KERNEL_REPO} =~ ^https://git\.kernel\.org/(pub/scm/.+)$ ]]; then
+    MIRRORS=("https://kernel.googlesource.com/${BASH_REMATCH[1]%.git}"
+             "${MIRRORS[@]}")
 fi
 
 if [ ${#PATCHES_DIRS[@]} -eq 0 ]; then
@@ -123,24 +147,39 @@ tree_digest() {
 
 SENTINEL="${SOURCE_DIR}/.patches-applied-${KERNEL_REF}-$(tree_digest)"
 
+# Whether the server answers within FETCH_CONNECT_TIMEOUT: asked for one
+# ref, its answer is small, so a fetch that's slow but working isn't cut
+# short.
+server_answers() {
+    timeout "${FETCH_CONNECT_TIMEOUT}" \
+        git ls-remote "${FETCH_URL}" HEAD >/dev/null 2>&1
+}
+
 # Run "git fetch" with the given arguments, trying again if it fails.
 # git.kernel.org answers with an HTTP 502 now and then, and one such
 # answer would otherwise fail the whole run, and with it a CI lane or a
 # guest's provisioning.  git exits 128 for a network error and for a ref
 # the server refuses alike, so every failure is retried; a refusal only
-# costs the waits.  Returns 1 once every attempt has failed.
+# costs the waits.  An attempt whose server doesn't answer fails without
+# fetching.  Returns 1 once every attempt has failed.
 git_fetch_retry() {
     local attempt delay="${FETCH_RETRY_DELAY}"
     for ((attempt = 1; ; attempt++)); do
-        if git fetch "$@"; then
-            return 0
+        if ! server_answers; then
+            echo "   ${FETCH_URL} didn't answer within" \
+                 "${FETCH_CONNECT_TIMEOUT} s" >&2
+        else
+            REACHED_SERVER=true
+            if git fetch "$@"; then
+                return 0
+            fi
         fi
         if ((attempt >= FETCH_ATTEMPTS)); then
-            echo "   git fetch from ${KERNEL_REPO} failed" \
+            echo "   git fetch from ${FETCH_URL} failed" \
                  "${FETCH_ATTEMPTS} times; giving up" >&2
             return 1
         fi
-        echo "   git fetch from ${KERNEL_REPO} failed (attempt ${attempt}" \
+        echo "   git fetch from ${FETCH_URL} failed (attempt ${attempt}" \
              "of ${FETCH_ATTEMPTS}); trying again in ${delay} s" >&2
         sleep "${delay}"
         delay=$((delay * 2))
@@ -181,14 +220,35 @@ git sparse-checkout set \
 # after its retries -- the server may refuse a SHA it doesn't advertise,
 # or still be failing -- fall back to fetching every branch and tag.  That
 # is far larger: git.kernel.org ignores --filter, so it is the history of
-# the whole repository, file contents included.
-if git_fetch_retry -q --depth 1 --filter=blob:none origin "${KERNEL_REF}"; then
-    rev=FETCH_HEAD
-else
-    echo "   could not fetch ${KERNEL_REF} on its own (see git's error);" \
-         "fetching every branch and tag instead"
-    git_fetch_retry -q --filter=blob:none --tags origin
-    rev="${KERNEL_REF}"
+# the whole repository, file contents included.  A repository that never
+# answered isn't asked for that, which would fail the same way: the next
+# mirror is tried instead.  The mirrors are of the same repository, so the
+# same ref names the same commit.
+rev=""
+for url in "${KERNEL_REPO}" "${MIRRORS[@]}"; do
+    FETCH_URL="${url}"
+    REACHED_SERVER=false
+    git remote set-url origin "${url}"
+    if [ "${url}" != "${KERNEL_REPO}" ]; then
+        echo "   trying the mirror ${url}"
+    fi
+    if git_fetch_retry -q --depth 1 --filter=blob:none origin "${KERNEL_REF}"
+    then
+        rev=FETCH_HEAD
+        break
+    fi
+    if ${REACHED_SERVER}; then
+        echo "   could not fetch ${KERNEL_REF} on its own (see git's error);" \
+             "fetching every branch and tag instead"
+        git_fetch_retry -q --filter=blob:none --tags origin
+        rev="${KERNEL_REF}"
+        break
+    fi
+    echo "   ${url} never answered" >&2
+done
+if [ -z "${rev}" ]; then
+    echo "   no repository answered; giving up" >&2
+    exit 1
 fi
 git checkout -q --detach "${rev}"
 

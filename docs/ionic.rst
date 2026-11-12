@@ -23,12 +23,10 @@ here. The driver source is near-stock --- one small RDMA
 patch --- but the guest itself is **not** a stock cloud
 image. It needs a mainline kernel
 matching ``IONIC_KERNEL_REF`` and the headers to build
-against, which no Ubuntu release ships. Nothing in this repo
-bakes such an image either: the guest is the published
-``ionic`` flavour of `batesste-ci-images
-<https://github.com/sbates130272/batesste-ci-images>`_,
-fetched by ``scripts/fetch-guest-image.sh``. See the warning
-below.
+against, which no Ubuntu release ships. CI builds such an
+image, defined in ``ci/images/guest/`` and published to GHCR,
+and ``scripts/fetch-guest-image.sh`` fetches it. See the
+warning below.
 
 The Pensando vendor ID ``0x1dd8`` is kept, and the emulated
 PF now uses the upstream device ID ``0x1002``. The

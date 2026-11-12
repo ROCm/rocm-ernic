@@ -5,8 +5,8 @@
 # Provision a guest VM with the rocm-ernic kernel driver, the
 # custom rdma-core provider, and IP addresses on the emulated
 # NICs.  Base packages, the pinned mainline kernel and the RDMA
-# userspace come baked into the guest image -- the `ionic` flavour
-# of batesste-ci-images -- not from anything here.
+# userspace come baked into the guest image -- the CI guest,
+# defined in ci/images/guest/ -- not from anything here.
 
 ---
 # Short name, not the FQCN: it resolves against the containing

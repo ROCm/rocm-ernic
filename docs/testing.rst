@@ -744,20 +744,33 @@ The guest image
 ^^^^^^^^^^^^^^^
 
 Nothing in ``ansible/`` builds a guest image. The guests
-come from a published OCI artifact: the ``ionic`` flavour of
-`batesste-ci-images
-<https://github.com/sbates130272/batesste-ci-images>`_,
-which pins mainline kernel 7.2.6 on Ubuntu 26.04 (resolute)
-and bakes the RDMA userspace, the DKMS toolchain,
+boot the CI guest image, defined in ``ci/images/guest/``
+and published to GHCR as an OCI artifact (see
+:ref:`ci-images`): mainline kernel 7.2.6 on Ubuntu 26.04
+(resolute), with the RDMA userspace, the DKMS toolchain,
 ``perftest`` and a distro rdma-core 61.0 carrying the ionic
 provider.
 
-``scripts/fetch-guest-image.sh`` pulls the image and its
-``vm-info.json`` metadata with ``oras``, decompresses the
-qcow2 and runs ``qemu-img check`` over it. The download is
-skipped when the tag is already unpacked. It lands the same
-bytes in the same layout as ``.github/actions/fetch-guest-vm``,
-which the hosted jobs use.
+The image has no password and no SSH key. Whatever boots it
+authorizes a key through a NoCloud seed, for the ``ubuntu``
+account, which keeps its passwordless sudo:
+``ci/boot-guest.sh`` makes one for each boot, and
+``ernicctl vm-launch``, which runs it, also authorizes
+``ERNIC_VM_SSH_IDENTITY``'s public key, or by default that of
+the first of ``id_rsa``, ``id_ed25519`` and ``id_ecdsa`` in
+the ``~/.ssh`` of the user running it with ``sudo``. So you
+log in, and the plays here connect, with your own key; host
+setup fails early, saying how to make one, if you have none.
+Each boot is a new cloud-init instance, so the guest makes
+host keys of its own.
+
+``scripts/fetch-guest-image.sh --dest DIR`` pulls the image
+``ci/guest-image.env`` pins and its ``vm-info.json``
+metadata with ``oras``, decompresses the qcow2 and runs
+``qemu-img check`` over it. The download is skipped when the
+tag is already unpacked. It lands the same bytes in the same
+layout as ``.github/actions/fetch-guest-vm``, which the
+hosted jobs use.
 
 It also checks the image's ``vm-info.json`` against this
 checkout and refuses the image when they disagree. That
@@ -885,9 +898,9 @@ The workflow boots guests under
 KVM on hosted runners with ``ci/boot-guest.sh``, as
 ``ernicctl vm-launch`` does, so the vfio-user device sits
 behind a PCIe root port and SSH is forwarded from
-127.0.0.1 only. The helper authorizes a key made for the
-job, not the one published with the guest image. The
-workflow provisions the guests by running the
+127.0.0.1 only. The guest image has no key of its own; the
+helper authorizes one made for the job. The workflow
+provisions the guests by running the
 collection itself --- ``ansible-playbook ci-site.yml --tags
 guest-setup`` against a generated ``instances.json`` ---
 rather than by copying sources in over ``ssh``. The role is
@@ -906,12 +919,30 @@ CI images
 
 The images CI runs in are defined under ``ci/images/`` and
 published to GHCR as ``ghcr.io/rocm/rocm-ernic/NAME``, with
-the workflow's ``GITHUB_TOKEN``. Today that's the builder,
-``ci-builder``: QEMU with the vfio-user client,
-libvfio-user, and the tools to boot, provision and fetch a
-guest. The guest image is still pulled from Docker Hub; see
-:ref:`ansible-guest-image`. The packages are public, so
-pulling needs no credentials.
+the workflow's ``GITHUB_TOKEN``:
+
+``ci-builder``
+   The container the VM lanes run in, defined in
+   ``ci/images/builder/``: QEMU with the vfio-user client,
+   libvfio-user, and the tools to boot, provision and fetch
+   a guest.
+
+``guest-ionic``
+   The guest disk the lanes boot, defined in
+   ``ci/images/guest/`` and published as an OCI artifact:
+   the zstd-compressed qcow2, with its ``vm-info.json``
+   attached. ``build.sh`` builds it in the builder, with
+   KVM: Ubuntu's cloud image boots once while cloud-init
+   installs ``packages/ionic.txt``, then it gets the mainline
+   kernel,
+   ``provision/ionic.sh``, a trim to that one kernel, and
+   ``checks/ionic.sh``. Last, it's sealed: the build's key
+   and the host keys are removed, the password is locked,
+   and cloud-init is reset, so the next boot is a new
+   instance that takes its key from a seed (see
+   :ref:`ansible-guest-image`).
+
+The packages are public, so pulling needs no credentials.
 
 An image's tag names its contents: a readable prefix from
 its pins, then 12 hex digits of a SHA-256 over every file
@@ -924,8 +955,10 @@ pull request that changed the image tested.
 builder as ``BUILDER_IMAGE`` and ``BUILDER_TAG``, and the
 lanes' ``container:`` ``image:`` lines name it in full,
 because the security scan can't tell that an image named by
-an expression is pinned. After changing an image's
-definition, run
+an expression is pinned. It pins the guest as
+``GUEST_ARTIFACT_REPO`` and ``GUEST_ARTIFACT_TAG``, with
+its disk, account and metadata type. After changing an
+image's definition, run
 
 .. code-block:: bash
 
@@ -933,28 +966,45 @@ definition, run
 
 and commit the result. Every pull request runs
 ``image-tag.sh --check``, which fails if any pin isn't the
-tree's, and ``tools/check-guest-image-tag.sh``, which fails
-if a tag appears anywhere else (the ``Image pins``
-workflow).
+tree's, or if the guest's kernel isn't ``IONIC_KERNEL_REF``,
+and ``tools/check-guest-image-tag.sh``, which fails if a tag
+appears anywhere else (the ``Image pins`` workflow).
 
 ``ci-images.yml``, which ``system-tests.yml`` calls before
 its lanes, publishes an image whose tag the registry hasn't
 got, with ``ci/images/ensure-image.sh``. That builds it,
-runs the image's ``check.sh`` inside it, and pushes it only
-if it passes. So a pull request that changes the builder
-publishes it and runs every lane in it. A pull request from
-a fork can't push, so one changing an image fails; a
-maintainer pushes the branch to ``ROCm/rocm-ernic``
-instead.
+runs the image's ``check.sh``, and pushes it only if it
+passes. The builder's check runs inside it; the guest's
+boots it with ``ci/boot-guest.sh``, as the lanes do, and
+checks the seal holds: only the boot's key logs in, the
+password is locked, and the guest made its own host keys.
+So a pull request that changes an image publishes it and
+runs every lane with it. A pull request from a fork can't
+push, so one changing an image fails; a maintainer pushes
+the branch to ``ROCm/rocm-ernic`` instead.
 
 To rebuild an image whose definition hasn't changed, for
-Ubuntu's updates, bump ``REBUILD`` in its ``pins.env``. To
-build and check one locally, with Docker's buildx or
-podman, without touching the registry:
+Ubuntu's updates, or the guest's newer cloud image, bump
+``REBUILD`` in its ``pins.env``. To build and check the
+builder locally, with Docker's buildx or podman, without
+touching the registry:
 
 .. code-block:: bash
 
    ci/images/ensure-image.sh --build-only builder
+
+The guest builds in the builder, with KVM, into
+``build-ci-images/guest/``; with rootless podman, ``TAG``
+being ``BUILDER_TAG`` in ``ci/guest-image.env``:
+
+.. code-block:: bash
+
+   podman run --rm --user root --group-add keep-groups \
+     --device /dev/kvm -v "$PWD:/src" -w /src \
+     ghcr.io/rocm/rocm-ernic/ci-builder:TAG \
+     ci/images/ensure-image.sh --build-only guest
+
+``ci/images/README.md`` says what Docker needs as well.
 
 ``ci-images-prune.yml`` deletes the versions nothing
 needs every Monday, with ``ci/images/prune-images.sh``. It
@@ -967,7 +1017,8 @@ only runs on develop delete.
 
 The ``ernic-ci-images``, ``ernic-check-guest-image-tag``
 and ``ernic-prune-images`` tests check these scripts
-against stand-ins for Docker, ``gh`` and the registry. For
+against stand-ins for Docker, ``oras``, ``gh`` and the
+registry. For
 the details, see ``ci/images/README.md``.
 
 Adding New Tests

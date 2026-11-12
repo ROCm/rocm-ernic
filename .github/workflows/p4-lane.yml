@@ -51,7 +51,7 @@ jobs:
     container:
       # ci/images/image-tag.sh --write builder keeps the tag; see the
       # loopback job in system-tests.yml.
-      image: ghcr.io/rocm/rocm-ernic/ci-builder:qemu11.1.1-vfu.5b9c722-d7a8ce172ca8
+      image: ghcr.io/rocm/rocm-ernic/ci-builder:qemu11.1.1-vfu.5b9c722-a25528b96bfc
       # --user root, since the image's default user is ci, and --init,
       # which makes PID 1 an init that reaps orphans: see the loopback
       # job in system-tests.yml.
@@ -159,8 +159,8 @@ jobs:
         out = sys.argv[1]
         d = json.load(open(os.path.join(out, "vm-info.json")))
         here = lambda p: os.path.join(out, os.path.basename(p)) if p else ""
-        # The image's own SSH key isn't read: ci/boot-guest.sh authorizes
-        # the job's key at boot.
+        # The image has no SSH key: ci/boot-guest.sh authorizes the job's
+        # key at boot.
         keys = {
             "VM_USER": d.get("username", "ci"),
             "VM_DISK": here(d.get("image_path", "")),
@@ -290,7 +290,7 @@ jobs:
       shell: bash
       run: |
         echo "=== Making the job's SSH key ==="
-        # The guest image's own key isn't used.  ci/boot-guest.sh
+        # The guest image has no key of its own.  ci/boot-guest.sh
         # authorizes this one, made for the job, through cloud-init when
         # the guest boots (--authorize).  The helper makes a key of its
         # own for each boot too, but uses it only to wait for SSH.

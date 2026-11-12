@@ -7,9 +7,9 @@ This directory holds what the GitHub-hosted workflows in
   lane boots and the builder image they run in.
 - `boot-guest.sh` -- boots a guest with a key made for the
   boot; the lanes and `ernicctl vm-launch` both use it.
-- `images/` -- the CI images built and published here,
-  among them the builder the VM lanes run in, and the
-  scripts that tag, publish and prune them; see
+- `images/` -- the CI images built and published here, the
+  builder the VM lanes run in and the guest they boot, and
+  the scripts that tag, publish and prune them; see
   `images/README.md`. `images/builder/pins.env` also holds
   the libvfio-user commit every CI build uses.
 - `report/` -- `gen-report.py`, which turns a lane's results
@@ -26,15 +26,19 @@ the same Ansible plays a developer runs.
 
 ## The guest image
 
-The guest disk is **pulled from the registry**, not built
-here. The image is built elsewhere, by the `ionic` flavour of
-[batesste-ci-images][ref-ci-images].
+The guest disk is defined in `ci/images/guest/` and
+published to GHCR, as `ghcr.io/rocm/rocm-ernic/guest-ionic`,
+by `ci-images.yml`, which `system-tests.yml` calls before its
+lanes; see [`images/README.md`](images/README.md). It has no
+password and no SSH key: `ci/boot-guest.sh`, which every lane
+boots it with, authorizes a key made for the job.
 
 The tag, disk name and login account are pinned only in
 `ci/guest-image.env`, which the GitHub lanes and
-`ansible/group_vars/all.yml` both read; a bump is one edit
-there. `tools/check-guest-image-tag.sh` fails the build if a
-literal tag appears anywhere else.
+`ansible/group_vars/all.yml` both read, and which
+`ci/images/image-tag.sh --write guest` updates when the
+guest's definition changes. `tools/check-guest-image-tag.sh`
+fails the build if a literal tag appears anywhere else.
 
 The hosted lanes pull it through
 `.github/actions/fetch-guest-vm`. By hand,
@@ -222,4 +226,3 @@ The hosted lanes run it from `.github/actions/publish-perf`,
 and the `summary.json` it writes is what `publish-perf.py`
 records.
 
-[ref-ci-images]: https://github.com/sbates130272/batesste-ci-images
