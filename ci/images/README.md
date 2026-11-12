@@ -7,13 +7,16 @@ by `.github/workflows/ci-images.yml`:
 | --- | --- | --- |
 | `builder/` | `ghcr.io/rocm/rocm-ernic/ci-builder` | QEMU with the vfio-user client, libvfio-user, and the tools to boot, provision and fetch a guest |
 
-Nothing uses `ci-builder` yet: the VM lanes still run in the
-Docker Hub builder their `container: image:` lines name.
-Moving them onto it is the next step.
+Every VM lane runs in `ci-builder`, under the tag its
+`container:` `image:` line names. `system-tests.yml` calls
+`ci-images.yml` first, which checks that tag is this tree's
+and publishes the image if it isn't published yet. So a pull
+request that changes the builder runs the lanes in the new
+image.
 
 The image's default user is `ci` (uid 1001), not root.
-Anything needing root asks for it: the lanes, which need
-`/dev/kvm`, TAP devices and apt, will run it with
+Anything needing root asks for it: the VM lanes, which are
+written to run as root, run it with
 `options: --user root ...`.
 
 ## Tags name contents
@@ -23,7 +26,7 @@ first 12 hex digits of a SHA-256 over every file that
 defines it, for example:
 
 ```
-ci-builder:qemu11.1.1-vfu.5b9c722-26d15703780c
+ci-builder:qemu11.1.1-vfu.5b9c722-<12 hex digits>
 ```
 
 The files are those in the image's directory (its
@@ -32,17 +35,47 @@ Change any of them and the tag changes. `image-tag.sh NAME`
 prints the tag, and `image-tag.sh --ref NAME` the full
 reference.
 
-A published tag is never built or pushed again, so a tag
-always names one build. `ensure-image.sh NAME` looks for the
-tag in the registry, and only if the registry says it isn't
-there does it build the image, run the image's `check.sh`
-inside it, and push it. Any other answer from the registry
-fails the run rather than risk overwriting a tag.
+A published tag isn't built or pushed again.
+`ensure-image.sh NAME` looks for the tag in the registry,
+and only if the registry says it isn't there does it build
+the image and run the image's `check.sh` inside it. It then
+looks again, and pushes only if the tag still isn't there.
+Any other answer from the registry fails the run rather than
+risk overwriting a tag.
 
 So a pull request that changes an image's definition builds
 and publishes the new image under its new tag, and a run that
 changes nothing only looks. Two runs needing the same new
-image build it once.
+image at once both build it, and the one that finishes second
+doesn't push it. Nothing makes the second look and the push
+one step, so two runs finishing within seconds could both
+push, publishing two checked builds of one definition, one
+after the other, under the tag. A shared concurrency group
+would prevent that, but GitHub keeps only one waiting job per
+group, so a third run would cancel the second's build and
+skip its lanes.
+
+The builder's tag is pinned in `ci/guest-image.env`, as
+`BUILDER_IMAGE` and `BUILDER_TAG`, and in each lane's
+`container:` `image:` line, written out in full because the
+security scan (zizmor) can't tell an image named by an
+expression is pinned. `image-tag.sh --check builder` fails,
+and so does `ci-images.yml`, if any of them isn't what the
+tree defines; after changing the builder, run
+
+```bash
+ci/images/image-tag.sh --write builder
+```
+
+and commit the result. `tools/check-guest-image-tag.sh`
+fails if a builder tag appears anywhere else, or a
+workflow's `image:` line names another.
+
+Every lane names the image in `ghcr.io/rocm/rocm-ernic`,
+while `ci-images.yml` publishes to the running repository's
+owner. So a run in a fork whose builder isn't already
+published by `ROCm/rocm-ernic` publishes it to the fork, and
+its lanes, looking in `ROCm`'s registry, fail.
 
 To rebuild an image whose definition hasn't changed, for
 Ubuntu's updates, bump `REBUILD` in its `pins.env`.
@@ -96,8 +129,9 @@ that image's Ubuntu 24.04 and QEMU v11.1.1, and changes:
 
 - libvfio-user is 5b9c722, the commit the rest of CI builds
   against, not 8039244;
-- it adds `libibverbs-dev`, `librdmacm-dev`, `iproute2` and
-  `file`, which the lanes used to install or expect;
+- it adds `libibverbs-dev`, `librdmacm-dev`, `iproute2`,
+  `sudo` and `file`, which the lanes used to install or
+  expect;
 - it drops the Docker CLI, buildx and compose, the
   entrypoint and its `batesste` user, and ccache, whose
   cache mount doesn't outlive a CI runner; the registry

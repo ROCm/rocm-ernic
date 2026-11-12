@@ -148,15 +148,18 @@
 
 ### Added
 
-* CI defines its own builder image, the container the VM lanes will run
-  in, in `ci/images/builder/`, and the `CI images` workflow
-  (`ci-images.yml`) publishes it to `ghcr.io/rocm/rocm-ernic/ci-builder`
-  when a pull request changes it. Its tag names its contents, so a
-  published tag never changes: `ci/images/image-tag.sh` computes it, and
+* CI defines its own builder image, the container the VM lanes run in, in
+  `ci/images/builder/`, and the `CI images` workflow (`ci-images.yml`)
+  publishes it to `ghcr.io/rocm/rocm-ernic/ci-builder` when a pull
+  request changes it. Its tag names its contents, so a published tag
+  never changes: `ci/images/image-tag.sh` computes it, and
   `ci/images/ensure-image.sh` builds, checks and pushes an image only if
   the registry hasn't got it. `ensure-image.sh --build-only` builds one
-  locally, with Docker or podman. The lanes don't use the image yet. The
-  `ernic-ci-images` test checks both scripts.
+  locally, with Docker or podman. `ci/guest-image.env` and the lanes'
+  container `image:` lines pin the builder's tag: `image-tag.sh --check
+  builder` fails if any isn't the tree's, and `image-tag.sh --write
+  builder` updates them all. The `ernic-ci-images` test checks both
+  scripts.
 * `ci/boot-guest.sh` boots a guest image under QEMU with an SSH key made
   for that boot, which cloud-init authorizes from a NoCloud seed disk for
   the `--user` account (made, without sudo, if the image doesn't have it),
@@ -687,6 +690,19 @@
   in `ci/images/builder/pins.env`, rather than in each of eight
   workflows, and a pull request that changes it runs the checks that
   build against it. It's still 5b9c722.
+* The system-test lanes run in the in-tree builder image,
+  `ghcr.io/rocm/rocm-ernic/ci-builder`, rather than Stephen Bates'
+  `batesste-ci-images-ubuntu-qemu-libvfio-user` on Docker Hub, and no
+  longer install packages into it in every job. System Tests publishes the
+  image first, if this tree's definition of it isn't published yet, so a
+  pull request that changes the builder runs every lane in the new image.
+  Runs that need the same new image each build it, and one that finds it
+  published by the time it has built it doesn't push it. The builder
+  carries libvfio-user 5b9c722, the commit the rest of CI builds against,
+  rather than 8039244. `tools/check-guest-image-tag.sh` now also fails if
+  a builder tag appears outside `ci/guest-image.env`, other than a lane's
+  `image:` line naming the pinned one, and searches only the files git
+  tracks, so build trees no longer fail it.
 * **Breaking:** **The Ansible collection is now `rocm.ernic`, and it is not
   published to Ansible Galaxy.** It was `sbates130272.rocm_ernic`. Address
   the roles as `rocm.ernic.ernic_guest_setup` and so on, and install the

@@ -41,5 +41,5 @@ jobs:
         with:
           persist-credentials: false
 
-      - name: No literal guest image tag outside ci/guest-image.env
+      - name: No literal guest or builder image tag outside ci/guest-image.env
         run: tools/check-guest-image-tag.sh

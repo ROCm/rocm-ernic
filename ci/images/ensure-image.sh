@@ -10,10 +10,12 @@
 # build, and is never built or pushed again. If the registry says the tag
 # doesn't exist, it builds the image from ci/images/NAME/, with every pin
 # in its pins.env as a build argument, runs NAME/check.sh inside it, and
-# only then pushes it. An image without a check.sh isn't built at all.
-# Any other answer from the registry, such as a refused login or a
-# network error, is a failure rather than a reason to build, so a
-# published tag can't be overwritten by mistake.
+# only then pushes it, unless by then the registry has it, which another
+# run building the same image at the same time can cause. An image
+# without a check.sh isn't built at all. Any other answer from the
+# registry, such as a refused login or a network error, is a failure
+# rather than a reason to build or push, so a published tag can't be
+# overwritten by mistake.
 #
 # The build caches its layers in the registry, as IMAGE:buildcache, so an
 # image whose pins haven't changed rebuilds in minutes.
@@ -151,19 +153,27 @@ if $BUILD_ONLY; then
     exit 0
 fi
 
-# Does the registry have it? Only a definite "no such tag" or "no such
-# repository" means build.
-status=0
-answer=$(docker buildx imagetools inspect "$REF" 2>&1) || status=$?
-if [[ $status -eq 0 ]]; then
+# Whether the registry has the image: true if it has, false if it says
+# there's no such tag or no such repository. Any other answer is fatal.
+#   $1  what not to do if the answer is unclear, for the message
+published() {
+    local answer status=0
+    answer=$(docker buildx imagetools inspect "$REF" 2>&1) || status=$?
+    if [[ $status -eq 0 ]]; then
+        return 0
+    fi
+    if [[ $answer != *": not found"* && $answer != *MANIFEST_UNKNOWN* &&
+        $answer != *NAME_UNKNOWN* ]]; then
+        printf '%s\n' "$answer" >&2
+        die "couldn't tell whether $REF is published, so it isn't $1"
+    fi
+    return 1
+}
+
+if published built; then
     echo "$PROG: $REF is already published" >&2
     printf '%s\n' "$REF"
     exit 0
-fi
-if [[ $answer != *": not found"* && $answer != *MANIFEST_UNKNOWN* &&
-    $answer != *NAME_UNKNOWN* ]]; then
-    printf '%s\n' "$answer" >&2
-    die "couldn't tell whether $REF is published, so it isn't built"
 fi
 
 if [[ ${CI_IMAGES_CAN_PUSH:-true} == false ]]; then
@@ -178,6 +188,17 @@ docker buildx build --file "$DIR/Dockerfile" "${BUILD_ARGS[@]}" \
     --cache-to "type=registry,ref=$REPO:buildcache,mode=max" \
     --load --tag "$REF" "$DIR" >&2
 check_image
+# Another run may have published it while this one built. Then the tag
+# already names a checked build, and stays that one. Nothing makes this
+# look and the push one step, but a race needs two runs to finish
+# building the same new image within a few seconds, and the worst it does
+# is publish two checked builds of one definition under the tag in turn.
+if published pushed; then
+    echo "$PROG: $REF was published while this run built it;" \
+        "not pushing" >&2
+    printf '%s\n' "$REF"
+    exit 0
+fi
 docker push "$REF" >&2
 echo "$PROG: published $REF" >&2
 printf '%s\n' "$REF"
