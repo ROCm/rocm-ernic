@@ -107,6 +107,17 @@ jobs:
         with:
           persist-credentials: false
 
+      # develop's pins as they are now, not only as they were at the
+      # commit this run started from: a re-run of an old run would
+      # otherwise delete a tag develop has pinned since
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: develop
+          path: develop
+          sparse-checkout: ci/guest-image.env
+          sparse-checkout-cone-mode: false
+          persist-credentials: false
+
       # It looks again rather than trusting the plan job's list, which
       # may be out of date by now
       - name: Delete the versions nothing needs
@@ -116,6 +127,7 @@ jobs:
         run: |
           {
             echo '```'
-            ci/images/prune-images.sh --delete ci/guest-image.env
+            ci/images/prune-images.sh --delete ci/guest-image.env \
+              develop/ci/guest-image.env
             echo '```'
           } | tee -a "$GITHUB_STEP_SUMMARY"
