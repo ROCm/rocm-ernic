@@ -57,7 +57,6 @@ ernic_driver_source: "{{ ernic_install_prefix }}/share/rocm-ernic/patches"
 ernic_driver_tarball: /tmp/rocm-ernic-driver.tar.gz
 
 # ── QEMU / VM defaults written into the env file ─
-ernic_qemu_minimal: "{{ ansible_env.HOME }}/Projects/qemu-minimal"
 ernic_qemu_path: /opt/qemu/bin/
 ernic_vm_image_dir: /opt/qemu-images
 ernic_vm_name_base: rocm-ernic-vm

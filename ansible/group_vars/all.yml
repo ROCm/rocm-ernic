@@ -66,7 +66,6 @@ ernic_ionic_min_kernel: "6.18"
 ernic_guest_build_deps: true
 
 # ── QEMU / VM defaults ──────────────────────────
-ernic_qemu_minimal: "{{ ansible_env.HOME }}/Projects/qemu-minimal"
 ernic_qemu_path: /opt/qemu-10.2.2-pci-mmio-bridge-submit/bin/
 ernic_vm_image_dir: /opt/qemu-images
 ernic_vm_name_base: rocm-ernic-ionic-vm

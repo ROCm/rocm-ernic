@@ -125,7 +125,7 @@ jobs:
       # find the programs to run it on. meson and libcmocka-dev
       # build libvfio-user, which needs cmocka even though only its tests
       # use it. openssh-client has the ssh-keygen that the ernic-boot-guest
-      # test runs.
+      # test runs, and the ernic-prune-images test needs jq.
       - name: Install dependencies
         env:
           DEBIAN_FRONTEND: noninteractive
@@ -138,6 +138,7 @@ jobs:
             dpkg-dev \
             file \
             git \
+            jq \
             libcmocka-dev \
             libglib2.0-dev \
             libibverbs-dev \

@@ -1316,6 +1316,16 @@ add_test(
 )
 set_tests_properties(ernic-ci-images PROPERTIES TIMEOUT 120)
 
+# ci/images/prune-images.sh, against stand-ins for gh and GHCR: which
+# versions of an image it deletes, that it keeps what a kept version
+# needs, and that a failure before deleting deletes nothing. Needs jq.
+add_test(
+    NAME ernic-prune-images
+    COMMAND ${CMAKE_CURRENT_SOURCE_DIR}/test_prune_images.sh
+        ${PROJECT_SOURCE_DIR}/ci/images/prune-images.sh
+)
+set_tests_properties(ernic-prune-images PROPERTIES TIMEOUT 120)
+
 # tools/check-guest-image-tag.sh, on a scratch git repository: that a
 # guest or builder tag outside ci/guest-image.env fails, except in a
 # workflow's image: line naming the pinned builder.

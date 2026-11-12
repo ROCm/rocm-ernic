@@ -36,6 +36,10 @@ from difflib import get_close_matches
 
 ENV_FILE = "/etc/rocm-ernic/rocm-ernic.env"
 
+# Applied after the env file and the environment, so load_env() can tell
+# a setting that's absent from one that's set
+DEFAULT_VM_IMAGE_DIR = "/opt/qemu-images"
+
 DEFAULTS = {
     "ERNIC_BIN": "/usr/local/bin/rocm-ernic",
     "ERNIC_RUN_DIR": "/run/rocm-ernic",
@@ -50,7 +54,6 @@ DEFAULTS = {
     "ERNIC_SOCKET_GROUP": "",
     "ERNIC_DRIVER_SOURCE": "/usr/local/share/rocm-ernic/patches",
     "ERNIC_DRIVER_TARBALL": "/tmp/rocm-ernic-driver.tar.gz",
-    "ERNIC_QEMU_MINIMAL": os.path.expanduser("~/Projects/qemu-minimal"),
     "ERNIC_QEMU_PATH": "/opt/qemu-v10.1.2/bin/",
     "ERNIC_VM_IMAGE_DIR": "",
     "ERNIC_VM_NAME": "stebates-test-vm",
@@ -83,7 +86,15 @@ def load_env():
         if key in os.environ:
             cfg[key] = os.environ[key]
     if not cfg["ERNIC_VM_IMAGE_DIR"]:
-        cfg["ERNIC_VM_IMAGE_DIR"] = os.path.join(cfg["ERNIC_QEMU_MINIMAL"], "images")
+        # ERNIC_QEMU_MINIMAL used to set this default, as its images/
+        if cfg.get("ERNIC_QEMU_MINIMAL") or os.environ.get("ERNIC_QEMU_MINIMAL"):
+            print(
+                "WARNING: ERNIC_QEMU_MINIMAL is no longer read; set"
+                " ERNIC_VM_IMAGE_DIR to its images/ directory to keep"
+                f" using it. Using {DEFAULT_VM_IMAGE_DIR}.",
+                file=sys.stderr,
+            )
+        cfg["ERNIC_VM_IMAGE_DIR"] = DEFAULT_VM_IMAGE_DIR
     return cfg
 
 

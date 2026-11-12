@@ -640,4 +640,72 @@ grep -q 'Instance 1 is not running' "$WORK/err-10" ||
     fail "a zombie server was taken for a running one: $(cat "$WORK/err-10")"
 pass "ernicctl takes a zombie for an exited process"
 
+# ── ernicctl's image directory ──────────────────
+
+# Print the image directory ernicctl settles on, reading the env file
+# given rather than an installed one, with its warnings in
+# $WORK/err-image-dir. ERNIC_VM_IMAGE_DIR and ERNIC_QEMU_MINIMAL are
+# taken out of the environment first, so a case sets only what it names.
+#   $1  the env file, which needn't exist
+#   $@  environment as NAME=VALUE
+image_dir() {
+    local env_file=$1
+    shift
+    env -u ERNIC_VM_IMAGE_DIR -u ERNIC_QEMU_MINIMAL "$@" "$PYTHON" -I -c '
+import contextlib
+import importlib.machinery
+import importlib.util
+import io
+import sys
+
+loader = importlib.machinery.SourceFileLoader("ernicctl", sys.argv[1])
+module = importlib.util.module_from_spec(
+    importlib.util.spec_from_loader("ernicctl", loader))
+# Loading it reads the installed env file, if any: ignore what that says
+with contextlib.redirect_stderr(io.StringIO()):
+    loader.exec_module(module)
+module.ENV_FILE = sys.argv[2]
+print(module.load_env()["ERNIC_VM_IMAGE_DIR"])
+' "$ERNICCTL" "$env_file" 2>"$WORK/err-image-dir"
+}
+
+# Check what image_dir prints, and whether ernicctl warns that it no
+# longer reads ERNIC_QEMU_MINIMAL.
+#   $1  what the case is, for the message
+#   $2  the directory expected
+#   $3  warns or quiet
+#   $@  image_dir's arguments
+expect_image_dir() {
+    local what=$1 want=$2 warning=$3 dir
+    shift 3
+    dir=$(image_dir "$@") ||
+        fail "$what: ernicctl failed: $(cat "$WORK/err-image-dir")"
+    [[ $dir == "$want" ]] ||
+        fail "$what: the image directory is $dir, not $want"
+    if [[ $warning == warns ]]; then
+        grep -q "ERNIC_QEMU_MINIMAL is no longer read" "$WORK/err-image-dir" ||
+            fail "$what: no warning: $(cat "$WORK/err-image-dir")"
+    elif [[ -s $WORK/err-image-dir ]]; then
+        fail "$what: a warning: $(cat "$WORK/err-image-dir")"
+    fi
+}
+
+NO_FILE="$WORK/no-such.env"
+printf 'ERNIC_QEMU_MINIMAL=%s\n' "$WORK/qm" >"$WORK/qm-only.env"
+printf 'ERNIC_QEMU_MINIMAL=%s\nERNIC_VM_IMAGE_DIR=%s\n' "$WORK/qm" \
+    "$WORK/file-img" >"$WORK/both.env"
+
+expect_image_dir "nothing set" /opt/qemu-images quiet "$NO_FILE"
+expect_image_dir "ERNIC_QEMU_MINIMAL alone, in the environment" \
+    /opt/qemu-images warns "$NO_FILE" ERNIC_QEMU_MINIMAL="$WORK/qm"
+expect_image_dir "ERNIC_QEMU_MINIMAL alone, in the env file" \
+    /opt/qemu-images warns "$WORK/qm-only.env"
+expect_image_dir "an empty ERNIC_VM_IMAGE_DIR" /opt/qemu-images warns \
+    "$NO_FILE" ERNIC_VM_IMAGE_DIR= ERNIC_QEMU_MINIMAL="$WORK/qm"
+expect_image_dir "both in the env file" "$WORK/file-img" quiet \
+    "$WORK/both.env"
+expect_image_dir "ERNIC_VM_IMAGE_DIR in the environment" "$WORK/img" quiet \
+    "$WORK/both.env" ERNIC_VM_IMAGE_DIR="$WORK/img"
+pass "the image directory defaults to /opt/qemu-images, not qemu-minimal's"
+
 echo "All boot-guest tests passed."

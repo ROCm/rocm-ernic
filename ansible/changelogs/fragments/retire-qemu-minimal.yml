@@ -1,0 +1,13 @@
+# Copyright (c) Advanced Micro Devices, Inc. All rights reserved.
+#
+# SPDX-License-Identifier: MIT
+
+---
+minor_changes:
+  - >-
+    ``ernic_host_setup`` - the ``ernic_qemu_minimal`` variable is gone, and
+    the env file it writes no longer sets ``ERNIC_QEMU_MINIMAL``, which
+    ``ernicctl`` no longer reads.  It only set the default
+    ``ERNIC_VM_IMAGE_DIR``, which the env file always sets from
+    ``ernic_vm_image_dir``, so nothing changes, and a leftover
+    ``ernic_qemu_minimal`` in an inventory is ignored.

@@ -9,9 +9,9 @@
   it failed with `run-vm not found`. It now boots them with
   `rocm-ernic-boot-guest`, installed in `libexec/rocm-ernic/`
   (`ci/boot-guest.sh` in the source tree), and no longer needs
-  qemu-minimal: `ERNIC_QEMU_MINIMAL` now only sets the default
-  `ERNIC_VM_IMAGE_DIR`, and an empty `ERNIC_QEMU_PATH` means QEMU is found
-  on `PATH`. It needs `cloud-localds` (from `cloud-image-utils`) and
+  qemu-minimal (see Changed for `ERNIC_QEMU_MINIMAL`). An empty
+  `ERNIC_QEMU_PATH` means QEMU is found on `PATH`. It needs
+  `cloud-localds` (from `cloud-image-utils`) and
   `ssh-keygen`, which the `rocm-ernic` package now recommends, and a guest
   image that runs cloud-init, as the CI guest does. The device it plugs in
   now has the QEMU ID `ernicN`, so `detach` and `hot-reload` can unplug it,
@@ -169,6 +169,15 @@
   checks `tools/check-guest-image-tag.sh`. Without an image named,
   `image-tag.sh --check` and `--write` cover every image under
   `ci/images/`, and fail on one the script doesn't know.
+* The `CI image pruning` workflow (`ci-images-prune.yml`) deletes the
+  versions of the CI images in GHCR that nothing needs, every Monday,
+  with `ci/images/prune-images.sh`. It keeps the tags develop's
+  `ci/guest-image.env` pins, the 10 newest, anything under 30 days old or
+  with another tag, such as `buildcache`, and whatever a kept version
+  needs, such as an artifact attached to it. A pruned tag that's wanted
+  again is rebuilt when a run needs it. Every run lists what it would
+  delete; only runs on develop delete. The `ernic-prune-images` test
+  checks the script, and needs `jq`.
 * `ci/boot-guest.sh` boots a guest image under QEMU with an SSH key made
   for that boot, which cloud-init authorizes from a NoCloud seed disk for
   the `--user` account (made, without sudo, if the image doesn't have it),
@@ -654,6 +663,19 @@
 
 ### Changed
 
+* **Breaking:** **`ernicctl`'s default `ERNIC_VM_IMAGE_DIR` is now
+  `/opt/qemu-images`**, the directory the Ansible roles already use, and
+  `ERNIC_QEMU_MINIMAL` is gone. The default was
+  `$ERNIC_QEMU_MINIMAL/images`, so `~/Projects/qemu-minimal/images`
+  unless you set `ERNIC_QEMU_MINIMAL`, but nothing needs a qemu-minimal
+  checkout any more. If you keep VM disks in either place and don't set
+  `ERNIC_VM_IMAGE_DIR`, set it to that directory, or move the disks.
+  `ernicctl` warns when it finds `ERNIC_QEMU_MINIMAL` set and
+  `ERNIC_VM_IMAGE_DIR` not. Env files the Ansible roles write set
+  `ERNIC_VM_IMAGE_DIR`, so they're unaffected. The packaged
+  `rocm-ernic.env` now sets it to `/opt/qemu-images` too: it set it to
+  `$ERNIC_QEMU_MINIMAL/images`, which `ernicctl`, which doesn't expand
+  variables, took for a relative path.
 * **Breaking:** **`ernicctl vm-launch` gives each instance's VM its own
   name and disk.** Every instance's VM was named `ERNIC_VM_NAME`, so
   `vm-launch 1` and `vm-launch 2` booted two guests on one disk, and with
