@@ -160,6 +160,15 @@
   builder` fails if any isn't the tree's, and `image-tag.sh --write
   builder` updates them all. The `ernic-ci-images` test checks both
   scripts.
+* The `Image pins` workflow (`guest-image-pin.yml`, formerly `Guest image
+  pin`), which runs on every pull request, now also fails if
+  `ci/guest-image.env` or a lane's container `image:` line doesn't name
+  the CI images the tree defines (`ci/images/image-tag.sh --check`), not
+  only when System Tests runs. It first runs the tests of its checks:
+  `ernic-ci-images` and the new `ernic-check-guest-image-tag`, which
+  checks `tools/check-guest-image-tag.sh`. Without an image named,
+  `image-tag.sh --check` and `--write` cover every image under
+  `ci/images/`, and fail on one the script doesn't know.
 * `ci/boot-guest.sh` boots a guest image under QEMU with an SSH key made
   for that boot, which cloud-init authorizes from a NoCloud seed disk for
   the `--user` account (made, without sudo, if the image doesn't have it),

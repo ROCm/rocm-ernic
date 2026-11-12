@@ -26,8 +26,12 @@
 #     written out because the security scan can't tell an image named by
 #     an expression is pinned.
 #
-# Usage: image-tag.sh [--ref | --check | --write] NAME
-#   NAME     an image's directory under ci/images/ (builder)
+# Usage: image-tag.sh [--ref] NAME
+#        image-tag.sh (--check | --write) [NAME]
+#   NAME     an image's directory under ci/images/ (builder); --check and
+#            --write without one cover every directory holding a
+#            pins.env, so one this script doesn't know fails rather than
+#            going unchecked
 #   --ref    print the full reference, REGISTRY/IMAGE:TAG, not the tag
 #   --check  fail unless every pin names the image as the tree defines it
 #   --write  make every pin name the image as the tree defines it
@@ -50,7 +54,8 @@ die() {
 }
 
 usage() {
-    echo "Usage: $PROG [--ref | --check | --write] NAME" >&2
+    echo "Usage: $PROG [--ref] NAME" >&2
+    echo "       $PROG (--check | --write) [NAME]" >&2
     exit 2
 }
 
@@ -72,7 +77,21 @@ while [[ $# -gt 0 ]]; do
             ;;
     esac
 done
-[[ -n $NAME ]] || usage
+
+# Every image, one at a time: each directory holding a pins.env
+if [[ -z $NAME ]]; then
+    [[ $MODE == check || $MODE == write ]] || usage
+    shopt -s nullglob
+    all_pins=("$IMAGES_DIR"/*/pins.env)
+    shopt -u nullglob
+    [[ ${#all_pins[@]} -gt 0 ]] || die "no image is defined in $IMAGES_DIR"
+    status=0
+    for pins in "${all_pins[@]}"; do
+        dir=${pins%/pins.env}
+        "$IMAGES_DIR/$PROG" "--$MODE" "${dir##*/}" || status=1
+    done
+    exit "$status"
+fi
 
 # The published image's name for each definition, and its keys' prefix in
 # the lockfile

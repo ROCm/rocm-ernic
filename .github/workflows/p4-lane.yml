@@ -51,7 +51,7 @@ jobs:
     container:
       # ci/images/image-tag.sh --write builder keeps the tag; see the
       # loopback job in system-tests.yml.
-      image: ghcr.io/rocm/rocm-ernic/ci-builder:qemu11.1.1-vfu.5b9c722-a9d3b79b43a1
+      image: ghcr.io/rocm/rocm-ernic/ci-builder:qemu11.1.1-vfu.5b9c722-2d3202918e8f
       # --user root, since the image's default user is ci, and --init,
       # which makes PID 1 an init that reaps orphans: see the loopback
       # job in system-tests.yml.

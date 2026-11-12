@@ -1316,6 +1316,16 @@ add_test(
 )
 set_tests_properties(ernic-ci-images PROPERTIES TIMEOUT 120)
 
+# tools/check-guest-image-tag.sh, on a scratch git repository: that a
+# guest or builder tag outside ci/guest-image.env fails, except in a
+# workflow's image: line naming the pinned builder.
+add_test(
+    NAME ernic-check-guest-image-tag
+    COMMAND ${CMAKE_CURRENT_SOURCE_DIR}/test_check_guest_image_tag.sh
+        ${PROJECT_SOURCE_DIR}/tools/check-guest-image-tag.sh
+)
+set_tests_properties(ernic-check-guest-image-tag PROPERTIES TIMEOUT 120)
+
 # The P4 engine on the live device: guest frames out of the Ethernet Tx
 # ring, through the pipeline, and out the far side. Starts a server per
 # case because the statistics it asserts on are reported at shutdown.

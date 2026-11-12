@@ -59,17 +59,25 @@ The builder's tag is pinned in `ci/guest-image.env`, as
 `BUILDER_IMAGE` and `BUILDER_TAG`, and in each lane's
 `container:` `image:` line, written out in full because the
 security scan (zizmor) can't tell an image named by an
-expression is pinned. `image-tag.sh --check builder` fails,
-and so does `ci-images.yml`, if any of them isn't what the
-tree defines; after changing the builder, run
+expression is pinned. `image-tag.sh --check builder` fails
+if any of them isn't what the tree defines; after changing
+the builder, run
 
 ```bash
 ci/images/image-tag.sh --write builder
 ```
 
-and commit the result. `tools/check-guest-image-tag.sh`
-fails if a builder tag appears anywhere else, or a
-workflow's `image:` line names another.
+and commit the result. Without a NAME, `--check` and
+`--write` cover every directory here holding a `pins.env`,
+and fail on one `image-tag.sh` doesn't know, so a new image
+can't go unchecked. `tools/check-guest-image-tag.sh` fails
+if a builder tag appears anywhere else, or a workflow's
+`image:` line names another.
+
+Both checks run on every pull request, in
+`guest-image-pin.yml`, which has no `paths:` filter, after
+the tests of the scripts themselves; `ci-images.yml` runs
+`image-tag.sh --check` again before it publishes anything.
 
 Every lane names the image in `ghcr.io/rocm/rocm-ernic`,
 while `ci-images.yml` publishes to the running repository's
@@ -115,7 +123,10 @@ The image then trusts it, so `ensure-image.sh` refuses to
 publish one built that way.
 
 `tests/test_ci_images.sh` (the `ernic-ci-images` CTest)
-checks both scripts against a stand-in for Docker.
+checks both scripts against a stand-in for Docker, and
+`tests/test_check_guest_image_tag.sh`
+(`ernic-check-guest-image-tag`) checks
+`tools/check-guest-image-tag.sh`.
 
 ## Where it came from
 
