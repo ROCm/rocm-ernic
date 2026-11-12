@@ -75,8 +75,9 @@
   didn't for a CI lane's guest: each try first waits at most 30 seconds
   for the server to answer at all, and a server that never answered
   isn't asked again for every branch and tag. It then tries Google's
-  mirror of git.kernel.org's stable tree, unless `--repo` names another
-  repository; `--mirror URL` adds others.
+  mirror of the repository, kernel.googlesource.com, which mirrors every
+  repository on git.kernel.org at the same path; `--mirror URL` adds
+  others. git.kernel.org doesn't always answer GitHub's runners.
 
 * The device now honours Bus Master Enable in its PCI Command register,
   as the PCI Express specification requires. Before, it went on writing

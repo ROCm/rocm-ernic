@@ -18,9 +18,10 @@
 # all replaces the default rather than adding to it, so a caller that
 # names a directory gets exactly what it named.
 #
-# If the repository never answers, the script tries each mirror in turn:
-# by default, Google's mirror of git.kernel.org's stable tree, unless
-# --repo names another repository; --mirror adds others.
+# If the repository never answers, the script tries each mirror in turn.
+# A repository on git.kernel.org, as the default is, is mirrored at the
+# same path on kernel.googlesource.com, which comes first; --mirror adds
+# others.  git.kernel.org doesn't always answer GitHub's runners.
 #
 # Usage:
 #   fetch-ionic-sources.sh --source-dir DIR --kernel-ref REF
@@ -41,9 +42,6 @@ SOURCE_DIR=""
 KERNEL_REF=""
 PATCHES_DIRS=()
 KERNEL_REPO="https://git.kernel.org/pub/scm/linux/kernel/git/stable/linux.git"
-# Google's mirror of KERNEL_REPO's default
-DEFAULT_MIRROR="https://kernel.googlesource.com/pub/scm/linux/kernel/git/stable/linux"
-REPO_GIVEN=false
 MIRRORS=()
 FORCE=false
 
@@ -65,7 +63,7 @@ while [[ $# -gt 0 ]]; do
         --source-dir)  SOURCE_DIR="$2";  shift 2 ;;
         --kernel-ref)  KERNEL_REF="$2";  shift 2 ;;
         --patches-dir) PATCHES_DIRS+=("$2"); shift 2 ;;
-        --repo)        KERNEL_REPO="$2"; REPO_GIVEN=true; shift 2 ;;
+        --repo)        KERNEL_REPO="$2"; shift 2 ;;
         --mirror)      MIRRORS+=("$2");  shift 2 ;;
         --force)       FORCE=true;       shift ;;
         -h|--help)
@@ -82,8 +80,11 @@ if [[ -z "${SOURCE_DIR}" || -z "${KERNEL_REF}" ]]; then
     exit 1
 fi
 
-if ! ${REPO_GIVEN}; then
-    MIRRORS=("${DEFAULT_MIRROR}" "${MIRRORS[@]}")
+# Google mirrors every repository on git.kernel.org at the same path,
+# without the .git
+if [[ ${KERNEL_REPO} =~ ^https://git\.kernel\.org/(pub/scm/.+)$ ]]; then
+    MIRRORS=("https://kernel.googlesource.com/${BASH_REMATCH[1]%.git}"
+             "${MIRRORS[@]}")
 fi
 
 if [ ${#PATCHES_DIRS[@]} -eq 0 ]; then

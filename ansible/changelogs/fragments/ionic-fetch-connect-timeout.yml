@@ -11,9 +11,9 @@ bugfixes:
     eight tries waiting on git's own connection timeout.  Each try now
     waits at most 30 seconds for the server to answer, and if it never
     does, the script doesn't go on to fetch every branch and tag, but
-    after about 3 minutes tries Google's mirror of git.kernel.org's stable
-    tree instead, unless ``--repo`` names another repository.
-    ``--mirror URL`` adds others.
+    after about 3 minutes tries Google's mirror of the repository instead,
+    on kernel.googlesource.com, which mirrors every repository on
+    git.kernel.org at the same path.  ``--mirror URL`` adds others.
 minor_changes:
   - >-
     ``ernic_guest_setup`` - with the new
