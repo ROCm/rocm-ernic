@@ -39,8 +39,21 @@ RUN printf '%s\n' 'Acquire::Retries "10";' \
 #   --secret id=root-ca,src=/path/to/root-ca.crt
 # and it's trusted from here on. CI passes none, and ensure-image.sh
 # won't publish an image built with one.
+#
+# A secret isn't part of the build cache's key, so ROOT_CA_SHA256, the
+# certificate's SHA-256 or "none", is: a build with a certificate and one
+# without never share this layer, or any after it. Otherwise a build
+# could reuse a layer that trusts a certificate it wasn't given.
+ARG ROOT_CA_SHA256
 RUN --mount=type=secret,id=root-ca,target=/run/secrets/root-ca \
-    if [ -s /run/secrets/root-ca ]; then \
+    if [ "${ROOT_CA_SHA256:?pass none, or the root CA SHA-256}" = none ]; then \
+        if [ -s /run/secrets/root-ca ]; then \
+            echo "a root CA was passed with ROOT_CA_SHA256=none" >&2; \
+            exit 1; \
+        fi; \
+    else \
+        printf '%s  %s\n' "${ROOT_CA_SHA256}" /run/secrets/root-ca | \
+            sha256sum -c - && \
         apt-get update && \
         apt-get install -y --no-install-recommends ca-certificates && \
         cp /run/secrets/root-ca \

@@ -15,6 +15,7 @@ on:
     branches: [ develop ]
     paths:
       - 'ci/images/**'
+      - 'tests/test_ci_images.sh'
       - '.github/workflows/ci-images.yml'
   workflow_dispatch:
 
@@ -34,6 +35,13 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
+
+      # The scripts that tag and publish the images, before they're
+      # trusted to: the same test as CTest's ernic-ci-images, which Build
+      # and Test doesn't run for a change only under ci/images/
+      - name: Test the image scripts
+        shell: bash
+        run: tests/test_ci_images.sh ci/images
 
       - name: Compute the tags
         id: tags

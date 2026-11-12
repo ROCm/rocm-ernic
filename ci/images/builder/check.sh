@@ -43,13 +43,17 @@ devices=$(qemu-system-x86_64 -device help)
 HDR=/usr/local/include/vfio-user/libvfio-user.h
 [[ -f $HDR ]] || fail "$HDR is missing"
 # The vfu_setup_device_dma() max_regions parameter (f3742ed9, #835),
-# which the server calls
-grep -A2 'vfu_setup_device_dma' "$HDR" | grep -q 'max_regions' ||
+# which the server calls. Each listing is read whole into a variable,
+# not piped to grep -q, which would stop reading at the first match and
+# could fail the writer, and so the check, with SIGPIPE under pipefail.
+dma=$(grep -A2 'vfu_setup_device_dma' "$HDR") || dma=""
+[[ $dma == *max_regions* ]] ||
     fail "libvfio-user predates vfu_setup_device_dma()'s max_regions"
 built=$(cat /usr/local/share/libvfio-user-commit.txt)
 [[ $built == "$LIBVFIO_USER_COMMIT" ]] ||
     fail "libvfio-user is $built, not the pinned $LIBVFIO_USER_COMMIT"
-ldconfig -p | grep -q 'libvfio-user\.so' ||
+cache=$(ldconfig -p)
+[[ $cache == *libvfio-user.so* ]] ||
     fail "the dynamic linker can't find libvfio-user"
 
 for pkg in glib-2.0 json-c libibverbs librdmacm; do
@@ -57,5 +61,6 @@ for pkg in glib-2.0 json-c libibverbs librdmacm; do
 done
 
 echo "check.sh: the image has everything the lanes use"
-qemu-system-x86_64 --version | head -n 1
+version=$(qemu-system-x86_64 --version)
+printf '%s\n' "${version%%$'\n'*}"
 echo "libvfio-user $built"

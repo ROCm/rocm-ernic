@@ -7,6 +7,9 @@
 # hasn't got, and never one that fails its checks. A stand-in for docker
 # records what it's asked to do; nothing is built.
 #
+# Everything runs on the copy, so IMAGES_DIR needn't be in a git checkout,
+# as the nightly build's isn't. git itself is needed.
+#
 # Copyright (C) Advanced Micro Devices, Inc.
 # SPDX-License-Identifier: GPL-2.0-or-later
 #
@@ -59,8 +62,6 @@ TAG=$("$TAG_SH" builder)
 [[ $TAG =~ ^qemu[0-9][0-9.]*-vfu\.[0-9a-f]{7}-[0-9a-f]{12}$ ]] ||
     fail "the builder's tag is '$TAG'"
 [[ $("$TAG_SH" builder) == "$TAG" ]] || fail "the tag isn't stable"
-[[ $("$TAG_SH" builder) == "$("$SRC/image-tag.sh" builder)" ]] ||
-    fail "the copy's tag isn't the source tree's"
 pass "the tag names the pins and the content: $TAG"
 
 make_repo "$WORK/elsewhere/deeper"
@@ -235,6 +236,8 @@ for answer in missing missing-repo; do
     called_with "LIBVFIO_USER_COMMIT=$(sed -n 's/^LIBVFIO_USER_COMMIT=//p' \
         "$IMAGES/builder/pins.env")" ||
         fail "$answer: the pins weren't passed as build arguments"
+    called_with ROOT_CA_SHA256=none ||
+        fail "$answer: the build wasn't told it has no root CA"
     called_with "$IMAGES/builder/pins.env" ||
         fail "$answer: the check wasn't given the pins"
     called_with "$IMAGES/builder/check.sh:/check.sh:ro" ||
@@ -275,8 +278,10 @@ ensure FAKE_INSPECT=denied -- --build-only builder ||
     fail "--build-only failed: $(cat "$WORK/err")"
 ! called_with imagetools || fail "--build-only looked in the registry"
 called_with build || fail "--build-only didn't build"
-! called_with "type=registry,ref=${REF%:*}:buildcache,mode=max" ||
-    fail "--build-only exported a cache"
+! grep -q 'type=registry' "$WORK/docker.log" ||
+    fail "--build-only imported or exported a registry cache"
+called_with ROOT_CA_SHA256=none ||
+    fail "a build without a root CA wasn't told ROOT_CA_SHA256=none"
 called_with run || fail "--build-only didn't check the image"
 ! called_with push || fail "--build-only pushed"
 pass "--build-only builds and checks, and touches no registry"
@@ -286,12 +291,17 @@ ensure CI_IMAGES_ROOT_CA="$WORK/root-ca.crt" -- --build-only builder ||
     fail "--build-only with a root CA failed: $(cat "$WORK/err")"
 called_with "id=root-ca,src=$WORK/root-ca.crt" ||
     fail "the root CA wasn't passed to the build as a secret"
+ca_sum=$(sha256sum <"$WORK/root-ca.crt")
+called_with "ROOT_CA_SHA256=${ca_sum%% *}" ||
+    fail "the root CA's SHA-256 wasn't passed, to key the build cache"
+! called_with ROOT_CA_SHA256=none ||
+    fail "a build with a root CA was told ROOT_CA_SHA256=none"
 if ensure CI_IMAGES_ROOT_CA="$WORK/root-ca.crt" FAKE_INSPECT=missing \
     -- builder; then
     fail "an image built trusting a local root CA could be published"
 fi
 ! called_with build || fail "a build to publish was given a local root CA"
-pass "a local root CA is passed to local builds only"
+pass "a local root CA, and its SHA-256, are passed to local builds only"
 
 ensure FAKE_PODMAN=1 -- --build-only builder ||
     fail "--build-only with podman failed: $(cat "$WORK/err")"

@@ -92,13 +92,19 @@ while IFS= read -r line || [[ -n $line ]]; do
 done <"$PINS"
 
 # The image trusts the certificate from then on, so a published image
-# mustn't carry one
+# mustn't carry one. Its SHA-256 goes in as a build argument too, because
+# a secret isn't part of the build cache's key, and without it a build
+# could reuse a cached layer made with a different certificate, or none.
+ROOT_CA_SHA256=none
 if [[ -n ${CI_IMAGES_ROOT_CA:-} ]]; then
     $BUILD_ONLY || die "CI_IMAGES_ROOT_CA is only for --build-only"
     [[ -f $CI_IMAGES_ROOT_CA && -r $CI_IMAGES_ROOT_CA ]] ||
         die "CI_IMAGES_ROOT_CA isn't a readable file: $CI_IMAGES_ROOT_CA"
+    ROOT_CA_SHA256=$(sha256sum <"$CI_IMAGES_ROOT_CA")
+    ROOT_CA_SHA256=${ROOT_CA_SHA256%% *}
     BUILD_ARGS+=(--secret "id=root-ca,src=$CI_IMAGES_ROOT_CA")
 fi
+BUILD_ARGS+=(--build-arg "ROOT_CA_SHA256=$ROOT_CA_SHA256")
 
 # docker with buildx, or for --build-only, podman. podman-docker's
 # `docker` is podman, whose `buildx` is only an alias of its build, so
@@ -136,7 +142,6 @@ if $BUILD_ONLY; then
             --tag "$REF" "$DIR" >&2
     else
         docker buildx build --file "$DIR/Dockerfile" "${BUILD_ARGS[@]}" \
-            --cache-from "type=registry,ref=$REPO:buildcache" \
             --load --tag "$REF" "$DIR" >&2
     fi
     check_image
