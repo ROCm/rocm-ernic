@@ -27,9 +27,10 @@
 #include <inttypes.h>
 #include <stdbool.h>
 #include <stddef.h>
-#include <stdint.h>
 #include <stdio.h>
 #include <string.h>
+#include <sys/mman.h>
+#include <unistd.h>
 
 #include "byteorder.h"
 #include "golden/ionic_compat_identity.h"
@@ -583,8 +584,10 @@ static void check_identity_clears_window(const char *name, enum block blk,
 /*
  * Check the wire layout of DISCOVER_CMB.
  *
- * ionic_map_disc_cmb() reads num_regions, flags, and two region entries.
- * Verify that our handler writes exactly the expected bytes for each field.
+ * ionic_map_disc_cmb() reads num_regions, flags, and the region entries.
+ * The device reports one region, DEVMEM, the whole CMB, and no express
+ * doorbell, and nothing past that region: the window is poisoned first, so
+ * a byte left alone shows up.
  */
 static void check_discover_cmb(void)
 {
@@ -593,20 +596,18 @@ static void check_discover_cmb(void)
 
     ionic_eth_emu_handle_discover_cmb(data);
 
-    /* CMB_ID_NUM_REGIONS_OFF = 0, le32 = 2 */
     uint32_t nregions = ernic_get_le32(data + CMB_ID_NUM_REGIONS_OFF);
-    bool ok = (nregions == 2);
-    printf("%s DISCOVER_CMB: num_regions=%u (expected 2)\n",
+    bool ok = (nregions == 1);
+    printf("%s DISCOVER_CMB: num_regions=%u (expected 1)\n",
            ok ? "ok  " : "FAIL", nregions);
     if (!ok) {
         failures++;
     }
 
-    /* CMB_ID_FLAGS_OFF = 4, le32, IONIC_CMB_FLAG_EXPDB = 1 */
     uint32_t flags = ernic_get_le32(data + CMB_ID_FLAGS_OFF);
-    ok = ((flags & IONIC_CMB_FLAG_EXPDB) != 0);
-    printf("%s DISCOVER_CMB: flags EXPDB bit set (flags=0x%x)\n",
-           ok ? "ok  " : "FAIL", flags);
+    ok = (flags == 0);
+    printf("%s DISCOVER_CMB: flags=0x%x (expected 0, with no EXPDB bit 0x%x)\n",
+           ok ? "ok  " : "FAIL", flags, IONIC_CMB_FLAG_EXPDB);
     if (!ok) {
         failures++;
     }
@@ -629,32 +630,26 @@ static void check_discover_cmb(void)
         failures++;
     }
 
-    /* region[1] at CMB_ID_REGION_OFF+CMB_ID_REGION_SIZE: bar_num=4,
-     * type=EXPDB512 */
-    const uint8_t *r1 = data + CMB_ID_REGION_OFF + CMB_ID_REGION_SIZE;
-    bool r1_ok =
-        (r1[CMB_REGION_BAR_NUM_OFF] == 4 &&
-         r1[CMB_REGION_TYPE_OFF] == IONIC_CMB_TYPE_EXPDB512 &&
-         ernic_get_le32(r1 + CMB_REGION_OFFSET_OFF) == 0 &&
-         ernic_get_le32(r1 + CMB_REGION_LENGTH_OFF) == IONIC_CMB_ENTRY_PAGES);
-    printf("%s DISCOVER_CMB: region[1] bar=%u type=%u offset=%u length=%u "
-           "(expected bar=4 type=%u offset=0 length=%u)\n",
-           r1_ok ? "ok  " : "FAIL", r1[CMB_REGION_BAR_NUM_OFF],
-           r1[CMB_REGION_TYPE_OFF], ernic_get_le32(r1 + CMB_REGION_OFFSET_OFF),
-           ernic_get_le32(r1 + CMB_REGION_LENGTH_OFF), IONIC_CMB_TYPE_EXPDB512,
-           IONIC_CMB_ENTRY_PAGES);
-    if (!r1_ok) {
+    size_t stale = CMB_ID_REGION_OFF + CMB_ID_REGION_SIZE;
+    while (stale < sizeof(data) && data[stale] == 0) {
+        stale++;
+    }
+    ok = stale == sizeof(data);
+    printf("%s DISCOVER_CMB: zero after region[0]%s\n", ok ? "ok  " : "FAIL",
+           ok ? "" : ", but not all of it");
+    if (!ok) {
         failures++;
     }
 }
 
 /*
- * Check that Q_IDENTIFY sets IONIC_QIDENT_F_EXPDB in features for TXQ
- * (qtype 3) and RXQ (qtype 2), where the RDMA driver looks for it, but not
- * for ADMINQ (0) or NOTIFYQ (1), and only on a device with a CMB: a device
- * without one, the default, advertises no express doorbell at all.
+ * Q_IDENTIFY offers no feature for any queue type, the express doorbell
+ * (IONIC_QIDENT_F_EXPDB) included, with a CMB or without one. The RDMA
+ * driver reads express-doorbell support from TXQ (qtype 3) and RXQ (qtype
+ * 2), and with it would post WQEs by stores into the CMB that the device,
+ * whose CMB the guest maps, never sees.
  */
-static void check_q_identify_expdb(bool cmb)
+static void check_q_identify_no_features(bool cmb)
 {
     struct ionic_eth_emu *emu = make_emu(NULL, true);
     const char *dev = cmb ? "with a CMB" : "without a CMB";
@@ -664,41 +659,33 @@ static void check_q_identify_expdb(bool cmb)
         emu = NULL;
     }
     if (!emu) {
-        printf("FAIL Q_IDENTIFY EXPDB %s: could not create emulator\n", dev);
+        printf("FAIL Q_IDENTIFY features %s: could not create emulator\n", dev);
         failures++;
         return;
     }
 
-    static const struct {
-        uint8_t qtype;
-        bool rdma_side; /* what the RDMA driver reads EXPDB support from */
-    } qtypes[] = {
-        {IONIC_QTYPE_ADMINQ, false},
-        {IONIC_QTYPE_NOTIFYQ, false},
-        {IONIC_QTYPE_RXQ, true},
-        {IONIC_QTYPE_TXQ, true},
+    static const uint8_t qtypes[] = {
+        IONIC_QTYPE_ADMINQ,
+        IONIC_QTYPE_NOTIFYQ,
+        IONIC_QTYPE_RXQ,
+        IONIC_QTYPE_TXQ,
     };
     uint8_t cmd[64];
     uint8_t comp[16];
     uint8_t data[DEVCMD_DATA_SIZE];
 
     for (size_t i = 0; i < sizeof(qtypes) / sizeof(qtypes[0]); i++) {
-        uint8_t qt = qtypes[i].qtype;
-        bool want = cmb && qtypes[i].rdma_side;
+        uint8_t qt = qtypes[i];
 
         memset(cmd, 0, sizeof(cmd));
+        memset(data, 0xa5, sizeof(data));
         cmd[4] = qt; /* ionic_q_identify_cmd.type */
         ionic_eth_emu_handle_q_identify(emu, cmd, comp, data);
         uint64_t features = ernic_get_le64(data + 8 /* QID_FEATURES_OFF */);
-        bool ok;
-        if (want) {
-            ok = (features & IONIC_QIDENT_F_EXPDB) != 0;
-        } else {
-            ok = (features & IONIC_QIDENT_F_EXPDB) == 0;
-        }
+        bool ok = features == 0;
         printf("%s Q_IDENTIFY qtype=%u %s: features=0x%" PRIx64
-               " EXPDB bit %s\n",
-               ok ? "ok  " : "FAIL", qt, dev, features, want ? "set" : "clear");
+               " (expected 0, with no EXPDB bit 0x%" PRIx64 ")\n",
+               ok ? "ok  " : "FAIL", qt, dev, features, IONIC_QIDENT_F_EXPDB);
         if (!ok) {
             failures++;
         }
@@ -709,7 +696,8 @@ static void check_q_identify_expdb(bool cmb)
 
 /*
  * Without a CMB, BAR4 has nothing behind it: the server doesn't set the
- * region up, and the emulator refuses an access that reaches it anyway.
+ * region up, the emulator has no descriptor to give it, and it refuses an
+ * access that reaches BAR4 anyway. Nor has it a CMB to renew.
  */
 static void check_bar4_without_cmb(void)
 {
@@ -725,13 +713,139 @@ static void check_bar4_without_cmb(void)
         ok = ok &&
              ionic_eth_emu_bar4_access(emu, buf, sizeof(buf), 0, true) < 0 &&
              errno == EINVAL;
+        ok = ok && ionic_eth_emu_cmb_fd(emu) == -1 &&
+             ionic_eth_emu_renew_cmb(emu) == 0;
         ionic_eth_emu_clear_cmb(emu); /* nothing to clear, and no crash */
         ionic_eth_emu_destroy(emu);
     }
-    printf("%s negative: a BAR4 read and write on a device without a CMB; "
-           "expected: both refused with EINVAL\n",
+    printf("%s negative: BAR4 on a device without a CMB; expected: no "
+           "descriptor, nothing to renew, and a read and write both refused "
+           "with EINVAL\n",
            ok ? "ok  " : "FAIL");
     if (!ok) {
+        failures++;
+    }
+}
+
+/* Map the CMB's file as the client does, or NULL */
+static uint8_t *map_cmb(int fd)
+{
+    void *p = mmap(NULL, IONIC_BAR4_CMB_SIZE, PROT_READ | PROT_WRITE,
+                   MAP_SHARED, fd, 0);
+
+    return p == MAP_FAILED ? NULL : p;
+}
+
+/*
+ * The CMB as the client sees it. Its file's descriptor maps the memory the
+ * device reads, so a store through the mapping is what an access through
+ * the socket reads, and the other way round, and a reset clears it. Nobody
+ * holding the file can change its size. An access through the socket, as
+ * from a client that didn't map BAR4, posts nothing and is logged once.
+ *
+ * Renewing it for the next client keeps the descriptor number but not the
+ * memory: the old mapping no longer reaches the device, a new one starts
+ * zeroed, and the data path is handed the new memory.
+ */
+static const char *cmb_shared_run(struct ionic_eth_emu *emu)
+{
+    char buf[8];
+    uint8_t *client;
+    uint8_t *next;
+    int fd;
+    static const char pattern[8] = "pattern";
+    static const char back[8] = "written";
+
+    if (ionic_eth_emu_enable_cmb(emu) != 0) {
+        return "the CMB couldn't be made";
+    }
+    fd = ionic_eth_emu_cmb_fd(emu);
+    if (fd < 0) {
+        return "a device with a CMB has no descriptor for it";
+    }
+    if (ftruncate(fd, (off_t)IONIC_BAR4_CMB_SIZE / 2) == 0 ||
+        ftruncate(fd, (off_t)IONIC_BAR4_CMB_SIZE * 2) == 0) {
+        return "the CMB's file changed size";
+    }
+    client = map_cmb(fd);
+    if (!client) {
+        return "the CMB's file couldn't be mapped";
+    }
+
+    g_nwarnings = 0;
+    memcpy(client + 4096, pattern, sizeof(pattern));
+    if (ionic_eth_emu_bar4_access(emu, buf, sizeof(buf), 4096, false) !=
+            (ssize_t)sizeof(buf) ||
+        memcmp(buf, pattern, sizeof(buf)) != 0) {
+        munmap(client, IONIC_BAR4_CMB_SIZE);
+        return "a store through the mapping wasn't read through the socket";
+    }
+    memcpy(buf, back, sizeof(buf));
+    if (ionic_eth_emu_bar4_access(emu, buf, sizeof(buf), 8192, true) !=
+            (ssize_t)sizeof(buf) ||
+        memcmp(client + 8192, back, sizeof(back)) != 0) {
+        munmap(client, IONIC_BAR4_CMB_SIZE);
+        return "a write through the socket wasn't seen through the mapping";
+    }
+    if (g_nwarnings != 1) {
+        munmap(client, IONIC_BAR4_CMB_SIZE);
+        return "the accesses through the socket weren't logged exactly once";
+    }
+    ionic_eth_emu_clear_cmb(emu);
+    if (client[4096] != 0 || client[8192] != 0) {
+        munmap(client, IONIC_BAR4_CMB_SIZE);
+        return "a reset left the CMB as it was";
+    }
+
+    g_dp_cmb = NULL;
+    if (ionic_eth_emu_renew_cmb(emu) != 0) {
+        munmap(client, IONIC_BAR4_CMB_SIZE);
+        return "the CMB couldn't be renewed";
+    }
+    if (ionic_eth_emu_cmb_fd(emu) != fd) {
+        munmap(client, IONIC_BAR4_CMB_SIZE);
+        return "the renewed CMB has another descriptor number";
+    }
+    memcpy(client + 4096, pattern, sizeof(pattern));
+    (void)ionic_eth_emu_bar4_access(emu, buf, sizeof(buf), 4096, false);
+    munmap(client, IONIC_BAR4_CMB_SIZE);
+    if (memcmp(buf, "\0\0\0\0\0\0\0\0", sizeof(buf)) != 0) {
+        return "the old client's mapping reaches the renewed CMB";
+    }
+    if (g_nwarnings != 2) {
+        return "the renewed CMB's first access through the socket wasn't "
+               "logged";
+    }
+    next = map_cmb(fd);
+    if (!next) {
+        return "the renewed CMB's file couldn't be mapped";
+    }
+    next[4096] = 0x5a;
+    bool shared = g_dp_cmb && g_dp_cmb[4096] == 0x5a;
+    munmap(next, IONIC_BAR4_CMB_SIZE);
+    return shared ? NULL : "the data path wasn't given the renewed CMB";
+}
+
+static void check_cmb_shared(void)
+{
+    struct ionic_eth_emu *emu = make_emu(NULL, true);
+    const char *why = "could not create emulator";
+
+    /* Stands in for the data path, which the fake only records the CMB
+     * for */
+    static max_align_t fake_dp;
+
+    if (emu) {
+        ionic_eth_emu_register_datapath(emu, (void *)&fake_dp);
+        why = cmb_shared_run(emu);
+        ionic_eth_emu_destroy(emu);
+    }
+    printf("%s positive: the CMB, through a mapping of its descriptor and "
+           "through the socket, and renewed; expected: the same memory "
+           "either way, a fixed size, and fresh memory for the next client\n",
+           why ? "FAIL" : "ok  ");
+    if (why) {
+        printf("     %s\n", why);
         failures++;
     }
 }
@@ -751,9 +865,10 @@ int main(void)
     check_identity_clears_window("Q_IDENTIFY", BLK_Q_IDENTITY0,
                                  ionic_eth_emu_handle_q_identify);
     check_discover_cmb();
-    check_q_identify_expdb(true);
-    check_q_identify_expdb(false);
+    check_q_identify_no_features(true);
+    check_q_identify_no_features(false);
     check_bar4_without_cmb();
+    check_cmb_shared();
 
     if (failures) {
         printf("\n%d check(s) failed\n", failures);

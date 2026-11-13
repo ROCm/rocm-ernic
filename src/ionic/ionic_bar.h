@@ -49,10 +49,9 @@
  * BAR2: doorbell pages -- kernel page at index kern_pid, user pages at
  * higher indices via mmap.
  *
- * BAR4 (PCI BAR4+5, 64-bit): Controller Memory Buffer (CMB), 8 MB.  The
- * guest driver maps this region and writes WQEs directly into it; the write
- * that ends a WQE's slot, of whatever size, triggers dispatch (express
- * doorbell, no separate doorbell ring needed).
+ * BAR4 (PCI BAR4+5, 64-bit): Controller Memory Buffer (CMB), 8 MB, with
+ * --cmb.  Memory the server shares with QEMU, which maps it into the guest;
+ * the guest driver writes WQEs directly into it, then rings a BAR2 doorbell.
  * ---------------------------------------------------------------------------
  */
 /* The register window's blocks */

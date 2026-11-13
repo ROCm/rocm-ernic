@@ -1986,9 +1986,10 @@ static bool dp_ring_take(struct ionic_datapath *dp, uint32_t *cons,
 
     if (cmb) {
         /*
-         * CMB RQ: WQEs were written by the guest into BAR4.
-         * ernic_dma_read() cannot map BAR4 GPAs (PCI device memory, not guest
-         * DRAM), so read directly from the shadow buffer.
+         * CMB RQ: WQEs were written by the guest into BAR4, which is the
+         * CMB's memory, mapped into the guest.  ernic_dma_read() cannot map
+         * BAR4 GPAs (PCI device memory, not guest DRAM), so the WQE is read
+         * from cmb_buf instead, copied once, as the guest can change it.
          */
         uint64_t rel = (uint64_t)slot * stride;
         if (!dp->cmb_buf || !dp_cmb_span_ok(cmb_offset, rel, read_sz)) {
@@ -3353,10 +3354,11 @@ static bool process_sq_wqe(struct ionic_datapath *dp, struct ionic_qp_ring *q,
 
     if (q->sq_cmb) {
         /*
-         * CMB ring: WQE bytes live in the local cmb_buf shadow, written by
-         * the guest into BAR4.  ernic_dma_read() cannot map BAR4 GPAs (they
-         * are PCI device memory, not guest DRAM), so read directly from
-         * cmb_buf instead.
+         * CMB ring: the guest wrote the WQE into BAR4, which is the CMB's
+         * memory, mapped into the guest.  ernic_dma_read() cannot map BAR4
+         * GPAs (they are PCI device memory, not guest DRAM), so the WQE is
+         * read from cmb_buf instead.  The guest can change it at any time,
+         * so it is copied once, and only the copy is read after.
          *
          * gpa remains 0, which names no part of this WQE: an inline
          * payload is taken from the copy in wqe[] (see the
@@ -4445,10 +4447,6 @@ void ionic_datapath_poll(struct ionic_datapath *dp)
  *
  * Returns false for an index the ring has no slot for, which is a malformed
  * doorbell rather than a wrap.
- *
- * An express doorbell's index is the slot after the one written, which in a
- * ring deeper than 2^16 can be past what a doorbell's 16 bits hold, so the
- * index is 32 bits here.
  */
 static bool rq_prod_advance(uint32_t *prod, uint32_t depth, uint32_t p_index)
 {
@@ -4512,91 +4510,6 @@ void ionic_datapath_set_qp_cmb(struct ionic_datapath *dp, uint32_t qp_id,
     q->sq_cmb_buf_offset = sq_cmb_offset;
     q->rq_cmb = rq_cmb;
     q->rq_cmb_buf_offset = rq_cmb_offset;
-}
-
-/*
- * Whether a write into the CMB ending at @end, exclusive, ends a slot of the
- * ring at @ring_start, of @depth slots of 2^@stride_log2 bytes; if so, the
- * slot it ends is put in @slot. ionic_datapath_register_qp() bounds the
- * ring's depth and stride, so the shifts are defined.
- */
-static bool dp_expdb_slot(uint64_t end, uint64_t ring_start, uint32_t depth,
-                          uint8_t stride_log2, uint32_t *slot)
-{
-    if (end <= ring_start) {
-        return false;
-    }
-    uint64_t rel = end - ring_start;
-    if (rel > (uint64_t)depth << stride_log2 ||
-        (rel & ((UINT64_C(1) << stride_log2) - 1U)) != 0) {
-        return false;
-    }
-    *slot = (uint32_t)((rel >> stride_log2) - 1U);
-    return true;
-}
-
-/*
- * The express doorbell: a write into the CMB that ends at the end of a slot
- * of a CMB ring posts that slot's WQE, as a doorbell naming the next slot
- * would.
- *
- * It is where the write ends that counts, not its size. Under QEMU a
- * guest's stores into BAR4 reach the server at most 8 bytes at a time,
- * however wide the instruction: BAR4 is not mmapped into the guest (the
- * server gives libvfio-user no fd for it), so each store exits to KVM,
- * whose MMIO exit carries at most 8 bytes, and QEMU's VFIO region writes
- * take only 1, 2, 4 or 8. A 64-byte MOVDIR64B arrives as eight writes.
- *
- * The writes arrive in the order the guest made them, since each store is
- * a synchronous exit and QEMU sends them down one socket, which the server
- * reads in order on its main thread. So the WQE is taken to be complete
- * when the write ending its slot arrives, which holds only for a guest
- * that writes each WQE front to back. A guest that writes a slot's last
- * bytes before the rest (copying it backwards, or storing its first word
- * last to publish it) has the WQE dispatched holding whatever the slot held
- * before, a previous lap's WQE or zeros, and its later writes post nothing.
- */
-void ionic_datapath_expdb_write(struct ionic_datapath *dp, uint64_t cmb_offset,
-                                size_t len)
-{
-    if (len == 0 || !dp_cmb_span_ok(cmb_offset, 0, len)) {
-        return;
-    }
-    uint64_t end = cmb_offset + len;
-
-    for (uint32_t qp_id = 0; qp_id < dp->qp_count; qp_id++) {
-        struct ionic_qp_ring *q = &dp->qp[qp_id];
-        uint32_t slot;
-
-        if (!q->valid) {
-            continue;
-        }
-
-        /* Counted as a doorbell, once for the write ending the slot. Running
-         * the queue reads and writes guest memory, so without Bus Master
-         * Enable it waits for ionic_datapath_resume(), as after an SQ
-         * doorbell */
-        if (q->sq_cmb && dp_expdb_slot(end, q->sq_cmb_buf_offset, q->sq_depth,
-                                       q->sq_stride_log2, &slot)) {
-            ernic_stats_qp_doorbell(dp->stats, qp_id, true);
-            q->sq_prod = (slot + 1U) % q->sq_depth;
-            if (ernic_dma_bus_master(dp->vfu_ctx)) {
-                sq_service(dp, q, qp_id);
-            }
-        }
-
-        /* rq_cons runs free, so rq_prod must too: the slot index alone
-         * would be behind rq_cons after the first lap. An index taken
-         * modulo the depth is never refused; the express doorbell is
-         * counted once it's taken, as an RQ doorbell is. */
-        if (q->rq_cmb && !q->has_srq &&
-            dp_expdb_slot(end, q->rq_cmb_buf_offset, q->rq_depth,
-                          q->rq_stride_log2, &slot) &&
-            rq_prod_advance(&q->rq_prod, q->rq_depth,
-                            (slot + 1U) % q->rq_depth)) {
-            ernic_stats_qp_doorbell(dp->stats, qp_id, false);
-        }
-    }
 }
 
 void ionic_datapath_doorbell(struct ionic_datapath *dp, int qtype,

@@ -124,11 +124,13 @@ reset.
 in. It is off by default, so every queue is in guest memory.
 With it, rdma-core puts a QP's queues in the CMB unless the
 application opts out with ``ionic_dv_pd_set_sqcmb()`` and
-``ionic_dv_pd_set_rqcmb()``, as rocSHMEM does. Writing to a
-queue in the CMB costs more in emulation than on hardware:
-each store of up to 8 bytes into BAR 4 exits to QEMU and
-becomes a message to the server, where a queue in guest
-memory is written directly.
+``ionic_dv_pd_set_rqcmb()``, as rocSHMEM does. QEMU maps the
+CMB into the guest, so the guest writes a queue there as
+directly as one in its own memory. Mapping it costs something
+elsewhere, though: once any of the device's BARs is mapped,
+QEMU waits for the server to handle each doorbell before the
+guest goes on, rather than posting the write, and that holds
+for every queue, in the CMB or not.
 
 ``nvmeof`` is the odd one out: rather than carrying guest
 RDMA traffic somewhere, it answers it, presenting an NVMe

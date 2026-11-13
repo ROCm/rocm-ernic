@@ -798,6 +798,19 @@ jobs:
         fi
         echo "✓ $((cmb_after - cmb_before)) QP(s) ran with send queues in the CMB"
 
+        # QEMU maps BAR4 into the guest, so the guest's stores into the CMB
+        # go straight to the server's memory, and the server logs the first
+        # access that comes through the socket instead. One here means QEMU
+        # didn't map the CMB, and the guest's stores into it exited to QEMU,
+        # which a store KVM can't emulate (MOVDIR64B, on some runners'
+        # CPUs) turns into SIGILL in the guest.
+        if grep -q 'through the socket rather than mapping it' \
+          /tmp/vfu_server.log; then
+          echo "✗ the guest reached the CMB through QEMU rather than a mapping"
+          exit 1
+        fi
+        echo "✓ the guest reached the CMB through its mapping"
+
     - name: WRITE_WITH_IMM guest smoke (build and run test_write_imm)
       shell: bash
       run: |

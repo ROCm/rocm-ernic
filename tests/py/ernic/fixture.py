@@ -26,7 +26,11 @@ CONNECT_TIMEOUT = 30
 # The pieces a test reaches for; bundling them is the point.
 # pylint: disable-next=too-few-public-methods
 class BaseFixture:
-    """A connected client and a brought-up driver."""
+    """A connected client and a brought-up driver.
+
+    With a CMB (--cmb), the driver maps it, as QEMU maps BAR4 into a
+    guest, so WQEs reach it as a guest's stores do.
+    """
 
     def __init__(self, server):
         self.client = vfu.VfioUserClient(server.socket_path).connect(
@@ -35,9 +39,12 @@ class BaseFixture:
         self.mem = vfu.GuestMemory(size=GUEST_MEM_SIZE)
         self.client.dma_map(self.mem)
         self.driver = ionic.IonicDriver(self.client, self.mem)
+        if vfu.VFU_PCI_DEV_BAR4_REGION_IDX in self.client.regions:
+            self.driver.map_cmb()
         self.driver.bringup()
 
     def close(self):
         """Drop the client, as a guest shutting down does."""
+        self.driver.close()
         self.mem.close()
         self.client.close()

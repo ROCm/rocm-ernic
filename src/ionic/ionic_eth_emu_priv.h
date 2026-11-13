@@ -22,6 +22,7 @@
 #include <vfio-user/libvfio-user.h>
 
 #include "ernic_limits.h"
+#include "ernic_shm.h"
 #include "ionic/ionic_bar.h"
 #include "ionic/ionic_emu_stats.h"
 #include "ionic/ionic_eth_emu.h"
@@ -153,17 +154,18 @@
  *     le32 offset   @CMB_REGION_OFFSET_OFF   -- in IONIC_CMB_SHIFT_64K units
  *     le32 length   @CMB_REGION_LENGTH_OFF   -- in IONIC_CMB_SHIFT_64K units
  *
- * We expose two regions on BAR4: one DEVMEM (the whole 8 MB) and one
- * EXPDB512 (also the whole 8 MB, covering the 512-byte expdb stride WQEs).
+ * We expose one region on BAR4, DEVMEM, the whole 8 MB, and no express
+ * doorbell: the guest maps BAR4, so the device never sees the stores that
+ * would ring one.  The flag is defined for the tests that check it's clear.
  */
-#define IONIC_CMB_TYPE_DEVMEM   0U
-#define IONIC_CMB_TYPE_EXPDB512 4U
-#define IONIC_CMB_FLAG_EXPDB    1U
-#define IONIC_CMB_SHIFT_64K     16U
+#define IONIC_CMB_TYPE_DEVMEM 0U
+#define IONIC_CMB_FLAG_EXPDB  1U
+#define IONIC_CMB_SHIFT_64K   16U
 /* IONIC_BAR4_CMB_SIZE >> IONIC_CMB_SHIFT_64K = 0x800000 >> 16 = 128 */
 #define IONIC_CMB_ENTRY_PAGES 128U
 #define IONIC_MAX_CMB_REGIONS 16U
-/* IONIC_QIDENT_F_EXPDB: Q_IDENTIFY feature bit for express doorbell support */
+/* IONIC_QIDENT_F_EXPDB: Q_IDENTIFY feature bit for express doorbell support,
+ * which the device never sets (see DISCOVER_CMB above) */
 #define IONIC_QIDENT_F_EXPDB UINT64_C(0x400) /* BIT_ULL(10) */
 
 /* Byte offsets within the DISCOVER_CMB response in dev_cmd_regs->data[] */
@@ -439,9 +441,14 @@ struct ionic_eth_emu {
     uint8_t *bar2;
     size_t bar2_size;
 
-    /* CMB buffer: 8 MB shadow of BAR4.  Allocated in ionic_eth_emu_create();
-     * the datapath shares the same pointer via ionic_datapath_set_cmb(). */
-    uint8_t *cmb_buf;
+    /* The CMB, BAR4, with --cmb: 8 MB the client maps into the guest, from
+     * ionic_eth_emu_enable_cmb().  The datapath reads it through the pointer
+     * ionic_datapath_set_cmb() gives it, which ionic_eth_emu_renew_cmb()
+     * moves. */
+    ErnicShm cmb;
+    /* The first BAR4 access through the socket since the CMB was made or
+     * renewed has been logged */
+    bool cmb_access_logged;
 
     /* True once LIF_INIT has completed. */
     bool lif_initialized;

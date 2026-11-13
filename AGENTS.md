@@ -254,8 +254,8 @@ files) adds accept, health-check, and per-connection receive threads
   (`tcp_stop_accept_thread()` shuts down its socket;
   `tcp_stop_health_check_thread()` signals its condition variable).
 - **TSan can't see the guest**, which writes guest-shared memory (rings,
-  indices) from another process; choose atomics and fences by reasoning
-  about the guest driver.
+  indices, and with `--cmb` the CMB, BAR4) from another process; choose
+  atomics and fences by reasoning about the guest driver.
 
 ### Clang's thread-safety analysis
 
@@ -311,6 +311,10 @@ server. Security beats speed and convenience.
   and S3 clients. Check lengths, indices, and ranges before use, and
   every address, key, or length against what was registered. Reject
   malformed input; don't truncate, clamp, or guess.
+- **The guest can change its memory, and the CMB, at any time**: QEMU
+  maps BAR4 into the guest. Copy a WQE or descriptor out once, then check
+  and use only the copy, as `process_sq_wqe()` does; never read a field
+  twice from the shared memory.
 - **Integer arithmetic must be safe.** Check for wrap before it happens
   (`len > limit || offset > limit - len`, not `offset + len > limit`;
   ask before using `__builtin_*_overflow`). Check ranges before

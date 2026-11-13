@@ -81,6 +81,11 @@ VFIO_REGION_INFO_FLAG_READ = 1 << 0
 VFIO_REGION_INFO_FLAG_WRITE = 1 << 1
 VFIO_REGION_INFO_FLAG_MMAP = 1 << 2
 VFIO_REGION_INFO_FLAG_CAPS = 1 << 3
+VFIO_REGION_INFO_CAP_SPARSE_MMAP = 1
+
+# Room for struct vfio_region_info and the capabilities after it: a sparse
+# mmap capability of a few areas fits easily
+REGION_INFO_ARGSZ = 256
 
 VFIO_IRQ_SET_DATA_NONE = 1 << 0
 VFIO_IRQ_SET_DATA_BOOL = 1 << 1
@@ -137,6 +142,49 @@ class Region:
             f"Region(index={self.index}, size={self.size:#x}, "
             f"flags={self.flags:#x})"
         )
+
+
+class RegionMapping:
+    """A region the client has mapped, as a VMM maps a BAR into its guest.
+
+    ``map`` is the region's memory, ``areas`` the (offset, size) pairs the
+    server's sparse-mmap capability allows mapping, and ``fd`` the file
+    the server sent, which close() closes with the mapping.
+    """
+
+    def __init__(self, mapping, areas, fd):
+        self.map = mapping
+        self.areas = areas
+        self.fd = fd
+
+    def close(self):
+        """Unmap the region and close its file."""
+        if self.map is not None:
+            self.map.close()
+            self.map = None
+        if self.fd is not None:
+            os.close(self.fd)
+            self.fd = None
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *_exc):
+        self.close()
+
+
+def _sparse_areas(reply, cap_offset):
+    """The (offset, size) areas of the sparse mmap capability in @reply."""
+    areas = []
+    while 0 < cap_offset <= len(reply) - 16:
+        cap_id, _version, next_offset = struct.unpack_from("<HHI", reply, cap_offset)
+        if cap_id == VFIO_REGION_INFO_CAP_SPARSE_MMAP:
+            nr_areas = struct.unpack_from("<I", reply, cap_offset + 8)[0]
+            for i in range(nr_areas):
+                at = cap_offset + 16 + 16 * i
+                areas.append(struct.unpack_from("<QQ", reply, at))
+        cap_offset = next_offset
+    return areas
 
 
 class GuestMemory:
@@ -414,6 +462,41 @@ class VfioUserClient:
         if size == 0:
             return None
         return Region(idx, flags, size, offset)
+
+    def map_region(self, index):
+        """Map region @index from the file the server offers for it.
+
+        Returns a RegionMapping of the whole region, or None if the server
+        sends no file, which means the region can only be read and written
+        through the socket.
+        """
+        payload = struct.pack("<IIIIQQ", REGION_INFO_ARGSZ, 0, index, 0, 0, 0)
+        self.send_command(VFIO_USER_DEVICE_GET_REGION_INFO, payload)
+        _msg_id, _cmd, error_no, reply, fds = self.recv_reply()
+        for extra in fds[1:]:
+            os.close(extra)
+        fd = fds[0] if fds else None
+        mapping = None
+        try:
+            if error_no != 0:
+                raise VfioUserError(VFIO_USER_DEVICE_GET_REGION_INFO, error_no)
+            flags, cap_offset, size, offset = struct.unpack_from("<4xIxxxxIQQ", reply)
+            if fd is None or not flags & VFIO_REGION_INFO_FLAG_MMAP:
+                return None
+            mapping = mmap.mmap(
+                fd,
+                size,
+                mmap.MAP_SHARED,
+                mmap.PROT_READ | mmap.PROT_WRITE,
+                offset=offset,
+            )
+        finally:
+            # The file goes with the mapping, or is closed here
+            if fd is not None and mapping is None:
+                os.close(fd)
+        if not flags & VFIO_REGION_INFO_FLAG_CAPS:
+            cap_offset = 0
+        return RegionMapping(mapping, _sparse_areas(reply, cap_offset), fd)
 
     def reset(self):
         """VFIO_USER_DEVICE_RESET."""
