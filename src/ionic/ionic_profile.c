@@ -704,11 +704,12 @@ static int read_value(const char *text, const struct scanned *it,
     size_t start = 0;
     size_t end = it->value_len;
     size_t n;
+    size_t i;
     size_t j = 0;
     char *r;
     char *d;
 
-    for (size_t i = 0; i < end; i++) {
+    for (i = 0; i < end; i++) {
         if ((unsigned char)v[i] > 0x7f) {
             ernic_set_err(err, err_len,
                           "%s: value could not be read: it is not ASCII",
@@ -727,18 +728,20 @@ static int read_value(const char *text, const struct scanned *it,
     }
     memcpy(r, v + start, n);
     r[n] = '\0';
-    for (size_t i = 0; i < n; i++) {
-        char out = r[i];
+    /* A while loop, since an escape takes two characters */
+    i = 0;
+    while (i < n) {
+        char out = r[i++];
 
         if (out == '\\') {
-            if (++i == n) {
+            if (i == n) {
                 ernic_set_err(err, err_len,
                               "%s: value could not be read: it ends in a "
                               "'\\' that escapes nothing",
                               where);
                 goto fail;
             }
-            switch (r[i]) {
+            switch (r[i++]) {
             case 's':
                 out = ' ';
                 break;
@@ -758,7 +761,7 @@ static int read_value(const char *text, const struct scanned *it,
                 ernic_set_err(err, err_len,
                               "%s: value could not be read: '\\%c' is not "
                               "an escape (\\s, \\n, \\t, \\r or \\\\)",
-                              where, r[i]);
+                              where, r[i - 1]);
                 goto fail;
             }
         }

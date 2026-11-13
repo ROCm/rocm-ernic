@@ -391,6 +391,10 @@ new general patterns here when a scanner reports one.
   (`ionic_eth_emu_queue_rx_frame()` in `tests/test_ionic_cq_arm.c`) makes
   a bare call in `src/` "have no effect". Check the result, or cast the
   call to `(void)` with a comment saying why, as `dp_s3_tx_frame()` does.
+- **Changing a `for` loop's counter in its body**
+  (`cpp/loop-variable-changed`), e.g. an `i++` to step over an escape's
+  second character: when the body decides how far to advance, write a
+  `while` loop.
 - **A Python variable assigned only in a `try`**
   (`py/uninitialized-local-variable`), even when the `except` path exits
   through a later check: CodeQL doesn't follow that check. Give every
