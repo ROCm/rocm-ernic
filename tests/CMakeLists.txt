@@ -13,6 +13,12 @@ include(ErnicTesting)
 # skipped. A test that needs a device isn't registered; see
 # test_data_transfer below.
 
+# ernic_map.c includes uthash as a SYSTEM include of its own (see the
+# top-level CMakeLists.txt). Source file properties belong to the directory
+# that sets them, so the test programs here need it set again.
+set_source_files_properties(${PROJECT_SOURCE_DIR}/src/ernic_map.c PROPERTIES
+    COMPILE_OPTIONS "${ERNIC_UTHASH_COMPILE_OPTIONS}")
+
 # -- Sources several tests link ----------------------------------
 # Each family of unit tests below links the same part of src/. A test
 # needing a different set lists its own.
@@ -201,6 +207,17 @@ ernic_add_test_program(ernic-test-siphash
     SOURCES
         test_siphash.c
         ${PROJECT_SOURCE_DIR}/src/ernic_siphash.c
+)
+
+# The hash maps (ernic_map.h). It links the log, which the map aborts
+# through when out of memory.
+ernic_add_test_program(ernic-test-ernic-map
+    SOURCES
+        test_ernic_map.c
+        ${PROJECT_SOURCE_DIR}/src/ernic_log.c
+        ${PROJECT_SOURCE_DIR}/src/ernic_map.c
+        ${PROJECT_SOURCE_DIR}/src/ernic_siphash.c
+    DEPS pthread
 )
 
 # P4 engine test. The engine is frames-in/frames-out, so this links the
@@ -649,6 +666,8 @@ ernic_add_test_program(test_tcp_gid_resolve
 ernic_add_test_program(ernic-test-backend-handles
     SOURCES
         test_rdma_backend_handles.c
+        ${PROJECT_SOURCE_DIR}/src/ernic_map.c
+        ${PROJECT_SOURCE_DIR}/src/ernic_siphash.c
         ${PROJECT_SOURCE_DIR}/src/rdma/rdma_backend_loopback.c
         ${ERNIC_TCP_TEST_SOURCES}
     DEPS glib ibverbs pthread
@@ -897,6 +916,9 @@ ernic_add_unit_test(byteorder-unit ernic-test-byteorder TIMEOUT 30)
 
 # SipHash-2-4 against the reference implementation's test vectors
 ernic_add_unit_test(siphash-unit ernic-test-siphash TIMEOUT 30)
+
+# The hash maps: insert, replace, remove, walk, and growth
+ernic_add_unit_test(ernic-map-unit ernic-test-ernic-map TIMEOUT 30)
 
 # P4 engine unit test: port model, frame bounds, and the no-program path.
 if(ERNIC_BUILD_P4)

@@ -28,6 +28,13 @@ install(FILES
     COMPONENT ernic_server
 )
 
+# The licenses of the third-party code compiled into the server, each in a
+# directory named for its project
+install(FILES ${PROJECT_SOURCE_DIR}/third-party/uthash/LICENSE
+    DESTINATION ${CMAKE_INSTALL_DOCDIR}/uthash
+    COMPONENT ernic_server
+)
+
 # ── Optional private copy of libvfio-user ────────
 #
 # libvfio-user has no stable ABI: its soname stays libvfio-user.so.0

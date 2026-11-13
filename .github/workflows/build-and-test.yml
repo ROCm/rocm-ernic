@@ -18,6 +18,9 @@ on:
       # matrix compiles. Without this entry, editing a warning suppression
       # skipped every build leg and all of ctest.
       - 'shared/**'
+      # uthash, which src/ernic_map.c includes, and its license, which the
+      # server's package installs
+      - 'third-party/**'
       # The exporter and the driver pack's patches and scripts are
       # installed, and ernic-package-deb checks the packages they're in
       - 'prometheus/**'

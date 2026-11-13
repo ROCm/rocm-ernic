@@ -1,0 +1,3 @@
+# Code under third-party/ is kept as its upstream released it, so
+# clang-format leaves it alone.
+DisableFormat: true

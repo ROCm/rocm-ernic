@@ -102,7 +102,8 @@ set(${server}_architecture ${build_architecture})
 set(${server}_programs ${BINDIR}/rocm-ernic)
 set(${server}_files
     ${DOCDIR}/LICENSE.md
-    ${DOCDIR}/LICENSE_GPL.md)
+    ${DOCDIR}/LICENSE_GPL.md
+    ${DOCDIR}/uthash/LICENSE)
 set(${server}_depends)
 set(${server}_recommends)
 set(${server}_conffiles)

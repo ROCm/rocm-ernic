@@ -22,6 +22,7 @@ on:
       - 'src/**'
       - 'tests/**'
       - 'shared/**'
+      - 'third-party/**'
       - 'nix/analysis/fuzz/**'
       - 'service/**'
       - 'CMakeLists.txt'
