@@ -113,8 +113,8 @@ data path, ``--tap`` the Ethernet one. See :doc:`ionic` for
 the full picture.
 
 ``--mac XX:XX:XX:XX:XX:XX`` (short ``-m``) sets the MAC
-address the device reports. Without it every server reports
-``72:6f:63:6d:2d:6e``, so give each server on a shared
+address the device reports. Without it every server's guest
+sees ``02:a0:d1:00:00:01``, so give each server on a shared
 segment its own, as the service does (see :doc:`service`).
 The guest can change it, as on any NIC, until the next
 reset.
