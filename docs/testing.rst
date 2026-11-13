@@ -715,27 +715,28 @@ The setup plays are thin wrappers around the roles of the
 Running individual plays
 ^^^^^^^^^^^^^^^^^^^^^^^^
 
-Each play can also be run separately:
+Each play can also be run separately. ``guest-setup``,
+``nvmeof-tests``, ``nvmeof-kv-tests`` and ``s3-tests`` run on
+the ``ernic_vms`` group, which only ``vm-register`` fills, and
+only for the rest of the ``ansible-playbook`` run that called
+it, so those run behind it in the same command; on their own
+they find no hosts and do nothing:
 
 .. code-block:: bash
 
    ansible-playbook playbooks/host-setup.yml
-   ansible-playbook playbooks/vm-register.yml
-   ansible-playbook playbooks/guest-setup.yml
+   ansible-playbook playbooks/vm-register.yml playbooks/guest-setup.yml
    ansible-playbook playbooks/sanity-tests.yml
    ansible-playbook playbooks/tutorial-tests.yml
-   ansible-playbook playbooks/nvmeof-tests.yml
-   ansible-playbook playbooks/nvmeof-kv-tests.yml
-   ansible-playbook playbooks/s3-tests.yml
+   ansible-playbook playbooks/vm-register.yml playbooks/nvmeof-tests.yml
+   ansible-playbook playbooks/vm-register.yml \
+     playbooks/nvmeof-kv-tests.yml
+   ansible-playbook playbooks/vm-register.yml playbooks/s3-tests.yml
    ansible-playbook playbooks/tcp-performance-tests.yml
    ansible-playbook playbooks/performance-tests.yml
 
-``guest-setup``, ``nvmeof-tests``, ``nvmeof-kv-tests`` and
-``s3-tests`` run on the ``ernic_vms`` group, which only
-``vm-register`` fills, so run alone they find no hosts and do
-nothing. Run them through ``ci-site.yml``, which runs
-``vm-register`` first, selected by tag, as :doc:`nvmeof`
-shows (``site.yml`` runs ``guest-setup`` the same way).
+``ci-site.yml`` runs them the same way, behind ``vm-register``,
+selected by tag, as :doc:`nvmeof` shows.
 
 Variable overrides
 ^^^^^^^^^^^^^^^^^^
