@@ -7,6 +7,10 @@
  * atomic: a layer that fails changes nothing.  Every row here therefore
  * checks the profile after its last layer, error or not.
  *
+ * The program is linked with --wrap=malloc,--wrap=realloc
+ * (tests/CMakeLists.txt), so a check can fail any one allocation the loader
+ * makes.
+ *
  * Copyright (C) Advanced Micro Devices, Inc.
  * SPDX-License-Identifier: GPL-2.0-or-later
  *
@@ -14,6 +18,7 @@
  * See the LICENSE_GPL.md file in the top-level directory.
  */
 
+#include <errno.h>
 #include <fcntl.h>
 #include <inttypes.h>
 #include <stdbool.h>
@@ -25,9 +30,71 @@
 #include <unistd.h>
 
 #include "ionic/ionic_profile.h"
+#include "rocm-ernic-warnings.h"
 #include "test_fmt.h"
 
 static int failures;
+
+/* ---- Failing allocations ------------------------------------------------ */
+
+/* While set, the allocation after fail_skip more fails and clears it */
+static bool fail_armed;
+static unsigned int fail_skip;
+static bool fail_fired;
+
+static void fail_alloc_arm(unsigned int skip)
+{
+    fail_armed = true;
+    fail_skip = skip;
+    fail_fired = false;
+}
+
+/* Disarm, and say whether an allocation failed */
+static bool fail_alloc_disarm(void)
+{
+    fail_armed = false;
+    return fail_fired;
+}
+
+static bool fail_alloc_now(void)
+{
+    if (!fail_armed) {
+        return false;
+    }
+    if (fail_skip > 0) {
+        fail_skip--;
+        return false;
+    }
+    fail_armed = false;
+    fail_fired = true;
+    errno = ENOMEM;
+    return true;
+}
+
+/*
+ * The names are --wrap's, so they are reserved identifiers by necessity, and
+ * they can't be static, since the linker has to find them.
+ */
+ROCM_ERNIC_WARN_RESERVED_IDENTIFIER_OFF
+/* NOLINTBEGIN(bugprone-reserved-identifier,cert-dcl37-c,cert-dcl51-cpp) */
+/* NOLINTBEGIN(misc-use-internal-linkage) */
+void *__real_malloc(size_t size);
+void *__real_realloc(void *ptr, size_t size);
+void *__wrap_malloc(size_t size);
+void *__wrap_realloc(void *ptr, size_t size);
+
+void *__wrap_malloc(size_t size)
+{
+    return fail_alloc_now() ? NULL : __real_malloc(size);
+}
+
+void *__wrap_realloc(void *ptr, size_t size)
+{
+    return fail_alloc_now() ? NULL : __real_realloc(ptr, size);
+}
+/* NOLINTEND(misc-use-internal-linkage) */
+/* NOLINTEND(bugprone-reserved-identifier,cert-dcl37-c,cert-dcl51-cpp) */
+ROCM_ERNIC_WARN_RESERVED_IDENTIFIER_ON
 
 /* What a profile should hold; compat unless a row says otherwise. */
 struct want {
@@ -262,10 +329,11 @@ static const struct text_case text_cases[] = {
      "integer expected, got '+100000'",
      {COMPAT_VALUES}},
     {"negative",
-     "a fw_version that is not ASCII",
-     "rejected; nothing changes",
+     "a fw_version that is not ASCII, but is UTF-8",
+     "rejected, as every value with a byte that isn't ASCII is; nothing "
+     "changes",
      {"[identity]\nfw_version = v1\xc3\xa9\n"},
-     "layer1",
+     "layer1:2: identity.fw_version: value could not be read: it is not ASCII",
      {COMPAT_VALUES}},
     {"negative",
      "an empty section name '[]'",
@@ -324,15 +392,104 @@ static const struct text_case text_cases[] = {
      {COMPAT_VALUES}},
     {"negative",
      "a value that is not UTF-8",
-     "error naming the line and key: GKeyFile can't read it as a string",
+     "error naming the line and key: not ASCII",
      {"[identity]\nfw_version = \xff\n"},
-     "layer1:2: identity.fw_version: value could not be read",
+     "layer1:2: identity.fw_version: value could not be read: it is not ASCII",
+     {COMPAT_VALUES}},
+    {"negative",
+     "a number with a byte that isn't ASCII",
+     "not ASCII, before the number is parsed",
+     {"[link]\nspeed_mbps = 1000\xc2\xa0\n"},
+     "layer1:2: link.speed_mbps: value could not be read: it is not ASCII",
      {COMPAT_VALUES}},
     {"negative",
      "two CRs at the end of a section header",
-     "GKeyFile's error: it strips one CR, the line scanner every one",
+     "error naming the line: only a CRLF's CR ends a line",
      {"[link]\r\r\nspeed_mbps = 1000\n"},
-     "layer1: Key file contains line",
+     "layer1:1: stray carriage return after section [link]: only spaces and "
+     "tabs may follow it",
+     {COMPAT_VALUES}},
+    {"negative",
+     "a CR, then a space, after a section header",
+     "error naming the line: the CR isn't a line end",
+     {"[identity]\n[link]\r \nspeed_mbps = 1000\n"},
+     "layer1:2: stray carriage return after section [link]",
+     {COMPAT_VALUES}},
+    {"negative",
+     "a section header ending in a CR and no '\\n'",
+     "error naming the line: a CR ends a line only before a '\\n'",
+     {"[link]\r"},
+     "layer1:1: stray carriage return after section [link]",
+     {COMPAT_VALUES}},
+    {"negative",
+     "a stray CR after a section header, and an unknown key after it",
+     "the first error in the text, the CR",
+     {"[link]\r\r\nsped_mbps = 1000\n"},
+     "layer1:1: stray carriage return after section [link]",
+     {COMPAT_VALUES}},
+    {"negative",
+     "a stray CR after an unknown section",
+     "the unknown section, which is the error that matters",
+     {"[lnk]\r\r\n"},
+     "layer1:1: unknown section [lnk]",
+     {COMPAT_VALUES}},
+    {"negative",
+     "a CR inside a value",
+     "part of the value, so not a known transceiver",
+     {"[link]\nxcvr = fi\rber\n"},
+     "layer1:2: link.xcvr: 'fi\rber' is not one of copper, fiber, none",
+     {COMPAT_VALUES}},
+    {"negative",
+     "an unknown escape, \\q, in fw_version",
+     "error naming the escape and listing the known ones",
+     {"[identity]\nfw_version = a\\qb\n"},
+     "layer1:2: identity.fw_version: value could not be read: '\\q' is not an "
+     "escape (\\s, \\n, \\t, \\r or \\\\)",
+     {COMPAT_VALUES}},
+    {"negative",
+     "an unknown escape in a number",
+     "rejected: every value's escapes are read, not only fw_version's",
+     {"[link]\nspeed_mbps = 1000\\x\n"},
+     "layer1:2: link.speed_mbps: value could not be read: '\\x' is not an "
+     "escape",
+     {COMPAT_VALUES}},
+    {"negative",
+     "a fw_version ending in a lone '\\'",
+     "error: the escape is cut off",
+     {"[identity]\nfw_version = a\\\n"},
+     "layer1:2: identity.fw_version: value could not be read: it ends in a "
+     "'\\' that escapes nothing",
+     {COMPAT_VALUES}},
+    {"negative",
+     "a fw_version ending in a '\\' and blanks",
+     "the same error: the blanks are stripped first",
+     {"[identity]\nfw_version = a\\ \t\r\n"},
+     "layer1:2: identity.fw_version: value could not be read: it ends in a "
+     "'\\'",
+     {COMPAT_VALUES}},
+    {"negative",
+     "a \\n escape in fw_version",
+     "decoded to a newline, which isn't printable",
+     {"[identity]\nfw_version = a\\nb\n"},
+     "identity.fw_version: must be 1 to 31 printable ASCII characters",
+     {COMPAT_VALUES}},
+    {"negative",
+     "a \\t escape in fw_version",
+     "decoded to a tab, which isn't printable",
+     {"[identity]\nfw_version = a\\tb\n"},
+     "identity.fw_version: must be 1 to 31 printable ASCII characters",
+     {COMPAT_VALUES}},
+    {"negative",
+     "a \\r escape in fw_version",
+     "decoded to a CR, which isn't printable",
+     {"[identity]\nfw_version = a\\rb\n"},
+     "identity.fw_version: must be 1 to 31 printable ASCII characters",
+     {COMPAT_VALUES}},
+    {"negative",
+     "a value of only blanks",
+     "integer expected, quoting the empty value",
+     {"[link]\nmtu_max =  \t \n"},
+     "layer1:2: link.mtu_max: integer expected, got ''",
      {COMPAT_VALUES}},
 
     /* boundary */
@@ -608,13 +765,13 @@ static const struct text_case text_cases[] = {
      {4, 0, "rocm-ernic-1.0", 25000, 0, 9198, 1000, 4, 32, 32}},
     {"corner",
      "a \\s escape in fw_version",
-     "decoded to a space, as GKeyFile does",
+     "decoded to a space",
      {"[identity]\nfw_version = a\\sb\n"},
      NULL,
      {4, 0, "a b", 100000, 0, 9198, 1000, 4, 32, 32}},
     {"corner",
      "escapes at a value's ends that decode to whitespace",
-     "stripped, as GKeyFile's own blanks are",
+     "stripped, as blanks in the text are",
      {"[identity]\nfw_version = \\sa\\sb\\t\\n\n"},
      NULL,
      {4, 0, "a b", 100000, 0, 9198, 1000, 4, 32, 32}},
@@ -641,6 +798,45 @@ static const struct text_case text_cases[] = {
      "accepted; nothing changes",
      {"[identity]\n[link]\n"},
      NULL,
+     {COMPAT_VALUES}},
+    {"corner",
+     "a CRLF after a section header's trailing blanks",
+     "accepted",
+     {"[link] \t\r\nspeed_mbps = 50000\r\n"},
+     NULL,
+     {4, 0, "rocm-ernic-1.0", 50000, 0, 9198, 1000, 4, 32, 32}},
+    {"corner",
+     "CRs and a vertical tab and form feed after a value, and blank lines "
+     "of CRs",
+     "accepted: whitespace at a value's ends is stripped, and a line of "
+     "blanks is blank",
+     {"[link]\r\n\r\r\r\nspeed_mbps = 50000\r\r\v\f\r\n"
+      "xcvr = fiber\r"},
+     NULL,
+     {4, 0, "rocm-ernic-1.0", 50000, 1, 9198, 1000, 4, 32, 32}},
+    {"corner",
+     "a vertical tab and form feed before a value",
+     "accepted: stripped too",
+     {"[link]\nxcvr =\v\ffiber\n"},
+     NULL,
+     {4, 0, "rocm-ernic-1.0", 100000, 1, 9198, 1000, 4, 32, 32}},
+    {"corner",
+     "an '=' inside a value",
+     "part of the value: only the first '=' ends the key",
+     {"[identity]\nfw_version = a=b\n"},
+     NULL,
+     {4, 0, "a=b", 100000, 0, 9198, 1000, 4, 32, 32}},
+    {"corner",
+     "a comment that isn't ASCII and ends in stray CRs",
+     "accepted: a comment's text isn't read",
+     {"# \xc3\xa9t\xc3\xa9 \xff\r\r\n[link]\nxcvr = fiber\n"},
+     NULL,
+     {4, 0, "rocm-ernic-1.0", 100000, 1, 9198, 1000, 4, 32, 32}},
+    {"corner",
+     "an escaped backslash at the end of a value, then blanks",
+     "decoded; the backslash fails fw_version's own check",
+     {"[identity]\nfw_version = a\\\\ \n"},
+     "identity.fw_version: must be 1 to 31 printable ASCII characters",
      {COMPAT_VALUES}},
     {"corner",
      "the same key in two layers",
@@ -1275,6 +1471,65 @@ static void check_file_boundaries(void)
     }
 }
 
+/*
+ * Fail each allocation of a layer setting every key in turn, by text and by
+ * file: each must fail the layer, out of memory, and change nothing.  Once
+ * none fails, the layer applies.
+ */
+static void check_out_of_memory(void)
+{
+    static const char text[] =
+        "[identity]\nasic_type = elba\nasic_rev = 3\nfw_version = a\\sb\n"
+        "[link]\nspeed_mbps = 25000\nxcvr = fiber\nmtu_max = 9000\n"
+        "[queues]\neth = 8\nrdma_eqs = 16\nintr_vectors = auto\n"
+        "[stats]\ninterval_ms = 250\n";
+    const struct want want = {2, 3, "a b", 25000, 1, 9000, 250, 8, 16, 0};
+    const char *path = scratch_file("oom.ini", text);
+
+    for (int by_file = 0; by_file < 2; by_file++) {
+        unsigned int skip;
+        bool ok = !by_file || path;
+
+        for (skip = 0; ok && skip < 100; skip++) {
+            struct ionic_profile p;
+            struct ionic_profile before;
+            char err[512] = "";
+            int rc;
+            bool fired;
+
+            ionic_profile_defaults(&p);
+            before = p;
+            fail_alloc_arm(skip);
+            rc = by_file ? ionic_profile_apply(&p, path, err, sizeof(err))
+                         : ionic_profile_apply_text(&p, "layer1", text,
+                                                    sizeof(text) - 1, err,
+                                                    sizeof(err));
+            fired = fail_alloc_disarm();
+            if (!fired) {
+                ok = rc == 0 && profile_is(&p, &want);
+                break;
+            }
+            ok = rc != 0 && strstr(err, "out of memory") &&
+                 profile_equal(&before, &p);
+            if (!ok) {
+                printf("     allocation %u failed: rc %d, error '%s'\n", skip,
+                       rc, err);
+            }
+        }
+        /* A layer of every key reads each value, so it allocates more than
+         * once */
+        ok = ok && skip > 1 && skip < 100;
+        report(ok, "negative",
+               by_file ? "each allocation fails in turn, for a file"
+                       : "each allocation fails in turn, for text",
+               "out of memory each time, and nothing changes; then the layer "
+               "applies");
+    }
+    if (path) {
+        unlink(path);
+    }
+}
+
 int main(void)
 {
     if (!mkdtemp(g_tmpdir)) {
@@ -1303,6 +1558,7 @@ int main(void)
     check_bad_args();
     check_format_fallbacks();
     check_file_boundaries();
+    check_out_of_memory();
 
     {
         char path[512];

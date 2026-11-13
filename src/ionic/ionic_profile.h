@@ -3,7 +3,7 @@
  *
  * A profile is the shape of the emulated NIC: its identity (ASIC type and
  * revision, firmware version) and its link (speed, transceiver, largest
- * MTU).  Profiles are ini files read with glib's GKeyFile:
+ * MTU).  Profiles are ini files:
  *
  *   [identity]
  *   fw_version = 1.8.0-E-32

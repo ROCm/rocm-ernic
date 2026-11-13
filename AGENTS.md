@@ -190,9 +190,7 @@ workflow for their environment).
   literal. `htons()`/`htonl()` are still right for `struct sockaddr_in`.
   Don't copy `src/p4/p4_devcmd.c`, which predates this.
 - **Allocate with `malloc()` and its family**, never GLib's
-  (`g_new0()`, `g_strdup()`, `g_malloc()`), and free with `free()`;
-  only what GLib returns (e.g. `g_key_file_get_string()`) is freed with
-  `g_free()`:
+  (`g_new0()`, `g_strdup()`, `g_malloc()`), and free with `free()`:
   - A fixed-size internal allocation, where running out of memory leaves
     nothing to do but stop, may use
     [`src/ernic_alloc.h`](src/ernic_alloc.h)'s `ernic_xmalloc()`,

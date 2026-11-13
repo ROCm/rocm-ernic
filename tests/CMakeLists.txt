@@ -387,7 +387,6 @@ ernic_add_test_program(test_ionic_intr_pending
     SOURCES
         test_ionic_intr_pending.c
         ${ERNIC_TEST_IONIC_ETH_SOURCES}
-    DEPS glib
     HEADER_DEPS vfio-user ibverbs
 )
 
@@ -399,22 +398,24 @@ ernic_add_test_program(test_ionic_port_info
     SOURCES
         test_ionic_port_info.c
         ${ERNIC_TEST_IONIC_ETH_SOURCES}
-    DEPS glib
     HEADER_DEPS vfio-user ibverbs
 )
 
 # NIC profile loader test: ini layering, strict validation and atomic
 # layers, built-in profiles by name and files by path. Pure: no ionic TU.
+# It fails the loader's allocations on demand: the linker routes the calls
+# in its own objects through wrappers in the test.
 ernic_add_test_program(test_ionic_profile
     SOURCES
         test_ionic_profile.c
         test_fmt.c
         ${PROJECT_SOURCE_DIR}/src/ionic/ionic_profile.c
         ${PROJECT_SOURCE_DIR}/src/ionic/ionic_profiles.c
-    DEPS glib
 )
 target_compile_definitions(test_ionic_profile PRIVATE
     ERNIC_PROFILES_DIR="${PROJECT_SOURCE_DIR}/profiles")
+target_link_options(test_ionic_profile PRIVATE
+    "LINKER:--wrap=malloc,--wrap=realloc")
 
 # LIF counter block test: MAC classification, drop accounting, the
 # little-endian rendering and each index against the kernel's struct
@@ -433,7 +434,6 @@ ernic_add_test_program(test_ionic_identity
     SOURCES
         test_ionic_identity.c
         ${ERNIC_TEST_IONIC_ETH_SOURCES}
-    DEPS glib
     HEADER_DEPS vfio-user ibverbs
 )
 target_include_directories(test_ionic_identity PRIVATE
@@ -448,7 +448,6 @@ ernic_add_test_program(test_ionic_stats_publish
     SOURCES
         test_ionic_stats_publish.c
         ${ERNIC_TEST_IONIC_ETH_SOURCES}
-    DEPS glib
     HEADER_DEPS vfio-user ibverbs
 )
 
@@ -460,7 +459,6 @@ ernic_add_test_program(test_ionic_queues
     SOURCES
         test_ionic_queues.c
         ${ERNIC_TEST_IONIC_ETH_SOURCES}
-    DEPS glib
     HEADER_DEPS vfio-user ibverbs
 )
 

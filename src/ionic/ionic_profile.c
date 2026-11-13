@@ -1,11 +1,16 @@
 /*
  * NIC profile loader: ini text -> struct ionic_profile.  See ionic_profile.h.
  *
- * glib's GKeyFile reads the values.  GKeyFile is lenient where a profile
- * must not be -- a repeated key silently replaces the first, and its errors
- * carry no line number -- so a line scanner runs first.  It checks the
- * structure, rejects repeats, and records the line of every section and
- * key, so that every error names the source, line and key.
+ * A line scanner reads the whole text first.  It checks the structure,
+ * rejects anything repeated, and records the line of every section and key
+ * and where each key's value lies, so that every error names the source,
+ * line and key, and a text with any structural error sets nothing.  Only
+ * then is each value read and checked.
+ *
+ * The syntax is a strict subset of glib's GKeyFile format, and reads the
+ * same: values may hold GKeyFile's escapes (\s, \n, \t, \r, \\), and a CR
+ * is part of a line end only just before a '\n'.  Unlike GKeyFile, a value
+ * must be ASCII, as every valid one is.
  *
  * Copyright (C) Advanced Micro Devices, Inc.
  * SPDX-License-Identifier: GPL-2.0-or-later
@@ -23,8 +28,6 @@
 #include <string.h>
 #include <sys/stat.h>
 #include <unistd.h>
-
-#include <glib.h>
 
 #include "ernic_err.h"
 #include "ionic/ionic_profile.h"
@@ -129,6 +132,12 @@ struct scanned {
     char group[NAME_MAX_LEN + 1];
     char key[NAME_MAX_LEN + 1]; /* "" for a [section] line */
     unsigned int line;
+    /* A key line's schema row and value, everything after the '=' to the
+     * line end, as an offset into the text and a length.  NULL, 0 and 0 for
+     * a [section] line. */
+    const struct schema_key *schema;
+    size_t value_off;
+    size_t value_len;
 };
 
 struct scan {
@@ -173,8 +182,10 @@ static const struct scanned *scan_find(const struct scan *sc, const char *group,
     return NULL;
 }
 
-static bool scan_add(struct scan *sc, const char *group, const char *key,
-                     unsigned int line)
+/* Record a line, as a [section] line; the caller fills in a key's schema
+ * row and value.  NULL if out of memory. */
+static struct scanned *scan_add(struct scan *sc, const char *group,
+                                const char *key, unsigned int line)
 {
     struct scanned *it;
 
@@ -183,7 +194,7 @@ static bool scan_add(struct scan *sc, const char *group, const char *key,
         struct scanned *n = realloc(sc->items, cap * sizeof(*n));
 
         if (!n) {
-            return false;
+            return NULL;
         }
         sc->items = n;
         sc->cap = cap;
@@ -193,7 +204,10 @@ static bool scan_add(struct scan *sc, const char *group, const char *key,
     memcpy(it->group, group, strlen(group) + 1);
     memcpy(it->key, key, strlen(key) + 1);
     it->line = line;
-    return true;
+    it->schema = NULL;
+    it->value_off = 0;
+    it->value_len = 0;
+    return it;
 }
 
 static bool is_blank(char c)
@@ -208,24 +222,16 @@ static bool is_space(char c)
            c == '\r';
 }
 
-/*
- * Remove @p s's leading and trailing whitespace in place, moving what's left
- * to the start, and return @p s
- */
-static char *strip(char *s)
+/* Narrow [*@p start, *@p end) of @p s past its leading and trailing
+ * whitespace */
+static void trim_span(const char *s, size_t *start, size_t *end)
 {
-    size_t start = 0;
-    size_t end = strlen(s);
-
-    while (start < end && is_space(s[start])) {
-        start++;
+    while (*start < *end && is_space(s[*start])) {
+        (*start)++;
     }
-    while (end > start && is_space(s[end - 1])) {
-        end--;
+    while (*end > *start && is_space(s[*end - 1])) {
+        (*end)--;
     }
-    memmove(s, s + start, end - start);
-    s[end - start] = '\0';
-    return s;
 }
 
 /*
@@ -243,33 +249,45 @@ static int scan_text(struct scan *sc, const char *source, const char *text,
     while (pos < len) {
         const char *s = text + pos;
         const char *eol = memchr(s, '\n', len - pos);
-        const char *e = eol ? eol : text + len;
+        size_t n = eol ? (size_t)(eol - s) : len - pos;
+        const char *e;
+        const char *he;
         char name[NAME_MAX_LEN + 1];
         const struct scanned *prev;
+        const struct schema_key *k;
+        struct scanned *it;
 
-        /* [s, e) is this line without its '\n'; pos moves past it */
+        /* [s, e), n bytes, is this line without its line end, "\n" or
+         * "\r\n"; pos moves past it.  A CR anywhere else is part of the
+         * line. */
         line++;
-        pos = (size_t)(e - text) + (eol ? 1 : 0);
-        if (memchr(s, '\0', (size_t)(e - s))) {
+        pos += n + (eol ? 1 : 0);
+        if (eol && n > 0 && s[n - 1] == '\r') {
+            n--;
+        }
+        e = s + n;
+        if (memchr(s, '\0', n)) {
             ernic_set_err(err, err_len, "%s:%u: NUL byte in the text", source,
                           line);
             return -1;
         }
-        /* Trim the line, then skip it if it's blank or a comment */
+        /* Skip the line if it's blank or a comment */
         while (s < e && is_blank(*s)) {
             s++;
-        }
-        while (e > s && is_blank(e[-1])) {
-            e--;
         }
         if (s == e || *s == '#') {
             continue;
         }
 
         /* A "[section]" header: a known name, seen once, which the key
-         * lines after it belong to */
+         * lines after it belong to.  Only spaces and tabs may follow it,
+         * then the line end, as in GKeyFile. */
         if (*s == '[') {
-            if (e[-1] != ']' || !take_name(s + 1, e - 1, name)) {
+            he = e;
+            while (he > s && is_blank(he[-1])) {
+                he--;
+            }
+            if (he[-1] != ']' || !take_name(s + 1, he - 1, name)) {
                 ernic_set_err(
                     err, err_len,
                     "%s:%u: a section header is '[name]', with letters, "
@@ -292,6 +310,13 @@ static int scan_text(struct scan *sc, const char *source, const char *text,
                     source, line, name, prev->line);
                 return -1;
             }
+            if (memchr(he, '\r', (size_t)(e - he))) {
+                ernic_set_err(err, err_len,
+                              "%s:%u: stray carriage return after section "
+                              "[%s]: only spaces and tabs may follow it",
+                              source, line, name);
+                return -1;
+            }
             memcpy(group, name, sizeof(group));
             if (!scan_add(sc, group, "", line)) {
                 ernic_set_err(err, err_len, "%s: out of memory", source);
@@ -301,8 +326,8 @@ static int scan_text(struct scan *sc, const char *source, const char *text,
         }
 
         /* Otherwise "key = value": the key is the name before the first
-         * '=', trimmed.  Only the key is checked here; the value is
-         * parsed once the whole text has passed. */
+         * '=', trimmed.  Only the key is checked here; the value, the rest
+         * of the line, is read once the whole text has passed. */
         const char *eq = memchr(s, '=', (size_t)(e - s));
         const char *ke = eq;
 
@@ -323,7 +348,8 @@ static int scan_text(struct scan *sc, const char *source, const char *text,
                           line, name);
             return -1;
         }
-        if (!find_key(group, name)) {
+        k = find_key(group, name);
+        if (!k) {
             ernic_set_err(err, err_len, "%s:%u: unknown key '%s.%s'", source,
                           line, group, name);
             return -1;
@@ -335,10 +361,14 @@ static int scan_text(struct scan *sc, const char *source, const char *text,
                           source, line, group, name, prev->line);
             return -1;
         }
-        if (!scan_add(sc, group, name, line)) {
+        it = scan_add(sc, group, name, line);
+        if (!it) {
             ernic_set_err(err, err_len, "%s: out of memory", source);
             return -1;
         }
+        it->schema = k;
+        it->value_off = (size_t)(eq + 1 - text);
+        it->value_len = (size_t)(e - (eq + 1));
     }
     return 0;
 }
@@ -496,8 +526,8 @@ int ionic_profile_warning(const struct ionic_profile *p, char *msg,
 /*
  * Store one key's value in @q.  @where is "source:line: group.key".
  *
- * @raw is the value as written and @str the same value with GKeyFile's
- * escapes (\s, \n, \\, ...) decoded; both are trimmed.  Only fw_version, the
+ * @raw is the value as written and @str the same value with its escapes
+ * (\s, \n, \\, ...) decoded; both are trimmed.  Only fw_version, the
  * one free-text key, reads @str.  Every other key is a name or a number read
  * from @raw, so an escape in one is refused, not decoded.
  *
@@ -542,7 +572,7 @@ static int set_value(struct ionic_profile *q, const struct schema_key *k,
      * Free text, which the device reports to the guest.  fw_version_ok()
      * checks the length again, but this gives a too-long value its own
      * message.  A backslash is refused because --print-profile writes the
-     * value back unescaped, where GKeyFile would read it as an escape, and
+     * value back unescaped, where the loader would read it as an escape, and
      * leading or trailing blanks because reading it back strips them.
      */
     case KEY_FW_VERSION:
@@ -655,14 +685,106 @@ static int set_value(struct ionic_profile *q, const struct schema_key *k,
     }
 }
 
+/*
+ * Read the value of key line @it in @text into fresh buffers: *@raw as
+ * written and *@str with its escapes decoded, both stripped of leading and
+ * trailing whitespace, which is invisible at the end of a line.  @where is
+ * "source:line: group.key".  Returns 0, or -1 with the reason in @err and
+ * nothing to free.
+ *
+ * The escapes are GKeyFile's: \s, \n, \t, \r and \\.  Another, or a '\' at
+ * the end, makes the value unreadable, as does a byte that isn't ASCII,
+ * which no key takes.
+ */
+static int read_value(const char *text, const struct scanned *it,
+                      const char *where, char **raw, char **str, char *err,
+                      size_t err_len)
+{
+    const char *v = text + it->value_off;
+    size_t start = 0;
+    size_t end = it->value_len;
+    size_t n;
+    size_t j = 0;
+    char *r;
+    char *d;
+
+    for (size_t i = 0; i < end; i++) {
+        if ((unsigned char)v[i] > 0x7f) {
+            ernic_set_err(err, err_len,
+                          "%s: value could not be read: it is not ASCII",
+                          where);
+            return -1;
+        }
+    }
+    trim_span(v, &start, &end);
+    n = end - start;
+    /* Decoding never lengthens the value, so each fits in n + 1 bytes. */
+    r = malloc(n + 1);
+    d = malloc(n + 1);
+    if (!r || !d) {
+        ernic_set_err(err, err_len, "%s: out of memory", where);
+        goto fail;
+    }
+    memcpy(r, v + start, n);
+    r[n] = '\0';
+    for (size_t i = 0; i < n; i++) {
+        char out = r[i];
+
+        if (out == '\\') {
+            if (++i == n) {
+                ernic_set_err(err, err_len,
+                              "%s: value could not be read: it ends in a "
+                              "'\\' that escapes nothing",
+                              where);
+                goto fail;
+            }
+            switch (r[i]) {
+            case 's':
+                out = ' ';
+                break;
+            case 'n':
+                out = '\n';
+                break;
+            case 't':
+                out = '\t';
+                break;
+            case 'r':
+                out = '\r';
+                break;
+            case '\\':
+                out = '\\';
+                break;
+            default:
+                ernic_set_err(err, err_len,
+                              "%s: value could not be read: '\\%c' is not "
+                              "an escape (\\s, \\n, \\t, \\r or \\\\)",
+                              where, r[i]);
+                goto fail;
+            }
+        }
+        d[j++] = out;
+    }
+    /* An escape may decode to whitespace at either end */
+    start = 0;
+    end = j;
+    trim_span(d, &start, &end);
+    memmove(d, d + start, end - start);
+    d[end - start] = '\0';
+    *raw = r;
+    *str = d;
+    return 0;
+fail:
+    free(r);
+    free(d);
+    return -1;
+}
+
 int ionic_profile_apply_text(struct ionic_profile *p, const char *source,
                              const char *text, size_t len, char *err,
                              size_t err_len)
 {
     struct scan sc = {NULL, 0, 0};
     struct ionic_profile q = *p;
-    GKeyFile *kf = NULL;
-    GError *gerr = NULL;
     int rc = -1;
 
     if (!source) {
@@ -676,41 +798,25 @@ int ionic_profile_apply_text(struct ionic_profile *p, const char *source,
         goto out;
     }
 
-    kf = g_key_file_new();
-    if (len &&
-        !g_key_file_load_from_data(kf, text, len, G_KEY_FILE_NONE, &gerr)) {
-        ernic_set_err(err, err_len, "%s: %s", source,
-                      gerr ? gerr->message : "not a valid key file");
-        goto out;
-    }
-
     for (size_t i = 0; i < sc.count; i++) {
         const struct scanned *it = &sc.items[i];
-        const struct schema_key *k;
         char where[256];
-        gchar *raw;
-        gchar *str;
+        char *raw = NULL;
+        char *str = NULL;
         int set;
 
-        if (it->key[0] == '\0') {
+        if (!it->schema) {
             continue;
         }
-        k = find_key(it->group, it->key);
-        raw = g_key_file_get_value(kf, it->group, it->key, NULL);
-        str = g_key_file_get_string(kf, it->group, it->key, NULL);
         /* Only names the value in a message, so it may be cut short. */
         (void)snprintf(where, sizeof(where), "%s:%u: %s.%s", source, it->line,
                        it->group, it->key);
-        if (k && raw && str) {
-            /* GKeyFile keeps a value's trailing blanks, and a stray one
-             * at the end of a line is invisible. */
-            set = set_value(&q, k, strip(raw), strip(str), where, err, err_len);
-        } else {
-            ernic_set_err(err, err_len, "%s: value could not be read", where);
-            set = -1;
+        set = read_value(text, it, where, &raw, &str, err, err_len);
+        if (set == 0) {
+            set = set_value(&q, it->schema, raw, str, where, err, err_len);
         }
-        g_free(raw);
-        g_free(str);
+        free(raw);
+        free(str);
         if (set != 0) {
             goto out;
         }
@@ -718,12 +824,6 @@ int ionic_profile_apply_text(struct ionic_profile *p, const char *source,
     *p = q;
     rc = 0;
 out:
-    if (gerr) {
-        g_error_free(gerr);
-    }
-    if (kf) {
-        g_key_file_free(kf);
-    }
     free(sc.items);
     return rc;
 }
