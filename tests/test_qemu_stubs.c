@@ -49,8 +49,6 @@
 #include <time.h>
 #include <unistd.h>
 
-#include <glib.h>
-
 #include "ernic_gnu.h"
 #include "qemu/bitmap.h"
 #include "qemu/thread.h"
@@ -113,8 +111,8 @@ static void test_bitmap_size(uint32_t nbits)
         }
     }
 
-    /* The resource manager frees its maps with g_free(). */
-    g_free(map);
+    /* The resource manager frees its maps with free(). */
+    free(map);
 }
 
 static void test_bitmap_sizes(void)
@@ -249,7 +247,7 @@ static void *record_name(void *arg)
 {
     if (ernic_gnu_pthread_getname_np(pthread_self(), arg,
                                      QEMU_THREAD_NAME_LEN) != 0) {
-        g_strlcpy(arg, "(unknown)", QEMU_THREAD_NAME_LEN);
+        (void)snprintf(arg, QEMU_THREAD_NAME_LEN, "%s", "(unknown)");
     }
     return NULL;
 }

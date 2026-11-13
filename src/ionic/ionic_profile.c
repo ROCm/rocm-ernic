@@ -201,6 +201,33 @@ static bool is_blank(char c)
     return c == ' ' || c == '\t' || c == '\r';
 }
 
+/* Any of the characters isspace() matches in the C locale */
+static bool is_space(char c)
+{
+    return c == ' ' || c == '\t' || c == '\n' || c == '\v' || c == '\f' ||
+           c == '\r';
+}
+
+/*
+ * Remove @p s's leading and trailing whitespace in place, moving what's left
+ * to the start, and return @p s
+ */
+static char *strip(char *s)
+{
+    size_t start = 0;
+    size_t end = strlen(s);
+
+    while (start < end && is_space(s[start])) {
+        start++;
+    }
+    while (end > start && is_space(s[end - 1])) {
+        end--;
+    }
+    memmove(s, s + start, end - start);
+    s[end - start] = '\0';
+    return s;
+}
+
 /*
  * Check the structure of @text and record every section and key line.
  * Only blank lines, '#' comments, "[section]" and "key = value" are
@@ -677,8 +704,7 @@ int ionic_profile_apply_text(struct ionic_profile *p, const char *source,
         if (k && raw && str) {
             /* GKeyFile keeps a value's trailing blanks, and a stray one
              * at the end of a line is invisible. */
-            set = set_value(&q, k, g_strstrip(raw), g_strstrip(str), where, err,
-                            err_len);
+            set = set_value(&q, k, strip(raw), strip(str), where, err, err_len);
         } else {
             ernic_set_err(err, err_len, "%s: value could not be read", where);
             set = -1;

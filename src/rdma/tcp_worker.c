@@ -214,7 +214,7 @@ int tcp_worker_register_with_manager(TcpBackendPrivate *priv,
         char *addr = tcp_addr_str(priv->manager_host, priv->manager_port);
 
         rdma_error_report("TCP: Failed to connect to manager at %s", addr);
-        g_free(addr);
+        free(addr);
         return -1;
     }
     conn =

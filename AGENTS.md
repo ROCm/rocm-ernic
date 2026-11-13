@@ -189,23 +189,23 @@ workflow for their environment).
   touches its bytes, and a test checks the bytes written against a
   literal. `htons()`/`htonl()` are still right for `struct sockaddr_in`.
   Don't copy `src/p4/p4_devcmd.c`, which predates this.
-- **Allocate the way the layer does**, and free with the allocator's
-  partner (`g_free()` for anything GLib returns, e.g.
-  `g_key_file_get_string()`):
-  - `src/pvrdma/`, `src/qemu-compat/`, and `src/rdma/` are built on
-    GLib, whose allocators abort when out of memory, so they use
-    `g_new0()`, `g_strdup()`, `g_malloc()` unchecked; a `NULL` check
-    there is dead code.
-  - Except a buffer whose size a guest or peer chooses: `malloc()` and
-    check it, so a large request fails alone rather than aborting the
-    server (and a test can fail it with `--wrap`). See
+- **Allocate with `malloc()` and its family**, never GLib's
+  (`g_new0()`, `g_strdup()`, `g_malloc()`), and free with `free()`;
+  only what GLib returns (e.g. `g_key_file_get_string()`) is freed with
+  `g_free()`:
+  - A fixed-size internal allocation, where running out of memory leaves
+    nothing to do but stop, may use
+    [`src/ernic_alloc.h`](src/ernic_alloc.h)'s `ernic_xmalloc()`,
+    `ernic_xcalloc()`, `ernic_xstrdup()`, `ernic_xstrndup()`, or
+    `ernic_xasprintf()`, which abort through `ernic_log_fatal()` rather
+    than return `NULL`; a `NULL` check after one is dead code.
+  - Never for a buffer whose size a guest or peer chooses: `malloc()`
+    and check it, so a large request fails alone rather than aborting
+    the server (and a test can fail it with `--wrap`). See
     `tcp_recv_message()`, `tcp_queued_msg_new()`, and their tests,
     `ST_NO_MEMORY` in `tests/test_tcp_thread_stop.c` and
     `tests/s3_alloc_fail.c`.
-  - Elsewhere, use `malloc()`, `calloc()`, `realloc()`, `strdup()`,
-    never GLib's, and check every result.
-  - Where a buffer crosses between the two, comment which allocator it's
-    from, as `TcpQueuedMsg` and `tcp_recv_message()` do.
+  - Otherwise, check every result.
 - **Log every message through [`src/ernic_log.h`](src/ernic_log.h)**,
   never with `printf()`, `fprintf(stderr, ...)`, `puts()`, or
   `perror()`:

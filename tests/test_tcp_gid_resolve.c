@@ -42,6 +42,7 @@
 #include <glib.h>
 #include <infiniband/verbs.h>
 
+#include "ernic_alloc.h"
 #include "pvrdma/rdma_backend_defs.h"
 #include "qemu/error-report.h"
 #include "qemu/thread.h"
@@ -99,12 +100,12 @@ static int failures;
 
 static TcpBackendPrivate *priv_new(void)
 {
-    TcpBackendPrivate *priv = g_new0(TcpBackendPrivate, 1);
+    TcpBackendPrivate *priv = ernic_xcalloc(1, sizeof(*priv));
 
     /* Nothing else can reach priv yet */
     ROCM_ERNIC_WARN_THREAD_SAFETY_OFF
     priv->node_gids =
-        g_hash_table_new_full(g_direct_hash, g_direct_equal, NULL, g_free);
+        g_hash_table_new_full(g_direct_hash, g_direct_equal, NULL, free);
     priv->gid_owner = g_hash_table_new_full(g_bytes_hash, g_bytes_equal,
                                             tcp_gid_key_free, NULL);
     ROCM_ERNIC_WARN_THREAD_SAFETY_ON
@@ -120,7 +121,7 @@ static void priv_free(TcpBackendPrivate *priv)
     g_hash_table_destroy(priv->gid_owner);
     ROCM_ERNIC_WARN_THREAD_SAFETY_ON
     qemu_mutex_destroy(&priv->gid_table_lock);
-    g_free(priv);
+    free(priv);
 }
 
 /* An IPv4-mapped GID, the form adminq_parse_roce_hdr() builds for a

@@ -14,6 +14,7 @@
  */
 
 #include "rdma/rdma_backend_ops.h"
+#include "ernic_alloc.h"
 #include "ernic_limits.h"
 #include "ernic_map.h"
 #include "pvrdma/rdma_backend_defs.h"
@@ -23,8 +24,8 @@
 #include <errno.h>
 #include <inttypes.h>
 #include <stdbool.h>
+#include <stdlib.h>
 #include <string.h>
-#include <glib.h>
 #include <infiniband/verbs.h>
 
 /*
@@ -101,13 +102,13 @@ static int loopback_init(RdmaBackendDev *backend_dev, const char *config)
     (void)config;
     rdma_info_report("Loopback backend: Initializing internal emulation");
 
-    priv = g_new0(LoopbackBackendPrivate, 1);
+    priv = ernic_xcalloc(1, sizeof(*priv));
 
     qemu_mutex_init(&priv->lock);
 
     /* Nothing else can reach priv until it is published below */
     ROCM_ERNIC_WARN_THREAD_SAFETY_OFF
-    ernic_u32_map_init(&priv->qps, g_free);
+    ernic_u32_map_init(&priv->qps, free);
 
     priv->next_pd_handle = 1;
     priv->next_mr_handle = 1;
@@ -138,7 +139,7 @@ static void loopback_fini(RdmaBackendDev *backend_dev)
 
     qemu_mutex_destroy(&priv->lock);
 
-    g_free(priv);
+    free(priv);
     backend_dev->backend_private = NULL;
 }
 
@@ -284,7 +285,7 @@ static int loopback_create_qp(RdmaBackendQP *qp, uint8_t qp_type,
         return -EINVAL;
     }
 
-    lqp = g_new0(LoopbackQP, 1);
+    lqp = ernic_xcalloc(1, sizeof(*lqp));
     lqp->qp_type = qp_type;
     lqp->state = IBV_QPS_RESET;
 
@@ -553,7 +554,7 @@ static int loopback_create_srq(RdmaBackendSRQ *srq, RdmaBackendPD *pd,
                                uint32_t max_wr, uint32_t max_sge,
                                uint32_t srq_limit)
 {
-    LoopbackSRQ *lsrq = g_new0(LoopbackSRQ, 1);
+    LoopbackSRQ *lsrq = ernic_xcalloc(1, sizeof(*lsrq));
 
     (void)pd;
 
@@ -573,7 +574,7 @@ static void loopback_destroy_srq(RdmaBackendSRQ *srq)
     if (!lsrq) {
         return;
     }
-    g_free(lsrq);
+    free(lsrq);
     srq->priv = NULL;
     rdma_info_report("Loopback: Destroyed SRQ");
 }

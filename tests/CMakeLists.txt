@@ -66,11 +66,13 @@ set(ERNIC_TEST_P4_FIXTURE_DIR ${CMAKE_CURRENT_SOURCE_DIR}/data/p4)
 
 # The TCP backend's sources. The list comes from the top-level
 # CMakeLists.txt, so the tests keep linking what the server links, plus
-# the GNU extensions it calls and the log, which the thread wrappers
-# (qemu/thread.h) abort through. The tests stub QEMU's reporters.
+# the allocators and GNU extensions it calls and the log, which the
+# allocators and the thread wrappers (qemu/thread.h) abort through. The
+# tests stub QEMU's reporters.
 set(ERNIC_TCP_TEST_SOURCES ${TCP_BACKEND_SOURCES})
 list(TRANSFORM ERNIC_TCP_TEST_SOURCES PREPEND "${PROJECT_SOURCE_DIR}/")
 list(APPEND ERNIC_TCP_TEST_SOURCES
+    ${PROJECT_SOURCE_DIR}/src/ernic_alloc.c
     ${PROJECT_SOURCE_DIR}/src/ernic_gnu.c
     ${PROJECT_SOURCE_DIR}/src/ernic_log.c
 )
@@ -209,11 +211,25 @@ ernic_add_test_program(ernic-test-siphash
         ${PROJECT_SOURCE_DIR}/src/ernic_siphash.c
 )
 
-# The hash maps (ernic_map.h). It links the log, which the map aborts
-# through when out of memory.
+# The allocators that abort when out of memory (ernic_alloc.h), and the
+# log they abort through. It fails malloc() and calloc() on demand: the
+# linker routes the calls in its own objects through wrappers in the test.
+ernic_add_test_program(ernic-test-ernic-alloc
+    SOURCES
+        test_ernic_alloc.c
+        ${PROJECT_SOURCE_DIR}/src/ernic_alloc.c
+        ${PROJECT_SOURCE_DIR}/src/ernic_log.c
+    DEPS pthread
+)
+target_link_options(ernic-test-ernic-alloc PRIVATE
+    "LINKER:--wrap=malloc,--wrap=calloc")
+
+# The hash maps (ernic_map.h). It links the allocators and the log, which
+# the map aborts through when out of memory.
 ernic_add_test_program(ernic-test-ernic-map
     SOURCES
         test_ernic_map.c
+        ${PROJECT_SOURCE_DIR}/src/ernic_alloc.c
         ${PROJECT_SOURCE_DIR}/src/ernic_log.c
         ${PROJECT_SOURCE_DIR}/src/ernic_map.c
         ${PROJECT_SOURCE_DIR}/src/ernic_siphash.c
@@ -721,23 +737,30 @@ ernic_add_test_program(test_rdma_res_tbl
         test_rdma_res_tbl.c
         ${PROJECT_SOURCE_DIR}/src/pvrdma/rdma_rm.c
         ${PROJECT_SOURCE_DIR}/src/qemu-compat/error-report.c
+        ${PROJECT_SOURCE_DIR}/src/ernic_alloc.c
         ${PROJECT_SOURCE_DIR}/src/ernic_gnu.c
         ${PROJECT_SOURCE_DIR}/src/ernic_log.c
         ${PROJECT_SOURCE_DIR}/src/qemu-compat/qemu_stubs.c
     DEPS glib ibverbs pthread
 )
+# The test fails a table's entry or bitmap allocation on demand. The linker
+# routes the malloc() and calloc() calls in its own objects through
+# wrappers in the test; libc's and GLib's own calls are untouched.
+target_link_options(test_rdma_res_tbl PRIVATE
+    "LINKER:--wrap=malloc,--wrap=calloc")
 
 # QEMU utility stubs test: bitmap word boundaries, the oversize-map
 # abort, the signal mask of a new thread, and the mutex wrappers'
-# aborts. It links the stubs translation unit directly, and the log they
-# abort through.
+# aborts. It links the stubs translation unit directly, and the allocators
+# and the log they abort through.
 ernic_add_test_program(test_qemu_stubs
     SOURCES
         test_qemu_stubs.c
+        ${PROJECT_SOURCE_DIR}/src/ernic_alloc.c
         ${PROJECT_SOURCE_DIR}/src/ernic_gnu.c
         ${PROJECT_SOURCE_DIR}/src/ernic_log.c
         ${PROJECT_SOURCE_DIR}/src/qemu-compat/qemu_stubs.c
-    DEPS glib ibverbs pthread
+    DEPS ibverbs pthread
 )
 # TSan reports a misused mutex itself and halts, so the test skips the
 # cases that misuse one.
@@ -916,6 +939,9 @@ ernic_add_unit_test(byteorder-unit ernic-test-byteorder TIMEOUT 30)
 
 # SipHash-2-4 against the reference implementation's test vectors
 ernic_add_unit_test(siphash-unit ernic-test-siphash TIMEOUT 30)
+
+# The allocators: what each returns, and each abort
+ernic_add_unit_test(ernic-alloc-unit ernic-test-ernic-alloc TIMEOUT 30)
 
 # The hash maps: insert, replace, remove, walk, and growth
 ernic_add_unit_test(ernic-map-unit ernic-test-ernic-map TIMEOUT 30)

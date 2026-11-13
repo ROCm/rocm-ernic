@@ -57,8 +57,8 @@
  * limits that would size a table wrongly (a negative limit), and when a
  * table can't be allocated it must free the tables it had already built and
  * leave nothing for rdma_rm_fini() to free twice.
- * g_try_malloc() and g_try_malloc0_n() are defined here so a case can make
- * a given table's entry or bitmap allocation fail.
+ * malloc() and calloc() are wrapped here so a case can make a given
+ * table's entry or bitmap allocation fail.
  *
  * The mr-* cases cover an MR's life in the resource manager, with no backend
  * and with a stub one that records its calls: the MR owns no memory, so the
@@ -114,6 +114,7 @@
 #include "qemu/bitmap.h"
 #include "qemu/thread.h"
 #include "rdma/rdma_backend_ops.h"
+#include "rocm-ernic-warnings.h"
 
 /* ---- Stubs for the SRQ entry points rdma_rm.c calls, which go to the
  * backend directly rather than through its ops. They return srq_rc and
@@ -167,12 +168,13 @@ void rdma_backend_destroy_srq(RdmaBackendSRQ *srq)
 
 /* ---- Allocation failure injection -------------------------------------
  *
- * res_tbl_init() allocates each table's entries with g_try_malloc(), and
- * its bitmap through bitmap_new(), whose g_try_new0() calls
- * g_try_malloc0_n(). Nothing else the test reaches calls either. These
- * definitions take the place of glib's, so a case can fail either
- * allocation for a given table. g_free() frees glib's allocations with
- * free(), so it frees these too.
+ * res_tbl_init() allocates each table's entries with malloc(), and its
+ * bitmap through bitmap_new(), which calls calloc(). Nothing else that
+ * rdma_rm_init() reaches calls either, other than GLib, whose own calls
+ * aren't wrapped. The test is linked with --wrap=malloc,--wrap=calloc
+ * (tests/CMakeLists.txt), so the calls in its own objects come here first,
+ * and a case can fail either allocation for a given table. The test's own
+ * allocations are counted too, but no case counts across one.
  */
 #define NO_FAILURE UINT32_MAX
 
@@ -196,27 +198,40 @@ static bool alloc_should_fail(AllocInjector *inj)
     return inj->calls++ == inj->fail_at;
 }
 
-gpointer g_try_malloc(gsize n_bytes)
+/*
+ * The names are --wrap's, so they are reserved identifiers by necessity, and
+ * they can't be static, since the linker has to find them.
+ */
+ROCM_ERNIC_WARN_RESERVED_IDENTIFIER_OFF
+/* NOLINTBEGIN(bugprone-reserved-identifier,cert-dcl37-c,cert-dcl51-cpp) */
+/* NOLINTBEGIN(misc-use-internal-linkage) */
+void *__real_malloc(size_t size);
+void *__real_calloc(size_t nmemb, size_t size);
+void *__wrap_malloc(size_t size);
+void *__wrap_calloc(size_t nmemb, size_t size);
+
+void *__wrap_malloc(size_t size)
 {
     if (alloc_should_fail(&entry_allocs)) {
+        errno = ENOMEM;
         return NULL;
     }
-    /* Like glib's, return NULL for zero bytes. */
-    return n_bytes ? malloc(n_bytes) : NULL;
+    /* NULL for zero bytes, which malloc() may return, so that an empty
+     * table must not be taken for a failure. */
+    return size ? __real_malloc(size) : NULL;
 }
 
-gpointer g_try_malloc0_n(gsize n_blocks, gsize n_block_bytes)
+void *__wrap_calloc(size_t nmemb, size_t size)
 {
     if (alloc_should_fail(&bitmap_allocs)) {
+        errno = ENOMEM;
         return NULL;
     }
-    /* Like glib's, return NULL for zero bytes. calloc() checks the product
-     * for overflow, as glib does. */
-    if (n_blocks == 0 || n_block_bytes == 0) {
-        return NULL;
-    }
-    return calloc(n_blocks, n_block_bytes);
+    return __real_calloc(nmemb, size);
 }
+/* NOLINTEND(misc-use-internal-linkage) */
+/* NOLINTEND(bugprone-reserved-identifier,cert-dcl37-c,cert-dcl51-cpp) */
+ROCM_ERNIC_WARN_RESERVED_IDENTIFIER_ON
 
 /* ---- Fixture ----------------------------------------------------------- */
 
@@ -597,8 +612,8 @@ static bool test_init_unwinds(const char *name, bool fail_bitmap)
 /*
  * A successful init allocates each table's entries and bitmap once, so
  * test_init_unwinds() reaches every one of them. Zero limits are valid:
- * g_try_malloc() returns NULL for an empty table, and that must not be
- * taken for a failure.
+ * malloc() may return NULL for an empty table, as the wrapper above does,
+ * and that must not be taken for a failure.
  */
 static bool test_init_succeeds(const char *name,
                                const struct ibv_device_attr *attr)

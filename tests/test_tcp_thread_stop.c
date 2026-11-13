@@ -177,6 +177,7 @@
 #include <infiniband/verbs.h>
 
 #include "byteorder.h"
+#include "ernic_alloc.h"
 #include "ernic_gnu.h"
 #include "ernic_time.h"
 #include "pvrdma/rdma_backend_defs.h"
@@ -232,7 +233,7 @@ void qemu_thread_set_name(const char *name)
 {
     char buf[QEMU_THREAD_NAME_LEN];
 
-    g_strlcpy(buf, name, sizeof(buf));
+    (void)snprintf(buf, sizeof(buf), "%s", name);
     (void)ernic_gnu_pthread_setname_np(pthread_self(), buf);
 }
 
@@ -267,7 +268,7 @@ int qemu_thread_create(QemuThread *thread, const char *name,
     }
     t->fn = start_routine;
     t->arg = arg;
-    g_strlcpy(t->name, name, sizeof(t->name));
+    (void)snprintf(t->name, sizeof(t->name), "%s", name);
     if (pthread_create(&thread->thread, NULL, trampoline_run, t) != 0) {
         free(t);
         return -1;
@@ -396,7 +397,7 @@ _Noreturn static void watchdog(int sig)
  */
 static TcpBackendPrivate *priv_alloc(void)
 {
-    TcpBackendPrivate *priv = g_new0(TcpBackendPrivate, 1);
+    TcpBackendPrivate *priv = ernic_xcalloc(1, sizeof(*priv));
 
     atomic_init(&priv->send_timeout_ms, TCP_DEFAULT_SEND_TIMEOUT_MS);
     return priv;
@@ -580,7 +581,7 @@ static int run_case(const struct stop_case *c)
         if (fd < 0) {
             printf("FAIL %s: %s; could not open a loopback listen socket\n",
                    c->category, c->description);
-            g_free(priv);
+            free(priv);
             return 1;
         }
         priv->listen_fd = fd;
@@ -626,7 +627,7 @@ static int run_case(const struct stop_case *c)
     if (fd >= 0) {
         close(fd);
     }
-    g_free(priv);
+    free(priv);
     return ok ? 0 : 1;
 }
 
@@ -824,7 +825,7 @@ out:
     qemu_mutex_destroy(&priv->mesh_table_lock);
     qemu_cond_destroy(&priv->health_check_cond);
     qemu_mutex_destroy(&priv->health_check_lock);
-    g_free(priv);
+    free(priv);
     return ok ? 0 : 1;
 }
 
@@ -1081,7 +1082,7 @@ static int run_recv_case(const struct recv_case *c)
         }
     }
     qemu_mutex_destroy(&priv->conn_table_lock);
-    g_free(priv);
+    free(priv);
     return ok ? 0 : 1;
 }
 
@@ -2006,7 +2007,7 @@ static int run_hs_case(const struct hs_case *c)
         close(priv->listen_fd);
     }
     qemu_mutex_destroy(&priv->conn_table_lock);
-    g_free(priv);
+    free(priv);
     return ok ? 0 : 1;
 }
 
@@ -2080,7 +2081,7 @@ static const char *mgr_setup(struct mgr_fixture *fx, uint32_t nodes,
     priv->pending_conns = g_ptr_array_new();
     /* The GID claim tables tcp_init() builds, which a registration updates */
     priv->node_gids =
-        g_hash_table_new_full(g_direct_hash, g_direct_equal, NULL, g_free);
+        g_hash_table_new_full(g_direct_hash, g_direct_equal, NULL, free);
     priv->gid_owner = g_hash_table_new_full(g_bytes_hash, g_bytes_equal,
                                             tcp_gid_key_free, NULL);
     ROCM_ERNIC_WARN_THREAD_SAFETY_ON
@@ -2155,7 +2156,7 @@ static void mgr_teardown(struct mgr_fixture *fx)
     qemu_mutex_destroy(&priv->mesh_table_lock);
     qemu_cond_destroy(&priv->health_check_cond);
     qemu_mutex_destroy(&priv->health_check_lock);
-    g_free(priv);
+    free(priv);
 }
 
 enum sl_scenario {
@@ -2821,6 +2822,7 @@ static const char *tp_setup(struct tp_fixture *fx, uint32_t interval,
                             bool peers)
 {
     TcpBackendPrivate *priv = priv_alloc();
+    TcpConnection *mgr_conn;
 
     fx->priv = priv;
     fx->mgr = -1;
@@ -2849,13 +2851,14 @@ static const char *tp_setup(struct tp_fixture *fx, uint32_t interval,
      * a row ran three intervals without a word from it: a port nothing
      * listens on, so the connect fails at once.
      */
-    priv->manager_host = g_strdup("127.0.0.1");
+    priv->manager_host = ernic_xstrdup("127.0.0.1");
     priv->manager_port = 1;
 
-    atomic_store(&priv->manager_conn, recv_conn_new(priv, 0, true, &fx->mgr));
-    if (!atomic_load(&priv->manager_conn)) {
+    mgr_conn = recv_conn_new(priv, 0, true, &fx->mgr);
+    if (!mgr_conn) {
         return "could not connect to the manager";
     }
+    atomic_store(&priv->manager_conn, mgr_conn);
     if (peers && !tp_start_peers(fx)) {
         return "could not start the peer-connect thread";
     }
@@ -2889,8 +2892,8 @@ static double tp_teardown(struct tp_fixture *fx)
     qemu_mutex_destroy(&priv->peer_lock);
     qemu_cond_destroy(&priv->registration_cond);
     qemu_mutex_destroy(&priv->registration_mutex);
-    g_free(priv->manager_host);
-    g_free(priv);
+    free(priv->manager_host);
+    free(priv);
     return took;
 }
 
@@ -3171,8 +3174,8 @@ static TcpConnection *tp_publish(struct tp_fixture *fx, struct tp_net *net,
         return NULL;
     }
     if (port != 0) {
-        g_free(conn->remote_host);
-        conn->remote_host = g_strdup("127.0.0.1");
+        free(conn->remote_host);
+        conn->remote_host = ernic_xstrdup("127.0.0.1");
         conn->remote_port = port;
     }
     if (start) {
@@ -9081,7 +9084,7 @@ static const char *wl_stuck(struct dc_worker *w, int lfd, int high,
     static const uint8_t hdr[16];
     struct pollfd pfd = {.fd = lfd, .events = POLLIN};
     RdmaBackendDev dev;
-    uint8_t *body = g_malloc0(WL_STUCK_LEN);
+    uint8_t *body = ernic_xcalloc(1, WL_STUCK_LEN);
     const char *why = NULL;
     int mgr = -1;
 
@@ -9105,7 +9108,7 @@ static const char *wl_stuck(struct dc_worker *w, int lfd, int high,
     if (!why && !wait_retired(old)) {
         why = "the old connection wasn't closed";
     }
-    g_free(body);
+    free(body);
     return why ? why : wl_accepted(w, mgr, high);
 }
 
@@ -9542,15 +9545,19 @@ static int st_send_tag(TcpBackendPrivate *priv, uint32_t len, uint64_t tag,
 {
     static const uint8_t hdr[16];
     RdmaBackendDev dev;
-    /* No body at all for an empty one, as the data path sends it */
-    uint8_t *body = len > 0 ? g_malloc0(len) : NULL;
+    /*
+     * No body at all for an empty one, as the data path sends it.  From
+     * calloc(), which isn't wrapped, so a failure armed for the message
+     * isn't taken here.
+     */
+    uint8_t *body = len > 0 ? ernic_xcalloc(1, len) : NULL;
     int rc;
 
     memset(&dev, 0, sizeof(dev));
     dev.backend_private = priv;
     rc = rdma_backend_ops_tcp.mesh->sendv(&dev, 1, hdr, sizeof(hdr), body, len,
                                           tag, reply);
-    g_free(body);
+    free(body);
     return rc;
 }
 

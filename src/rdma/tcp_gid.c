@@ -16,6 +16,7 @@
 
 #include "rdma/rdma_backend_tcp_priv.h"
 #include "byteorder.h"
+#include "ernic_alloc.h"
 #include "ernic_gid.h"
 #include "pvrdma/rdma_utils.h"
 #include "qemu/thread.h"
@@ -25,6 +26,7 @@
 #include <stdatomic.h>
 #include <stdbool.h>
 #include <stdint.h>
+#include <stdlib.h>
 #include <string.h>
 #include <glib.h>
 #include <sys/socket.h>
@@ -83,7 +85,7 @@ uint32_t tcp_parse_guest_gids(const char *val,
         return 0;
     }
 
-    char *dup = g_strdup(val);
+    char *dup = ernic_xstrdup(val);
     char *save = NULL;
 
     for (char *tok = strtok_r(dup, ",", &save); tok;
@@ -127,7 +129,7 @@ uint32_t tcp_parse_guest_gids(const char *val,
         n++;
     }
 
-    g_free(dup);
+    free(dup);
     return n;
 }
 
@@ -224,7 +226,7 @@ static bool tcp_gid_claims_record(TcpBackendPrivate *priv, uint32_t node_id,
                memcmp(old->gids, gids, (size_t)num_gids * ERNIC_GID_LEN) == 0) {
         changed = false;
     } else {
-        TcpNodeGids *claims = g_new0(TcpNodeGids, 1);
+        TcpNodeGids *claims = ernic_xcalloc(1, sizeof(*claims));
 
         claims->num_gids = num_gids;
         claims->alive = alive;

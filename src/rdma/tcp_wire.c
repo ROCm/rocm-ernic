@@ -16,6 +16,7 @@
 
 #include "rdma/rdma_backend_tcp_priv.h"
 #include "byteorder.h"
+#include "ernic_alloc.h"
 #include "ernic_gid.h"
 #include "ernic_time.h"
 #include "parse_int.h"
@@ -26,7 +27,6 @@
 #include <stdbool.h>
 #include <stdlib.h>
 #include <string.h>
-#include <glib.h>
 #include <stdio.h>
 #include <sys/socket.h>
 #include <netinet/in.h>
@@ -187,11 +187,11 @@ int tcp_connect_any(const struct addrinfo *addrs, const atomic_bool *running,
 
 /*
  * host and port as a newly allocated "host:port", or "[host]:port" when host is
- * an IPv6 address, for a log message.  g_free() it.
+ * an IPv6 address, for a log message.  free() it.
  */
 char *tcp_addr_str(const char *host, uint16_t port)
 {
-    return g_strdup_printf(strchr(host, ':') ? "[%s]:%u" : "%s:%u", host,
+    return ernic_xasprintf(strchr(host, ':') ? "[%s]:%u" : "%s:%u", host,
                            (unsigned)port);
 }
 
@@ -251,7 +251,7 @@ int tcp_connect_to_remote(const char *host, uint16_t port,
 
         rdma_info_report("TCP: Connected to %s", addr);
     }
-    g_free(addr);
+    free(addr);
     return sockfd;
 }
 
@@ -671,8 +671,8 @@ static int tcp_recv_rest(int sockfd, void *buf, size_t len, size_t got,
  *
  * *payload is set on every return, to NULL unless a payload was received, so
  * a caller that frees it after a failure never frees a buffer from an earlier
- * message.  It is from malloc(), not g_malloc(), so that it can be handed to
- * the ionic data path, which frees it with free().
+ * message.  The ionic data path, which it can be handed to, frees it with
+ * free().
  */
 int tcp_recv_message(int sockfd, TcpMsgHeader *hdr, void **payload,
                      const atomic_bool *running, uint64_t deadline_ms)
@@ -721,9 +721,9 @@ int tcp_recv_message(int sockfd, TcpMsgHeader *hdr, void **payload,
     if (len > 0) {
         /*
          * The peer chooses the length, so running out of memory here mustn't
-         * abort the server, as g_malloc() would.  The payload is still in the
-         * socket, so the stream can't go on without it: the caller closes the
-         * connection, and the peer connects again.
+         * abort the server, as ernic_xmalloc() would.  The payload is still
+         * in the socket, so the stream can't go on without it: the caller
+         * closes the connection, and the peer connects again.
          */
         *payload = malloc(len);
         if (!*payload) {

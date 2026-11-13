@@ -17,6 +17,7 @@
 
 #include "rdma/rdma_backend_tcp_priv.h"
 #include "byteorder.h"
+#include "ernic_alloc.h"
 #include "ernic_time.h"
 #include "pvrdma/rdma_utils.h"
 #include "qemu/thread.h"
@@ -26,6 +27,7 @@
 #include <stdbool.h>
 #include <stdint.h>
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 #include <glib.h>
 #include <time.h>
@@ -37,8 +39,8 @@ void tcp_mesh_node_info_free(MeshNodeInfo *node)
     if (!node) {
         return;
     }
-    g_free(node->hostname);
-    g_free(node);
+    free(node->hostname);
+    free(node);
 }
 
 /* GDestroyNotify adapter for tcp_mesh_node_info_free() */
@@ -56,10 +58,10 @@ MeshNodeInfo *tcp_mesh_node_info_new(uint32_t node_id, const char *hostname,
         return NULL;
     }
 
-    MeshNodeInfo *node = g_new0(MeshNodeInfo, 1);
+    MeshNodeInfo *node = ernic_xcalloc(1, sizeof(*node));
 
     node->node_id = node_id;
-    node->hostname = g_strdup(hostname);
+    node->hostname = ernic_xstrdup(hostname);
     node->port = port;
     node->is_alive = true;
     node->last_heartbeat_ms = ernic_monotonic_ms();
@@ -927,7 +929,7 @@ void tcp_reap_pending_conns(TcpBackendPrivate *priv)
         rdma_info_report("TCP: Closing the connection from %s, which didn't "
                          "register",
                          addr);
-        g_free(addr);
+        free(addr);
         tcp_retire_conn(conn);
         tcp_connection_unref(conn);
     }
@@ -965,7 +967,7 @@ void tcp_manager_accept(TcpBackendPrivate *priv, int sockfd, const char *host,
         rdma_error_report("TCP: %u connections are already waiting to "
                           "register; closing the one from %s",
                           TCP_MAX_PENDING_CONNS, addr);
-        g_free(addr);
+        free(addr);
         tcp_connection_unref(conn);
         return;
     }
@@ -1131,7 +1133,7 @@ static void tcp_send_gid_updates(TcpBackendPrivate *priv, const GArray *tables,
     TcpNodeGidsWire table[TCP_MAX_MESH_NODES];
     uint32_t num_table = 0;
     guint overflow = 0; /* the size of mesh_nodes, if past the cap */
-    TcpNodeGidsWire *changed = g_new(TcpNodeGidsWire, nodes->len);
+    TcpNodeGidsWire *changed = ernic_xcalloc(nodes->len, sizeof(*changed));
 
     /*
      * Snapshot under the mesh and claim locks; the sends are not, because
@@ -1147,7 +1149,7 @@ static void tcp_send_gid_updates(TcpBackendPrivate *priv, const GArray *tables,
 
         g_hash_table_iter_init(&iter, priv->mesh_nodes);
         while (g_hash_table_iter_next(&iter, &key, NULL)) {
-            if (num_table == G_N_ELEMENTS(table)) {
+            if (num_table == sizeof(table) / sizeof(table[0])) {
                 overflow = g_hash_table_size(priv->mesh_nodes);
                 break;
             }
@@ -1188,7 +1190,7 @@ static void tcp_send_gid_updates(TcpBackendPrivate *priv, const GArray *tables,
         }
         g_ptr_array_free(conns, TRUE);
     }
-    g_free(changed);
+    free(changed);
 }
 
 /*
