@@ -1708,15 +1708,164 @@ static bool kv_key_from_capsule(const uint8_t *capsule,
     return true;
 }
 
+/* A Store: the value, CDW10 bytes long, comes from the host buffers the
+ * capsule's SGL names, subject to CDW11's overwrite options. */
+static uint16_t kv_exec_store(struct nvmeof_target *t, struct nvmeof_ns *ns,
+                              const struct nvmeof_kv_key *key,
+                              const uint8_t *capsule, size_t capsule_len,
+                              const struct nvmeof_dma_ops *dma, void *ctx)
+{
+    uint32_t len = ernic_get_le32(capsule + NVME_SQE_CDW10_OFF);
+    uint32_t cdw11 = ernic_get_le32(capsule + NVME_SQE_CDW11_OFF);
+    uint8_t options = (uint8_t)((cdw11 >> 8) & 0xff);
+
+    if (len > ns->cfg.kv_max_value) {
+        return nvme_status(NVME_SCT_GENERIC, NVME_SC_KV_INVALID_VALUE_SIZE, 1);
+    }
+
+    bool exists = nvmeof_kv_exists(ns->kv, key);
+    if ((options & NVME_KV_STORE_OPT_NO_OVERWRITE) != 0 && exists) {
+        return nvme_status(NVME_SCT_GENERIC, NVME_SC_KV_KEY_EXISTS, 1);
+    }
+    if ((options & NVME_KV_STORE_OPT_MUST_EXIST) != 0 && !exists) {
+        return nvme_status(NVME_SCT_GENERIC, NVME_SC_KV_KEY_NOT_EXIST, 1);
+    }
+
+    struct nvmeof_sgl sgl;
+    if (!parse_sgl(capsule, &sgl)) {
+        return nvme_status(NVME_SCT_GENERIC, NVME_SC_SGL_INVALID_TYPE, 1);
+    }
+
+    /* The value arrives through the same keyed SGL a block Write uses,
+     * so it comes out of guest memory by rkey -- including GPU memory,
+     * when the guest registered it there. */
+    uint8_t *staging = len != 0 ? malloc(len) : NULL;
+    if (len != 0 && staging == NULL) {
+        return nvme_status(NVME_SCT_GENERIC, NVME_SC_INTERNAL, 1);
+    }
+    uint16_t st = sgl_read(&sgl, capsule, capsule_len, dma, ctx, staging, len);
+    if (st != 0) {
+        free(staging);
+        return st;
+    }
+    if (!nvmeof_kv_put(ns->kv, key, staging, len)) {
+        free(staging);
+        /* Out of keys or out of capacity; the host cannot tell the two
+         * apart from the status alone, which the spec accepts. */
+        return nvme_status(NVME_SCT_GENERIC, NVME_SC_CAP_EXCEEDED, 1);
+    }
+    free(staging);
+    t->stats.write_bytes += len;
+    return nvme_status(NVME_SCT_GENERIC, NVME_SC_SUCCESS, 0);
+}
+
+/* A Retrieve: as much of the value as fits in the host's CDW10-byte buffer
+ * goes to it, and the value's full length to @p result. */
+static uint16_t kv_exec_retrieve(struct nvmeof_target *t,
+                                 const struct nvmeof_ns *ns,
+                                 const struct nvmeof_kv_key *key,
+                                 const uint8_t *capsule,
+                                 const struct nvmeof_dma_ops *dma, void *ctx,
+                                 uint32_t *result)
+{
+    uint32_t cdw10 = ernic_get_le32(capsule + NVME_SQE_CDW10_OFF);
+    const uint8_t *value = NULL;
+    uint32_t stored = 0;
+    if (!nvmeof_kv_get(ns->kv, key, &value, &stored)) {
+        return nvme_status(NVME_SCT_GENERIC, NVME_SC_KV_KEY_NOT_EXIST, 1);
+    }
+
+    struct nvmeof_sgl sgl;
+    if (!parse_sgl(capsule, &sgl)) {
+        return nvme_status(NVME_SCT_GENERIC, NVME_SC_SGL_INVALID_TYPE, 1);
+    }
+
+    /* CDW10 is the host buffer size, not a demand for that many bytes.
+     * Write at most what fits and report the true length in the
+     * completion, which is how the host learns it asked with too small
+     * a buffer. */
+    uint32_t want = cdw10 < stored ? cdw10 : stored;
+    if (want != 0 && sgl.length < want) {
+        return nvme_status(NVME_SCT_GENERIC, NVME_SC_SGL_INVALID_DATA, 1);
+    }
+    uint16_t st = 0;
+    if (want != 0) {
+        st = sgl_write(&sgl, dma, ctx, value, want);
+    }
+    if (st != 0) {
+        return st;
+    }
+    *result = stored;
+    t->stats.read_bytes += want;
+    return nvme_status(NVME_SCT_GENERIC, NVME_SC_SUCCESS, 0);
+}
+
+/* A List: a list of {key length, key bytes} records, as many as fit, with
+ * the number returned in @p result.  A nonzero @p key starts the list
+ * after that key. */
+static uint16_t kv_exec_list(const struct nvmeof_ns *ns,
+                             const struct nvmeof_kv_key *key,
+                             const uint8_t *capsule,
+                             const struct nvmeof_dma_ops *dma, void *ctx,
+                             uint32_t *result)
+{
+    struct nvmeof_sgl sgl;
+    if (!parse_sgl(capsule, &sgl)) {
+        return nvme_status(NVME_SCT_GENERIC, NVME_SC_SGL_INVALID_TYPE, 1);
+    }
+
+    uint32_t cap = ernic_get_le32(capsule + NVME_SQE_CDW10_OFF);
+    if (cap > NVME_IDENTIFY_SIZE) {
+        cap = NVME_IDENTIFY_SIZE;
+    }
+    uint8_t buf[NVME_IDENTIFY_SIZE];
+    memset(buf, 0, sizeof(buf));
+
+    uint32_t off = 0;
+    uint32_t listed = 0;
+    uint32_t iter = 0;
+    struct nvmeof_kv_key k;
+
+    /* If the host passed a starting key, skip the iterator forward past
+     * it so the response is a continuation page, not a restart. */
+    if (key->len > 0) {
+        struct nvmeof_kv_key scan_k;
+        while (nvmeof_kv_next(ns->kv, &iter, &scan_k)) {
+            if (scan_k.len == key->len &&
+                memcmp(scan_k.bytes, key->bytes, key->len) == 0) {
+                break;
+            }
+        }
+    }
+
+    while (nvmeof_kv_next(ns->kv, &iter, &k)) {
+        if (off + 1U + k.len > cap) {
+            break;
+        }
+        buf[off++] = k.len;
+        memcpy(buf + off, k.bytes, k.len);
+        off += k.len;
+        listed++;
+    }
+
+    if (off != 0 && sgl.length < off) {
+        return nvme_status(NVME_SCT_GENERIC, NVME_SC_SGL_INVALID_DATA, 1);
+    }
+    uint16_t st = off != 0 ? sgl_write(&sgl, dma, ctx, buf, off) : 0;
+    if (st != 0) {
+        return st;
+    }
+    *result = listed;
+    return nvme_status(NVME_SCT_GENERIC, NVME_SC_SUCCESS, 0);
+}
+
 static uint16_t kv_exec(struct nvmeof_target *t, struct nvmeof_ns *ns,
                         const uint8_t *capsule, size_t capsule_len,
                         const struct nvmeof_dma_ops *dma, void *ctx,
                         uint32_t *result)
 {
     uint8_t opcode = capsule[NVME_SQE_OPCODE_OFF];
-    uint32_t cdw10 = ernic_get_le32(capsule + NVME_SQE_CDW10_OFF);
     uint32_t cdw11 = ernic_get_le32(capsule + NVME_SQE_CDW11_OFF);
-    uint8_t options = (uint8_t)((cdw11 >> 8) & 0xff);
 
     /* List accepts a zero-length key meaning "start from the beginning";
      * a nonzero invalid length is rejected for all opcodes. */
@@ -1739,134 +1888,14 @@ static uint16_t kv_exec(struct nvmeof_target *t, struct nvmeof_ns *ns,
         }
         return nvme_status(NVME_SCT_GENERIC, NVME_SC_SUCCESS, 0);
 
-    case NVME_KV_CMD_STORE: {
-        uint32_t len = cdw10;
-        if (len > ns->cfg.kv_max_value) {
-            return nvme_status(NVME_SCT_GENERIC, NVME_SC_KV_INVALID_VALUE_SIZE,
-                               1);
-        }
+    case NVME_KV_CMD_STORE:
+        return kv_exec_store(t, ns, &key, capsule, capsule_len, dma, ctx);
 
-        bool exists = nvmeof_kv_exists(ns->kv, &key);
-        if ((options & NVME_KV_STORE_OPT_NO_OVERWRITE) != 0 && exists) {
-            return nvme_status(NVME_SCT_GENERIC, NVME_SC_KV_KEY_EXISTS, 1);
-        }
-        if ((options & NVME_KV_STORE_OPT_MUST_EXIST) != 0 && !exists) {
-            return nvme_status(NVME_SCT_GENERIC, NVME_SC_KV_KEY_NOT_EXIST, 1);
-        }
+    case NVME_KV_CMD_RETRIEVE:
+        return kv_exec_retrieve(t, ns, &key, capsule, dma, ctx, result);
 
-        struct nvmeof_sgl sgl;
-        if (!parse_sgl(capsule, &sgl)) {
-            return nvme_status(NVME_SCT_GENERIC, NVME_SC_SGL_INVALID_TYPE, 1);
-        }
-
-        /* The value arrives through the same keyed SGL a block Write uses,
-         * so it comes out of guest memory by rkey -- including GPU memory,
-         * when the guest registered it there. */
-        uint8_t *staging = len != 0 ? malloc(len) : NULL;
-        if (len != 0 && staging == NULL) {
-            return nvme_status(NVME_SCT_GENERIC, NVME_SC_INTERNAL, 1);
-        }
-        uint16_t st =
-            sgl_read(&sgl, capsule, capsule_len, dma, ctx, staging, len);
-        if (st != 0) {
-            free(staging);
-            return st;
-        }
-        if (!nvmeof_kv_put(ns->kv, &key, staging, len)) {
-            free(staging);
-            /* Out of keys or out of capacity; the host cannot tell the two
-             * apart from the status alone, which the spec accepts. */
-            return nvme_status(NVME_SCT_GENERIC, NVME_SC_CAP_EXCEEDED, 1);
-        }
-        free(staging);
-        t->stats.write_bytes += len;
-        return nvme_status(NVME_SCT_GENERIC, NVME_SC_SUCCESS, 0);
-    }
-
-    case NVME_KV_CMD_RETRIEVE: {
-        const uint8_t *value = NULL;
-        uint32_t stored = 0;
-        if (!nvmeof_kv_get(ns->kv, &key, &value, &stored)) {
-            return nvme_status(NVME_SCT_GENERIC, NVME_SC_KV_KEY_NOT_EXIST, 1);
-        }
-
-        struct nvmeof_sgl sgl;
-        if (!parse_sgl(capsule, &sgl)) {
-            return nvme_status(NVME_SCT_GENERIC, NVME_SC_SGL_INVALID_TYPE, 1);
-        }
-
-        /* CDW10 is the host buffer size, not a demand for that many bytes.
-         * Write at most what fits and report the true length in the
-         * completion, which is how the host learns it asked with too small
-         * a buffer. */
-        uint32_t want = cdw10 < stored ? cdw10 : stored;
-        if (want != 0 && sgl.length < want) {
-            return nvme_status(NVME_SCT_GENERIC, NVME_SC_SGL_INVALID_DATA, 1);
-        }
-        uint16_t st = 0;
-        if (want != 0) {
-            st = sgl_write(&sgl, dma, ctx, value, want);
-        }
-        if (st != 0) {
-            return st;
-        }
-        *result = stored;
-        t->stats.read_bytes += want;
-        return nvme_status(NVME_SCT_GENERIC, NVME_SC_SUCCESS, 0);
-    }
-
-    case NVME_KV_CMD_LIST: {
-        /* A list of {key length, key bytes} records, as many as fit, with
-         * the number returned in the completion. */
-        struct nvmeof_sgl sgl;
-        if (!parse_sgl(capsule, &sgl)) {
-            return nvme_status(NVME_SCT_GENERIC, NVME_SC_SGL_INVALID_TYPE, 1);
-        }
-
-        uint32_t cap = cdw10;
-        if (cap > NVME_IDENTIFY_SIZE) {
-            cap = NVME_IDENTIFY_SIZE;
-        }
-        uint8_t buf[NVME_IDENTIFY_SIZE];
-        memset(buf, 0, sizeof(buf));
-
-        uint32_t off = 0;
-        uint32_t listed = 0;
-        uint32_t iter = 0;
-        struct nvmeof_kv_key k;
-
-        /* If the host passed a starting key, skip the iterator forward past
-         * it so the response is a continuation page, not a restart. */
-        if (key.len > 0) {
-            struct nvmeof_kv_key scan_k;
-            while (nvmeof_kv_next(ns->kv, &iter, &scan_k)) {
-                if (scan_k.len == key.len &&
-                    memcmp(scan_k.bytes, key.bytes, key.len) == 0) {
-                    break;
-                }
-            }
-        }
-
-        while (nvmeof_kv_next(ns->kv, &iter, &k)) {
-            if (off + 1U + k.len > cap) {
-                break;
-            }
-            buf[off++] = k.len;
-            memcpy(buf + off, k.bytes, k.len);
-            off += k.len;
-            listed++;
-        }
-
-        if (off != 0 && sgl.length < off) {
-            return nvme_status(NVME_SCT_GENERIC, NVME_SC_SGL_INVALID_DATA, 1);
-        }
-        uint16_t st = off != 0 ? sgl_write(&sgl, dma, ctx, buf, off) : 0;
-        if (st != 0) {
-            return st;
-        }
-        *result = listed;
-        return nvme_status(NVME_SCT_GENERIC, NVME_SC_SUCCESS, 0);
-    }
+    case NVME_KV_CMD_LIST:
+        return kv_exec_list(ns, &key, capsule, dma, ctx, result);
 
     default:
         return nvme_status(NVME_SCT_GENERIC, NVME_SC_INVALID_OPCODE, 1);
