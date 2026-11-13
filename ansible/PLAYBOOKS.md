@@ -102,11 +102,13 @@ after which step 2 has to be repeated.
 ansible-playbook playbooks/host-setup.yml
 
 # Register the running VMs into the ernic_vms group.  Reads the
-# launcher's instances.json; every play below needs it first.
+# launcher's instances.json.  The group lasts only for the run,
+# so a play on ernic_vms has to follow it in the same
+# ansible-playbook, as below.
 ansible-playbook playbooks/vm-register.yml
 
 # Guest provisioning (driver, rdma-core, NIC config)
-ansible-playbook playbooks/guest-setup.yml
+ansible-playbook playbooks/vm-register.yml playbooks/guest-setup.yml
 
 # Sanity tests (iperf3 + perftest)
 ansible-playbook playbooks/sanity-tests.yml
@@ -117,11 +119,41 @@ ansible-playbook playbooks/tutorial-tests.yml
 # NVMe-oF against the in-process controller.  Needs only one
 # guest, and the instance must have been started on the
 # nvmeof backend (--backend nvmeof:size=256M,bs=4096).
-ansible-playbook playbooks/nvmeof-tests.yml
+ansible-playbook playbooks/vm-register.yml playbooks/nvmeof-tests.yml
+
+# NVMe Key Value, on an instance started with a block and a Key
+# Value namespace
+# (--backend nvmeof:size=256M,bs=4096,ns=2,kv=1,size=64M).
+ansible-playbook playbooks/vm-register.yml playbooks/nvmeof-kv-tests.yml
+
+# S3 over RDMA, on an instance started on the s3 backend
+# (--backend s3:size=256M).
+ansible-playbook playbooks/vm-register.yml playbooks/s3-tests.yml
+
+# TCP/IP performance sweep (iperf3)
+ansible-playbook playbooks/tcp-performance-tests.yml
 
 # Full performance sweep (BW + latency + reliability)
 ansible-playbook playbooks/performance-tests.yml
+
+# Compile check for the SRQ-patched ionic modules, against the
+# running kernel on this host.  Without ernic_srq_build_provider
+# set false, the play also builds rdma-core's SRQ provider and
+# installs it under /usr/local, which changes the RDMA libraries
+# everything on the host loads.
+ansible-playbook playbooks/srq-dkms-build.yml \
+  -e ernic_srq_build_provider=false
+
+# The P4 control driver.  Not just a compile check: this builds
+# ernic_p4.ko with DKMS and installs it for the running kernel,
+# and without ernic_p4_dkms_load set false, loads it too.
+ansible-playbook playbooks/p4-dkms-build.yml \
+  -e ernic_p4_dkms_repo_dir="$PWD/.." -e ernic_p4_dkms_load=false
 ```
+
+`ci-site.yml` runs the guest plays the same way, behind
+`vm-register`, selected by tag: `--tags nvmeof`,
+`nvmeof-kv`, `s3` or `p4`.
 
 ## Variable Overrides
 
@@ -161,9 +193,9 @@ this checkout before it caches it. The image's own
 below that there is no `drivers/infiniband/hw/ionic` to build
 against -- sharing a `major.minor` with `IONIC_KERNEL_REF` in
 `cmake/ErnicKernelModule.cmake`, and matching the hardcoded
-`CI guest kernel` badge on line 9 of `README.md`, so a tag
-bump cannot leave the front page advertising a kernel nothing
-ships. Callers can add `--expect-user`, `--expect-disk`,
+`CI guest kernel` badge in `README.md`, so a tag bump cannot
+leave the front page advertising a kernel nothing ships.
+Callers can add `--expect-user`, `--expect-disk`,
 `--expect-release` and `--expect-flavour`. These assertions
 used to live in `playbooks/vm-fetch.yml`, which 0.2.0
 removed.
@@ -210,8 +242,15 @@ ansible/                  # this directory is the collection
     ├── sanity-tests.yml       # iperf3 + perftest
     ├── tutorial-tests.yml     # RDMA-Tutorial examples
     ├── nvmeof-tests.yml       # NVMe-oF, one guest
+    ├── nvmeof-kv-tests.yml    # NVMe Key Value, one guest
+    ├── s3-tests.yml           # S3 over RDMA, one guest
+    ├── p4-tests.yml           # P4 control driver, CI lane
     ├── tcp-performance-tests.yml  # iperf3 sweeps
-    └── performance-tests.yml  # Full BW/lat sweeps
+    ├── performance-tests.yml  # Full BW/lat sweeps
+    ├── srq-dkms-build.yml     # SRQ modules (compile gate) + provider
+    ├── p4-dkms-build.yml      # Build, install, load ernic_p4.ko
+    ├── files/                 # Helper scripts, RDMA-Tutorial patches
+    └── tasks/                 # Shared task files
 ```
 
 ## How It Works
@@ -267,10 +306,16 @@ ansible/                  # this directory is the collection
    -- ask for it by name with `--tags nvmeof`. Only
    `ci-site.yml` imports it, since that is always invoked
    with `--tags`; `site.yml` is run bare, where an import
-   would run it unconditionally. Developers run the play
-   directly.
+   would run it unconditionally. Developers run it behind
+   `vm-register`, as above. **nvmeof-kv-tests** and
+   **s3-tests** are the same kind of play, for a controller
+   with a Key Value namespace and for the S3 store.
 
-5. **performance-tests** runs the full bandwidth and latency
+5. **tcp-performance-tests** runs iperf3 between the two VMs
+   to measure TCP throughput through the emulated Ethernet
+   path.
+
+6. **performance-tests** runs the full bandwidth and latency
    sweeps matching the test report format: `ib_send_bw`,
    `ib_write_bw`, `ib_read_bw` across 12 message sizes
    (4 KB to 8 MB), the same for `ib_send_lat`,

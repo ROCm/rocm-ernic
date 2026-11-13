@@ -6,8 +6,8 @@ Ansible controller, or clones one.
 
 ## Overview
 
-`ernic_guest_setup` and `ernic_host_setup` need the driver sources, the
-`rocm_ernic` rdma-core provider and the udev rules. Guests in a rocm-ernic
+`ernic_guest_setup` and `ernic_host_setup` need the driver sources and
+patches, and the udev rules. Guests in a rocm-ernic
 mesh usually have no route to GitHub, so the clone happens on the
 **controller** and the files are pushed from there.
 

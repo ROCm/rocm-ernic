@@ -332,10 +332,13 @@ a 16-byte response capsule delivered into a posted receive.
 Admin commands cover what ``nvme connect``, ``nvme discover`` and
 ``nvme list`` need: the fabrics Connect and Property
 Get/Set, Identify (controller, namespace, active namespace
-list and namespace descriptor list), Get/Set Features, Get
-Log Page, Keep Alive, Abort and Async Event. The I/O command
-set is Read, Write, Flush, Write Zeroes and Dataset
-Management.
+list, namespace descriptor list, and I/O command set
+independent namespace), Get/Set Features, Get Log Page,
+Keep Alive, Abort and Async Event. The I/O command set of a
+block namespace is Read, Write, Flush, Write Zeroes and
+Dataset Management, and of a Key Value namespace the five
+commands listed in :ref:`nvmeof-mixed`, which
+:file:`src/nvmeof/nvmeof_kv.c` stores in a hash table.
 
 Read and Write move their payload with keyed SGLs: the
 controller issues RDMA READ or WRITE against the guest's
@@ -376,7 +379,12 @@ Server-side coverage runs without a VM and is part of
    ctest --test-dir build -R nvmeof
 
 - ``nvmeof-target-unit`` -- capsule parsing, the admin and
-  I/O command set, and namespace backing.
+  I/O command sets, Key Value namespaces, and namespace
+  backing.
+- ``nvmeof-kv-compact-unit`` -- compacting the Key Value
+  store once deletes leave it mostly tombstones, and an
+  allocation failure while it does, which leaves the store
+  as it was.
 - ``nvmeof-cm-unit`` -- the CM state machine, including the
   rejection paths.
 - ``nvmeof-ci`` -- starts the real server binary once per
@@ -498,7 +506,10 @@ neither the play nor the hosted lane checks the accelerator.
 Limitations
 -----------
 
-- One subsystem with one namespace per server instance.
+- One subsystem per server instance, with at most eight
+  namespaces.
+- A Key Value namespace is in RAM only, so its keys and
+  values don't survive a restart.
 - No authentication, no discovery-controller persistence,
   no multipath, no reservations.
 - No ANA, no namespace management, and no Format NVM.

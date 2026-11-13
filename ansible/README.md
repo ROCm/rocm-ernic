@@ -39,6 +39,9 @@ lower bound against the running guest.
 | [`ernic_guest_setup`](roles/ernic_guest_setup/README.md) | guest VM | DKMS ionic driver, rdma-core, udev rules, NIC addressing, rocm-xio |
 | [`ernic_host_setup`](roles/ernic_host_setup/README.md) | host | build/install/run the rocm-ernic service, TAP/bridge networking, bind GPUs to vfio-pci, stage rocm-xio |
 | [`ernic_source`](roles/ernic_source/README.md) | controller | resolve or clone the rocm-ernic checkout the others copy from (included automatically) |
+| `ernic_srq_dkms` | host or guest | build the SRQ-patched ionic modules from [`files/patches/srq/`](files/patches/srq/README.md) as a DKMS package; a compile gate by default |
+| `ernic_srq_provider` | guest | build and install rdma-core's ionic provider with SRQ support, from [`files/patches/rdma-core/`](files/patches/rdma-core/README.md) |
+| `ernic_p4_dkms` | guest | build and load `ernic_p4.ko`, the guest's control driver for the emulated NIC's P4 pipeline |
 
 ## Installing
 

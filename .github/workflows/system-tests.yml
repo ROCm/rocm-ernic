@@ -297,7 +297,7 @@ jobs:
           echo "kernel_release=$KERNEL_RELEASE"
         } >> "$GITHUB_OUTPUT"
 
-        # README.md line 9 hardcodes the guest kernel in a shields.io
+        # README.md hardcodes the guest kernel in a shields.io
         # badge, because shields.io has no way to read the image.  This
         # job is the only lane holding vm-info.json, so it is the only
         # place the badge and the image can be compared.  Only the
@@ -309,7 +309,7 @@ jobs:
         if [ "$README_KVER" != "${KERNEL_RELEASE%%-*}" ]; then
           echo "✗ README.md advertises CI guest kernel '${README_KVER:-none}',"
           echo "  but $GUEST_ARTIFACT_TAG ships $KERNEL_RELEASE."
-          echo "  Update the badge on README.md line 9."
+          echo "  Update the CI guest kernel badge in README.md."
           exit 1
         fi
         echo "✓ README kernel badge agrees with the image: $README_KVER"
