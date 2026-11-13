@@ -1644,6 +1644,9 @@ Where to Look in the Source
      - The device and per-QP counters, and the stats file
    * - ``src/ernic_siphash.c``, ``.h``
      - SipHash-2-4, for values a guest must not predict
+   * - ``src/ernic_alloc.c``, ``.h``
+     - Allocators for fixed-size internal objects, which abort when
+       out of memory
    * - ``src/rocm_ernic_compat.c``, ``.h``,
        ``src/ernic_rm.h``, ``src/ernic_mesh.h``
      - Bridge to the QEMU-derived core: the device's lifecycle,
