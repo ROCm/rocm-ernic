@@ -585,10 +585,14 @@ ansible-playbook<span class="w"> </span>ci-site.yml<span class="w"> </span>--tag
 the sweep, which is what a pull request does.</p>
 <p>To run just the benchmark by hand, against the generic char device of
 the Key Value namespace:</p>
-<div class="highlight-bash notranslate"><div class="highlight"><pre><span></span>gcc<span class="w"> </span>-std<span class="o">=</span>c11<span class="w"> </span>-O2<span class="w"> </span>-o<span class="w"> </span>kv_bench<span class="w"> </span>tests/kv_bench.c
+<div class="highlight-bash notranslate"><div class="highlight"><pre><span></span>gcc<span class="w"> </span>-std<span class="o">=</span>c11<span class="w"> </span>-pedantic<span class="w"> </span>-D_POSIX_C_SOURCE<span class="o">=</span>200809L<span class="w"> </span>-D_DEFAULT_SOURCE<span class="w"> </span><span class="se">\</span>
+<span class="w">    </span>-O2<span class="w"> </span>-Isrc<span class="w"> </span>-o<span class="w"> </span>kv_bench<span class="w"> </span>tests/kv_bench.c
 sudo<span class="w"> </span>./kv_bench<span class="w"> </span>/dev/ng0n2<span class="w"> </span><span class="m">2</span><span class="w"> </span><span class="m">64</span><span class="w"> </span><span class="m">4096</span><span class="w"> </span><span class="m">65536</span><span class="w"> </span><span class="m">131072</span>
 </pre></div>
 </div>
+<p>It opens only a generic char device, named <code class="docutils literal notranslate"><span class="pre">/dev/ng&lt;ctrl&gt;n&lt;ns&gt;</span></code> as
+Linux names it, but can’t tell whether it is the Key Value namespace’s:
+a block namespace has one too, and runs a Store as a Write.</p>
 <p>Note that the device name is <strong>not</strong> derived from the namespace id.
 Linux names namespace devices by the head instance it allocated, and a
 hidden Key Value namespace still consumes one, so nsid 2 is commonly

@@ -163,8 +163,13 @@ the Key Value namespace:
 
 .. code-block:: bash
 
-   gcc -std=c11 -O2 -o kv_bench tests/kv_bench.c
+   gcc -std=c11 -pedantic -D_POSIX_C_SOURCE=200809L -D_DEFAULT_SOURCE \
+       -O2 -Isrc -o kv_bench tests/kv_bench.c
    sudo ./kv_bench /dev/ng0n2 2 64 4096 65536 131072
+
+It opens only a generic char device, named ``/dev/ng<ctrl>n<ns>`` as
+Linux names it, but can't tell whether it is the Key Value namespace's:
+a block namespace has one too, and runs a Store as a Write.
 
 Note that the device name is **not** derived from the namespace id.
 Linux names namespace devices by the head instance it allocated, and a
