@@ -1288,6 +1288,11 @@
   loaded the `rocm_ernic` driver from `driver/`, both since removed, in a
   VM it started with one developer's QEMU, VM name and user. To test in a
   guest, provision one as in `docs/testing.rst`.
+* **`tests/test_loopback_with_vm.sh`**, which no longer worked: it
+  expected a VM disk inside a container image, which no published image
+  holds, and logged in with a password, which the guest image no longer
+  has. Nothing ran it. `tests/test_loopback_ci.sh` and the system-test
+  lanes test the loopback backend.
 * **The `ERNIC_IONIC_KERNEL_REF` environment hook** (see Fixed: the driver
   pack's ionic baseline).
 * **Breaking:** **The `verbs` backend and the `--device`, `--ethdev` and
