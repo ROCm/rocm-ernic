@@ -250,9 +250,9 @@ struct ionic_qp_ring {
     bool has_srq;
     uint32_t srq_id;
 
-    /* CMB (Controller Memory Buffer / express doorbell) rings.  When set,
-     * the ring lives in BAR4 and WQEs are read from dp->cmb_buf rather than
-     * guest DRAM via ernic_dma_read(). */
+    /* CMB (Controller Memory Buffer) rings.  When set, the ring lives in
+     * BAR4 and WQEs are read from dp->cmb_buf rather than guest DRAM via
+     * ernic_dma_read(). */
     bool sq_cmb;
     bool rq_cmb;
     uint64_t sq_cmb_buf_offset; /* byte offset within dp->cmb_buf */

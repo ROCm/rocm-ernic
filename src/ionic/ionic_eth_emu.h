@@ -123,19 +123,44 @@ ssize_t ionic_eth_emu_bar0_access(struct ionic_eth_emu *emu, char *buf,
 ssize_t ionic_eth_emu_bar2_access(struct ionic_eth_emu *emu, char *buf,
                                   size_t count, loff_t offset, bool is_write);
 
-/* Refuses every access, with EINVAL, unless the device has a CMB. */
+/*
+ * An access to the CMB, BAR4, by a client that hasn't mapped it (see
+ * ionic_eth_emu_cmb_fd()): a read or write of its memory, and nothing more.
+ * A write posts no work, any more than a store through the mapping does:
+ * the guest rings a doorbell for that.  The first access after the device
+ * is created or the CMB renewed is logged, since a guest whose stores into
+ * BAR4 exit to QEMU runs slowly, and a guest program storing there with an
+ * instruction KVM can't emulate, such as MOVDIR64B, gets SIGILL.  Refuses
+ * every access, with EINVAL, unless the device has a CMB.
+ */
 ssize_t ionic_eth_emu_bar4_access(struct ionic_eth_emu *emu, char *buf,
                                   size_t count, loff_t offset, bool is_write);
 
 /*
  * Give the device a Controller Memory Buffer (CMB), BAR4, which it doesn't
- * have by default. Without one, Q_IDENTIFY advertises no express doorbell,
- * DISCOVER_CMB is refused, and BAR4 accesses fail; the server doesn't set
- * up BAR4 either, so the guest driver finds no CMB and puts every ring in
- * guest memory. Call before the device is used. Returns 0, or -1 if the
- * CMB can't be allocated.
+ * have by default.  Without one, DISCOVER_CMB is refused, and BAR4 accesses
+ * fail; the server doesn't set up BAR4 either, so the guest driver finds no
+ * CMB and puts every ring in guest memory.  The CMB is shared memory (see
+ * ernic_shm.h) that the client maps into the guest.  Call before the device
+ * is used.  Returns 0, or -1 with errno set if the CMB can't be made.
  */
 int ionic_eth_emu_enable_cmb(struct ionic_eth_emu *emu);
+
+/*
+ * The descriptor of the file behind the CMB, for libvfio-user to hand the
+ * client so that it can map BAR4 into the guest, or -1 if the device has no
+ * CMB.
+ */
+int ionic_eth_emu_cmb_fd(const struct ionic_eth_emu *emu);
+
+/*
+ * Give the CMB new, zeroed memory under the same descriptor, for the next
+ * client: the one that went keeps its mapping of the old memory, which
+ * nothing reaches any more.  A device without a CMB has nothing to renew.
+ * Returns 0, or -1 with errno set, leaving the CMB as it was.  Main loop
+ * thread only, with no client attached.
+ */
+int ionic_eth_emu_renew_cmb(struct ionic_eth_emu *emu);
 
 /*
  * Zero the CMB, BAR4, so that nothing written there -- work requests and

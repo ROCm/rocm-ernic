@@ -18,8 +18,7 @@
  * sees it.
  *
  * The send queue already read the index the right way. These cover the
- * receive side, for a QP's own RQ and for a shared one, and for an RQ in the
- * CMB, whose express doorbell names the slot it was written to.
+ * receive side, for a QP's own RQ and for a shared one.
  *
  * Copyright (C) Advanced Micro Devices, Inc.
  * SPDX-License-Identifier: GPL-2.0-or-later
@@ -303,17 +302,12 @@ void ernic_stats_qp_cqe(struct ernic_stats *st, uint32_t qp_id)
     (void)st;
     (void)qp_id;
 }
-/* Receive doorbells counted, express doorbells included */
-static unsigned g_db_recv;
-
 void ernic_stats_qp_doorbell(struct ernic_stats *st, uint32_t qp_id,
                              bool is_send)
 {
     (void)st;
     (void)qp_id;
-    if (!is_send) {
-        g_db_recv++;
-    }
+    (void)is_send;
 }
 void ernic_stats_qp_wqe(struct ernic_stats *st, uint32_t qp_id, unsigned int wr)
 {
@@ -543,131 +537,6 @@ static void test_rq_rejects_an_index_past_the_depth(void)
     rq_doorbell(dp, SRQ_QID, 0xffffU);
     check(qp_outstanding(dp) == 0, "QP RQ ignores 0xffff");
     check(srq_outstanding(dp) == 0, "SRQ ignores 0xffff");
-}
-
-/*
- * An RQ in the CMB is posted to by writing its WQE into BAR4, and the write
- * of a slot's last 64 bytes, its express doorbell, advances the producer
- * just as a doorbell naming the next slot would. Setting the producer to
- * that index instead left it behind the free-running consumer after the
- * first lap, so the ring looked to hold almost 2^32 receives.
- */
-
-/* Make RQ_QP_ID's RQ a CMB ring of 64-byte WQEs at offset 0, @depth deep */
-static void rq_in_cmb(struct ionic_datapath *dp, uint32_t depth)
-{
-    dp->qp[RQ_QP_ID].rq_depth = depth;
-    dp->qp[RQ_QP_ID].rq_stride_log2 = 6;
-    dp->qp[RQ_QP_ID].rq_cmb = true;
-    dp->qp[RQ_QP_ID].rq_cmb_buf_offset = 0;
-}
-
-/* The express doorbell for @slot: the write of the whole 64-byte WQE */
-static void rq_expdb(struct ionic_datapath *dp, uint32_t slot)
-{
-    ionic_datapath_expdb_write(dp, (uint64_t)slot * 64U, 64);
-}
-
-/* The same lap test_rq_survives_the_wrap() makes, posted through BAR4 */
-static void test_rq_expdb_survives_the_wrap(void)
-{
-    struct ionic_datapath *dp = dp_with_recv_rings();
-
-    rq_in_cmb(dp, RQ_DEPTH);
-    for (uint32_t slot = 0; slot < RQ_DEPTH - 1; slot++) {
-        rq_expdb(dp, slot);
-    }
-    check(qp_outstanding(dp) == RQ_DEPTH - 1,
-          "CMB RQ counts each post before the ring wraps");
-    dp->qp[RQ_QP_ID].rq_cons = dp->qp[RQ_QP_ID].rq_prod;
-
-    /* Slot 7 leaves the producer at index 0, and slot 0 at index 1 */
-    rq_expdb(dp, RQ_DEPTH - 1);
-    rq_expdb(dp, 0);
-    check(qp_outstanding(dp) == 2, "CMB RQ reads two posts across the wrap");
-}
-
-/* Several laps, posting and draining one at a time */
-static void test_rq_expdb_survives_many_wraps(void)
-{
-    struct ionic_datapath *dp = dp_with_recv_rings();
-    uint32_t posted = 0;
-    bool ok = true;
-
-    /* Every post is checked, the last of the last lap included */
-    rq_in_cmb(dp, RQ_DEPTH);
-    for (uint32_t lap = 0; ok && lap < 5; lap++) {
-        for (uint32_t slot = 0; ok && slot < RQ_DEPTH; slot++) {
-            rq_expdb(dp, slot);
-            posted++;
-            ok = qp_outstanding(dp) == 1;
-            dp->qp[RQ_QP_ID].rq_cons = dp->qp[RQ_QP_ID].rq_prod;
-        }
-    }
-    check(ok && posted == 5 * RQ_DEPTH,
-          "CMB RQ post-and-drain stays at one outstanding across five laps");
-}
-
-/*
- * A CMB ring can be deeper than a doorbell's 16-bit index reaches: 2^17
- * WQEs of 64 bytes fill the CMB exactly. Its express doorbell names the
- * slot by its offset, so the producer must reach past 2^16 rather than
- * take the index modulo it.
- */
-static void test_rq_expdb_past_16_bits(void)
-{
-    struct ionic_datapath *dp = dp_with_recv_rings();
-    const uint32_t depth = UINT32_C(1) << 17;
-    const uint32_t slot = 70000;
-
-    rq_in_cmb(dp, depth);
-    rq_expdb(dp, slot);
-    check(qp_outstanding(dp) == slot + 1,
-          "CMB RQ deeper than 2^16 counts a post past slot 65535");
-}
-
-/*
- * Under QEMU a guest's 64-byte store into BAR4 arrives as eight writes of 8
- * bytes, and the one that ends the slot is the express doorbell. A device
- * that waited for a single 64-byte write never saw one, and one that took
- * the first write of a slot's last 64 bytes posted the WQE before the rest
- * of it was written.
- */
-static void test_rq_expdb_in_pieces(void)
-{
-    struct ionic_datapath *dp = dp_with_recv_rings();
-    const uint64_t at = UINT64_C(3) * 64U;
-    bool early = false;
-
-    rq_in_cmb(dp, RQ_DEPTH);
-    g_db_recv = 0;
-    for (uint64_t off = 0; off < 64U; off += 8U) {
-        if (qp_outstanding(dp) != 0 || g_db_recv != 0) {
-            early = true;
-        }
-        ionic_datapath_expdb_write(dp, at + off, 8);
-    }
-    check(!early, "CMB RQ posts nothing before the write ending the slot");
-    check(qp_outstanding(dp) == 4,
-          "CMB RQ posts through slot 3 on the 8-byte write ending it");
-    check(g_db_recv == 1,
-          "CMB RQ counts one receive doorbell for the slot's eight writes");
-}
-
-/*
- * The write's end is checked against the CMB before anything is computed
- * from it: a write starting 64 bytes short of 2^64 and 128 long ends, if
- * the sum wraps, at the end of slot 0.
- */
-static void test_rq_expdb_end_wraps(void)
-{
-    struct ionic_datapath *dp = dp_with_recv_rings();
-
-    rq_in_cmb(dp, RQ_DEPTH);
-    g_db_recv = 0;
-    ionic_datapath_expdb_write(dp, UINT64_MAX - 63U, 128);
-    check(qp_outstanding(dp) == 0 && g_db_recv == 0,
-          "CMB RQ posts nothing for a write whose end wraps 2^64");
 }
 
 /*
@@ -927,11 +796,6 @@ int main(void)
     test_rq_survives_the_wrap();
     test_rq_survives_many_wraps();
     test_rq_rejects_an_index_past_the_depth();
-    test_rq_expdb_survives_the_wrap();
-    test_rq_expdb_survives_many_wraps();
-    test_rq_expdb_past_16_bits();
-    test_rq_expdb_in_pieces();
-    test_rq_expdb_end_wraps();
 
     if (g_failures) {
         printf("\n%d check(s) failed\n", g_failures);

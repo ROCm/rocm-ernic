@@ -611,22 +611,18 @@ def test_cmb_id_reused(suite, fix):
     suite.check_eq(fix.driver.destroy_cq(cq_f), 0, "DESTROY_CQ F")
 
 
-def test_expdb(suite, fix):
-    """SENDs and receives posted by the express doorbell alone.
+def test_cmb_doorbell(suite, fix):
+    """Work in the CMB runs only once its doorbell is rung.
 
-    Each WQE is written into the CMB 8 bytes at a time, as QEMU delivers
-    a guest's stores, and no BAR2 doorbell is rung: the write that ends
-    a WQE's slot posts it. A device that waited for one 64-byte write
-    never saw one, and nothing completed. One more round than the rings
-    are deep takes both past their last slot and round again.
-
-    Nor may a SEND go before the write ending its slot. A local SEND to
-    a posted receive completes while the device handles the write that
-    posts it, so had an earlier write posted it, its completions would
-    already be on the CQ before the last write. A device that took the
-    first write into a slot's last 64 bytes as the doorbell sent the
-    WQE before the rest of it was written.
+    The fixture maps the CMB, as QEMU maps BAR4 into a guest, so the
+    device never sees a WQE stored there: the doorbell after it is what
+    posts it. Each round stores a SEND into a send ring in the CMB, checks
+    it hasn't run once the device has answered an admin command, then
+    rings the doorbell and checks that it runs. One more round than the
+    rings are deep takes both past their last slot and round again. The
+    receive ring is in the CMB too.
     """
+    suite.check(fix.driver.cmb is not None, "the fixture mapped the CMB")
     cq_h = fix.driver.create_cq(7)
     sender = fix.driver.create_qp(
         60, ionic.QPT_RC, cq_h, cq_h, sq_cmb=4 * ionic.PAGE_SIZE
@@ -638,30 +634,24 @@ def test_expdb(suite, fix):
     fix.driver.connect_qp(sender, receiver.id, hdr)
     fix.driver.connect_qp(receiver, sender.id, hdr)
 
-    early = []
-
-    def poll_early():
-        early.append(fix.driver.poll_cq(cq_h))
-
     for n in range(sender.sq.depth + 1):
-        payload = f"posted by the express doorbell, round {n}".encode()
+        payload = f"posted by its doorbell, round {n}".encode()
         fix.driver.mr_write(fix.mr_a, VA_A, payload)
         fix.driver.mr_write(fix.mr_b, VA_B, b"\0" * len(payload))
-        fix.driver.post_recv(receiver, [ionic.Sge(VA_B, MR_LEN, MR_B)], expdb=True)
-        early.clear()
+        fix.driver.post_recv(receiver, [ionic.Sge(VA_B, MR_LEN, MR_B)])
         fix.driver.post_send(
             sender,
             ionic.OP_SEND,
-            expdb=True,
-            before_last=poll_early,
+            doorbell=False,
             flags=ionic.WQE_SIGNALLED,
             sge=[ionic.Sge(VA_A, len(payload), MR_A)],
         )
-        suite.check_eq(
-            early,
-            [None],
-            f"round {n}: completions before the write ending the SEND's slot",
+        status, _ = fix.driver.admin(ionic.ADMIN_NOOP)
+        suite.check(
+            status == 0 and fix.driver.poll_cq(cq_h) is None,
+            f"round {n}: nothing completed before the SQ doorbell",
         )
+        fix.driver.ring_sq(sender)
         cqes = [fix.driver.wait_cq(cq_h), fix.driver.wait_cq(cq_h)]
         recv = [c for c in cqes if c.type == ionic.CQE_TYPE_RECV]
         suite.check(
@@ -756,7 +746,7 @@ TESTS = (
     ("SEND between QPs with rings in the CMB", test_send_cmb),
     ("inline payloads from a send ring in the CMB", test_inline_cmb),
     ("a QP id reused outside the CMB", test_cmb_id_reused),
-    ("work posted by the express doorbell alone", test_expdb),
+    ("work in the CMB posted by its doorbell", test_cmb_doorbell),
     ("device reset", test_device_reset),
     ("function-level reset", test_flr),
     ("teardown", test_teardown),

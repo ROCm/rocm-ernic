@@ -466,7 +466,7 @@ void ernic_stats_qp_cqe(struct ernic_stats *st, uint32_t qp_id)
     (void)st;
     (void)qp_id;
 }
-/* Send doorbells counted, express doorbells included; setup() zeroes it */
+/* Send doorbells counted; setup() zeroes it */
 static unsigned g_db_send;
 
 void ernic_stats_qp_doorbell(struct ernic_stats *st, uint32_t qp_id,
@@ -3486,14 +3486,14 @@ static void check_reset_racing_recv(void)
 }
 
 /*
- * A send or receive ring in the CMB is read from the device's copy of BAR4,
+ * A send or receive ring in the CMB is read from the memory behind BAR4,
  * not from guest memory. CREATE_QP refuses a ring that doesn't lie inside
  * the CMB, but the data path checks each WQE again before reading it, and
  * that check must not wrap: an offset just short of 2^64 plus a WQE's length
  * comes back round to a small sum, which the check used to pass, reading the
- * WQE from before the start of the copy.
+ * WQE from before the start of the CMB.
  *
- * So the copy is preceded by a guard of zeros, where such a read lands, and
+ * So the CMB is preceded by a guard of zeros, where such a read lands, and
  * each row sets its ring's offset on the data path directly, as CREATE_QP
  * would not. A WQE outside the CMB is never written, since it has nowhere
  * to go; only its doorbell is rung.
@@ -3847,118 +3847,53 @@ static void check_cmb_cleared_on_destroy(void)
 }
 
 /*
- * The express doorbell: with no SQ doorbell rung, a write into the CMB that
- * ends a WQE's slot posts it. Under QEMU a guest's 64-byte store arrives as
- * eight writes of 8 bytes, so it's where a write ends that counts, not its
- * size: a device waiting for one 64-byte write never ran the WQE, and one
- * taking the first write into a slot's last 64 bytes ran it before the rest
- * was written. Each row writes QP_A's WRITE into its SQ in the CMB, then
- * reports writes of its slot to the data path.
+ * The guest maps the CMB, so the device never sees a WQE written there: it
+ * runs only once the guest rings the SQ doorbell, as for a ring in guest
+ * memory. The device used to run one as soon as the write ending its slot
+ * arrived (the express doorbell), which it can't see once BAR4 is mapped.
+ * QP_A's WRITE is written into its SQ in the CMB, and must not run until
+ * its doorbell is rung, once.
  */
-#define EX_OFF CD_OFF
-
-enum ex_scenario {
-    EX_PIECES, /* the slot in 8-byte writes, in order */
-    EX_WHOLE,  /* the slot in one write */
-    EX_WRAPS,  /* one write whose end wraps 2^64 to the slot's end */
-    EX_HELD,   /* the slot in one write, with Bus Master Enable clear */
-};
-
 /* Whether QP_A's WRITE has landed */
 static bool write_landed(void)
 {
     return memcmp(g_mem + MR_GPA, g_mem + SRC_GPA, WRITE_OK.len) == 0;
 }
 
-static const char *ex_run(struct ionic_datapath *dp, enum ex_scenario s)
+static const char *cmb_doorbell_run(struct ionic_datapath *dp)
 {
-    const uint64_t slot_len = UINT64_C(1) << WQE_STRIDE;
-    const uint64_t piece = s == EX_PIECES ? 8U : slot_len;
-
     memset(g_cmb, 0, sizeof(g_cmb));
     ionic_datapath_set_cmb(dp, g_cmb + CMB_GUARD);
-    ionic_datapath_set_qp_cmb(dp, QP_A, true, EX_OFF, false, 0);
+    ionic_datapath_set_qp_cmb(dp, QP_A, true, CD_OFF, false, 0);
     write_send(dp, QP_A, &WRITE_OK);
 
-    if (s == EX_WRAPS) {
-        ionic_datapath_expdb_write(dp, UINT64_MAX - 63U, (size_t)EX_OFF + 128U);
-        if (g_db_send != 0) {
-            return "a doorbell was counted";
-        }
-        return write_landed() ? "the WRITE ran" : NULL;
+    if (write_landed() || dp->cq[CQ_ID].prod != 0 || g_db_send != 0) {
+        return "the WRITE ran with no doorbell rung";
     }
-    if (s == EX_HELD) {
-        fake_pci_config_set_bus_master(false);
-        ionic_datapath_expdb_write(dp, EX_OFF, (size_t)slot_len);
-        const bool early = write_landed() || dp->cq[CQ_ID].prod != 0;
-        fake_pci_config_set_bus_master(true);
-        if (early) {
-            return "the WRITE ran with Bus Master Enable clear";
-        }
-        ionic_datapath_resume(dp);
-        if (!write_landed()) {
-            return "the held WRITE didn't run once Bus Master Enable was set";
-        }
-        if (g_db_send != 1) {
-            return "the express doorbell wasn't counted once";
-        }
-        return cq_has_error(dp) ? "the held WRITE completed in error" : NULL;
-    }
-    for (uint64_t off = 0; off < slot_len; off += piece) {
-        if (write_landed()) {
-            return "the WRITE ran before the write ending its slot";
-        }
-        ionic_datapath_expdb_write(dp, EX_OFF + off, (size_t)piece);
-    }
+    sq_doorbell(dp, QP_A);
     if (!write_landed()) {
-        return "the WRITE didn't run";
+        return "the WRITE didn't run once its doorbell was rung";
     }
     if (g_db_send != 1) {
-        return "the express doorbell wasn't counted once";
+        return "the doorbell wasn't counted once";
     }
     return cq_has_error(dp) ? "the WRITE completed in error" : NULL;
 }
 
-static void check_cmb_expdb(void)
+static void check_cmb_doorbell(void)
 {
-    static const struct {
-        const char *category;
-        const char *description;
-        const char *expected;
-        enum ex_scenario scenario;
-    } rows[] = {
-        {"positive",
-         "a WRITE in an SQ in the CMB, its slot written in 8-byte pieces, "
-         "as QEMU delivers a 64-byte store, and no doorbell rung",
-         "it runs on the piece ending the slot, and not before, and counts "
-         "one send doorbell",
-         EX_PIECES},
-        {"positive",
-         "a WRITE in an SQ in the CMB, its slot written in one write, and no "
-         "doorbell rung",
-         "it runs, and counts one send doorbell", EX_WHOLE},
-        {"negative",
-         "a write into the CMB whose offset plus its length wraps 2^64 to the "
-         "end of an SQ's slot",
-         "nothing runs, and no doorbell is counted", EX_WRAPS},
-        {"positive",
-         "a WRITE in an SQ in the CMB, its slot written with Bus Master "
-         "Enable clear",
-         "it waits, and runs once Bus Master Enable is set", EX_HELD},
-    };
+    struct ionic_datapath *dp = setup();
+    const char *why =
+        dp ? cmb_doorbell_run(dp) : "could not create a data path";
 
-    for (size_t row = 0; row < sizeof(rows) / sizeof(rows[0]); row++) {
-        struct ionic_datapath *dp = setup();
-        const char *why = dp ? ex_run(dp, rows[row].scenario)
-                             : "could not create a data path";
-
-        ionic_datapath_destroy(dp);
-        printf("%s %s: %s; expected: %s\n", why ? "FAIL" : "ok  ",
-               rows[row].category, rows[row].description, rows[row].expected);
-        if (why) {
-            printf("     %s\n", why);
-            failures++;
-        }
+    ionic_datapath_destroy(dp);
+    printf("%s positive: a WRITE in an SQ in the CMB, its doorbell rung only "
+           "after it was written; expected: nothing runs until the doorbell, "
+           "and then the WRITE does\n",
+           why ? "FAIL" : "ok  ");
+    if (why) {
+        printf("     %s\n", why);
+        failures++;
     }
 }
 
@@ -3978,7 +3913,7 @@ int main(void)
     check_unreadable_wqe();
     check_cmb_bounds();
     check_cmb_cleared_on_destroy();
-    check_cmb_expdb();
+    check_cmb_doorbell();
     for (size_t i = 0; i < sizeof(cases) / sizeof(cases[0]); i++) {
         run_case(&cases[i]);
     }

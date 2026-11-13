@@ -83,17 +83,14 @@ upstream driver expects:
      - 8 MB
      - Controller Memory Buffer (CMB), only with ``--cmb``:
        without it there is no BAR 4, the driver finds no CMB,
-       and every queue is in guest memory.  ``DISCOVER_CMB`` (opcode 80)
-       returns two regions here: ``DEVMEM`` (type 0) and ``EXPDB512``
-       (type 4), each 128 × 64 KiB pages.  ``Q_IDENTIFY`` for TXQ
-       and RXQ sets ``IONIC_QIDENT_F_EXPDB`` so the driver may
-       request express-doorbell QPs that write WQEs directly into
-       this memory instead of ringing a separate doorbell.  The
-       write that ends a WQE's slot posts it, whatever its size,
-       since QEMU delivers the guest's stores at most 8 bytes at
-       a time, so the guest must write each WQE front to back.
-       While Bus Master Enable is clear, or the function is in
-       D3hot, the WQE waits, as one posted by a doorbell does.
+       and every queue is in guest memory.  QEMU maps it into
+       the guest, so the driver writes WQEs directly into it,
+       then rings the queue's doorbell.  ``DISCOVER_CMB``
+       (opcode 80) returns one region here, ``DEVMEM`` (type 0),
+       128 × 64 KiB pages.  ``Q_IDENTIFY`` doesn't set
+       ``IONIC_QIDENT_F_EXPDB``: the device offers no express
+       doorbell, since it never sees the guest's stores into
+       the CMB.
 
 The MSI-X table has room for 128 vectors; the device
 advertises the profile's ``queues.intr_vectors`` of them (32

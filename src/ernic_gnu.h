@@ -71,4 +71,19 @@ int ernic_gnu_pthread_getname_np(pthread_t thread, char *name, size_t len);
 int ernic_gnu_prlimit_nofile(pid_t pid, const struct rlimit *new_limit,
                              struct rlimit *old_limit);
 
+/*
+ * memfd_create(): an anonymous file, which can be sealed, named @name in
+ * /proc (the name is for people; it needn't be unique).  O_CLOEXEC is always
+ * set.  Returns the descriptor, or -1 with errno set.
+ */
+int ernic_gnu_memfd_create(const char *name);
+
+/*
+ * Seal the size of the ernic_gnu_memfd_create() file @fd, and the seals
+ * themselves (F_SEAL_SHRINK, F_SEAL_GROW and F_SEAL_SEAL), so that nobody
+ * holding the file, in this process or another, can change its size.
+ * Returns 0, or -1 with errno set.
+ */
+int ernic_gnu_seal_size(int fd);
+
 #endif /* ERNIC_GNU_H */

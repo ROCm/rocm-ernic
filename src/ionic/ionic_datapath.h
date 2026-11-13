@@ -8,7 +8,6 @@
 #ifndef IONIC_DATAPATH_H
 #define IONIC_DATAPATH_H
 
-#include <stddef.h>
 #include <stdint.h>
 #include <stdbool.h>
 #include <vfio-user/libvfio-user.h>
@@ -345,9 +344,10 @@ void ionic_datapath_doorbell(struct ionic_datapath *dp, int qtype,
                              uint64_t doorbell_val);
 
 /**
- * Set the CMB (Controller Memory Buffer) shadow shared with ionic_eth_emu.
- * Must be called before any CMB QP can receive a write.  @p cmb_buf is
- * `IONIC_BAR4_CMB_SIZE` bytes, owned by the caller.
+ * Set the CMB (Controller Memory Buffer), the memory behind BAR4, which
+ * ionic_eth_emu owns and the guest maps.  Must be called before any QP's
+ * rings can be in the CMB, and again whenever the memory moves.
+ * @p cmb_buf is `IONIC_BAR4_CMB_SIZE` bytes, owned by the caller.
  */
 void ionic_datapath_set_cmb(struct ionic_datapath *dp, uint8_t *cmb_buf);
 
@@ -366,26 +366,11 @@ void ionic_datapath_set_qp_cmb(struct ionic_datapath *dp, uint32_t qp_id,
                                bool sq_cmb, uint64_t sq_cmb_offset, bool rq_cmb,
                                uint64_t rq_cmb_offset);
 
-/**
- * Called by ionic_eth_emu_bar4_access() for every write into the CMB, once
- * its bytes are in the CMB buffer. A write that ends at the end of a slot of
- * a CMB ring posts that slot's WQE, whatever its size: the express doorbell.
- * The WQE is taken to be complete then, so the guest must write it front to
- * back. Like a doorbell, one that comes while Bus Master Enable is clear
- * only notes its index.
- *
- * @param dp         the data path
- * @param cmb_offset byte offset within the 8 MB CMB buffer of the write's start
- * @param len        the write's length in bytes
- */
-void ionic_datapath_expdb_write(struct ionic_datapath *dp, uint64_t cmb_offset,
-                                size_t len);
-
 /*
  * Do the work held while Bus Master Enable was clear, now that it is set:
  * each send queue up to its last doorbell, and the event of each armed CQ
- * that has completions.  A doorbell, or an express doorbell, that comes
- * while BME is clear only notes its index.  Main loop thread only.
+ * that has completions.  A doorbell that comes while BME is clear only notes
+ * its index.  Main loop thread only.
  */
 void ionic_datapath_resume(struct ionic_datapath *dp);
 

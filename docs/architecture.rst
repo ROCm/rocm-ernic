@@ -266,8 +266,9 @@ The device has two BARs, or three with ``--cmb``. Each is
    * - BAR 4
      - 8 MiB
      - Controller Memory Buffer (CMB), only with ``--cmb``: a
-       QP's rings may be put here instead of in guest memory
-       (see `Queues in the CMB`_)
+       QP's rings may be put here instead of in guest memory,
+       and QEMU maps it into the guest (see `Queues in the
+       CMB`_)
 
 The BAR 0 register window is laid out exactly as the driver's
 ``ionic_dev_setup()`` expects:
@@ -459,9 +460,10 @@ loops:
 #. Write the stats file, if there is one, about once a second.
 #. ``vfu_run_ctx()``: handle pending vfio-user messages. BAR
    accesses arrive here as callbacks, and **BAR 2 doorbells for
-   send queues are executed inside the callback**, as are
-   express doorbells written into the CMB (see `The Data
-   Path`_). If the client has gone, stop here.
+   send queues are executed inside the callback** (see `The
+   Data Path`_). If the client has gone, give the CMB new
+   memory for the next client (see `Queues in the CMB`_), and
+   stop here.
 #. ``ionic_device_poll()``, the device's share, which is the
    next three steps, unless the guest has Bus Master Enable
    clear or the function in D3hot (see `Bus Master Enable`_).
@@ -502,9 +504,8 @@ can't get on the bus would, rather than dropping it:
 
 - ``ionic_device_poll()`` does nothing, and the server doesn't
   skip its idle sleep for work it may not do.
-- A doorbell only notes its producer index, as does a write
-  into the CMB that posts a WQE (the express doorbell), and
-  arming a CQ raises no event.
+- A doorbell only notes its producer index, and arming a CQ
+  raises no event.
 - An interrupt is latched, as if its vector were masked.
 - ``PORT_INIT`` and ``LIF_INIT`` complete, but write their
   blocks later.
@@ -638,11 +639,11 @@ the data window, and sets ``done``.
    * - Q_IDENTIFY
      - Reports descriptor and scatter-gather sizes for the
        admin, notify, receive and transmit queues; advertises
-       no offloads, and the express doorbell for the receive
-       and transmit queues, but only with ``--cmb``. Fails for
-       any other queue type
+       no features: no offloads, and no express doorbell, even
+       with ``--cmb`` (see `Queues in the CMB`_). Fails for any
+       other queue type
    * - DISCOVER_CMB
-     - With ``--cmb``, reports the CMB's two regions on BAR 4
+     - With ``--cmb``, reports the CMB as one region on BAR 4
        (see :doc:`ionic`). Fails as unsupported without it
    * - LIF_GETATTR, LIF_SETATTR
      - Read or set the MAC; other attributes succeed without
@@ -964,23 +965,48 @@ Queues in the CMB
 With ``--cmb`` the device has a Controller Memory Buffer, BAR
 4, and the driver may put a QP's send or receive ring there
 instead of in guest memory (see :doc:`usage` for when it does).
-``DISCOVER_CMB`` reports the buffer, and ``Q_IDENTIFY`` offers
-the *express doorbell*. The server keeps the CMB in a buffer of
-its own. Like the other BARs, BAR 4 isn't mapped into the guest,
-so each store the guest makes there exits to QEMU and reaches
-the server as a write of at most 8 bytes.
+``DISCOVER_CMB`` reports the buffer.
 
-A ring in the CMB needs no doorbell. A write that ends at the
-end of one of its slots posts the WQE in that slot, as a
-doorbell naming the next slot would, and a send queue runs at
-once, inside the BAR 4 callback. That holds only for a guest
-that writes each WQE front to back, as the provider does. The
-data path then reads the WQE out of the server's copy of the
-CMB rather than guest memory. A WQE there is in no guest page,
-so its inline payload is taken from that copy, and only a SEND
-or WRITE may have one. When a QP is destroyed its CMB rings are
-zeroed, since the driver hands the same space to the next QP,
-which may belong to another process.
+The CMB is memory the server shares with QEMU: an anonymous
+file (``memfd``), which the server maps, and whose descriptor
+libvfio-user hands QEMU with BAR 4's region information. QEMU
+maps it into the guest, so the guest's stores into BAR 4 go
+straight to the server's memory, unlike its accesses to BAR 0
+and BAR 2, each of which exits to QEMU and becomes a message
+to the server. A store that exited would have to be one KVM
+can emulate, and KVM can't emulate some that drivers use for
+device memory, such as ``MOVDIR64B``: the guest program making
+one is killed with ``SIGILL``. The file's size is sealed, since
+QEMU holds it too, and a file cut short under the server's
+mapping would kill the server the next time it read the CMB.
+A client that doesn't map BAR 4 can still read and write it
+through the socket; the server logs the first such access,
+since the guest is then slow, and may be killed by the stores
+above.
+
+So the device never sees a WQE being written there, and a ring
+in the CMB is posted to as one in guest memory is: the guest
+writes the WQE, then rings the queue's doorbell in BAR 2.
+``Q_IDENTIFY`` offers no *express doorbell*, in which the store
+of a WQE posts it with no doorbell. The data path then reads
+the WQE out of the CMB rather than guest memory, copying it
+before it reads any field, since the guest can change it at
+any time. A WQE there is in no guest page, so its inline
+payload is taken from that copy, and only a SEND or WRITE may
+have one.
+
+When a QP is destroyed its CMB rings are zeroed, since the
+driver hands the same space to the next QP, which may belong to
+another process. The whole CMB is zeroed on every reset. A
+client keeps its mapping after it disconnects, and nothing can
+take that back, so before the next client attaches the server
+gives the CMB new memory under the same descriptor, and the old
+client's mapping reaches only memory nothing else uses.
+
+Mapping BAR 4 has a cost elsewhere: QEMU stops posting writes to
+any of the device's BARs once one is mapped, so with ``--cmb``
+the guest waits for the server to handle each BAR 2 doorbell
+rather than going on at once.
 
 Datagrams (UD and GSI)
 ^^^^^^^^^^^^^^^^^^^^^^
@@ -1629,8 +1655,7 @@ Where to Look in the Source
    * - ``src/ionic/ionic_adminq.c``
      - RDMA control path
    * - ``src/ionic/ionic_datapath.c``
-     - RDMA data path, express doorbell, and inter-server wire
-       protocol
+     - RDMA data path and inter-server wire protocol
    * - ``src/ionic/ionic_datapath_nvmeof.c``,
        ``src/ionic/ionic_datapath_s3.c``,
        ``src/ionic/ionic_datapath_p4.c``
@@ -1647,6 +1672,9 @@ Where to Look in the Source
    * - ``src/ernic_alloc.c``, ``.h``
      - Allocators for fixed-size internal objects, which abort when
        out of memory
+   * - ``src/ernic_shm.c``, ``.h``
+     - Memory shared with QEMU by a file descriptor, behind the
+       CMB
    * - ``src/rocm_ernic_compat.c``, ``.h``,
        ``src/ernic_rm.h``, ``src/ernic_mesh.h``
      - Bridge to the QEMU-derived core: the device's lifecycle,

@@ -66,7 +66,6 @@ CMD_Q_IDENTIFY = 39
 CMD_DISCOVER_CMB = 80
 IONIC_CMB_FLAG_EXPDB = 0x1
 IONIC_CMB_TYPE_DEVMEM = 0x0
-IONIC_CMB_TYPE_EXPDB512 = 0x4
 IONIC_QTYPE_RXQ = 2
 IONIC_QTYPE_TXQ = 3
 IONIC_QIDENT_F_EXPDB = 0x400
@@ -175,10 +174,6 @@ WQE_PLD_OFF = 32
 
 PAGE_SIZE = 4096
 GRH_SIZE = 40
-
-# The most QEMU passes on from one guest store into a BAR that isn't
-# mmapped: KVM's MMIO exit carries 8 bytes, however wide the store
-MMIO_WRITE_MAX = 8
 
 # SRQ ids start above the QP id space, and have to: a qtype-7 doorbell
 # carries either a QP id or an SRQ id and the device tells them apart by
@@ -401,6 +396,23 @@ class IonicDriver(EthQueueMixin):
         self.port_info = mem.alloc(PAGE_SIZE)
         self.lif_info = mem.alloc(PAGE_SIZE)
         self.scratch = mem.alloc(PAGE_SIZE)
+        self.cmb = None
+
+    def map_cmb(self):
+        """Map the CMB, BAR4, from the file the server offers, as QEMU does.
+
+        From then on a WQE for a ring in the CMB is stored through the
+        mapping, as a guest stores it, rather than written through the
+        socket. Returns whether the server offered the CMB to map.
+        """
+        self.cmb = self.client.map_region(VFU_PCI_DEV_BAR4_REGION_IDX)
+        return self.cmb is not None
+
+    def close(self):
+        """Unmap the CMB, if map_cmb() mapped it."""
+        if self.cmb is not None:
+            self.cmb.close()
+            self.cmb = None
 
     # ---- registers and doorbells ---------------------------------------
 
@@ -901,23 +913,26 @@ class IonicDriver(EthQueueMixin):
 
     # ---- work requests and completions ----------------------------------
 
-    def post_send(self, qp, op, *, expdb=False, before_last=None, **kwargs):
+    def post_send(self, qp, op, *, doorbell=True, **kwargs):
         """Post one send WQE and ring the SQ doorbell.
 
-        With @expdb, the send ring must be in the CMB, and the WQE is
-        posted by the express doorbell alone, as _write_wqe() says, which
-        calls @before_last, if given, before the WQE's last write.
+        With @doorbell false, the WQE is written but no doorbell rung,
+        which ring_sq() does later.
 
         Keyword arguments, all optional: flags, imm_be, key, ah_id,
         dest_qpn, qkey, remote_va, rkey, length, swap_add, compare, sge,
         inline_data, mr.
         """
         wqe = self._build_send_wqe(qp, op, kwargs)
-        self._write_wqe(qp.sq, wqe, expdb, before_last)
+        self._write_wqe(qp.sq, wqe)
         qp.sq.prod += 1
-        if not expdb:
-            self.doorbell(QTYPE_SQ, qp.id, 0, qp.sq.prod % qp.sq.depth)
+        if doorbell:
+            self.ring_sq(qp)
         return struct.unpack_from("<Q", wqe, 0)[0]
+
+    def ring_sq(self, qp):
+        """Ring @qp's SQ doorbell for every WQE written to it."""
+        self.doorbell(QTYPE_SQ, qp.id, 0, qp.sq.prod % qp.sq.depth)
 
     # One WQE layout with a branch per opcode class; splitting it up would
     # scatter struct ionic_v1_wqe across several functions.
@@ -984,19 +999,15 @@ class IonicDriver(EthQueueMixin):
                 _put_sges(wqe, sges)
         return bytes(wqe)
 
-    def post_recv(self, qp, sges, *, expdb=False):
-        """Post one receive on a QP's own receive ring.
-
-        With @expdb, the receive ring must be in the CMB, and the WQE is
-        posted by the express doorbell alone, as _write_wqe() says.
-        """
-        return self._post_recv(qp.rq, qp.id, qp, sges, expdb=expdb)
+    def post_recv(self, qp, sges):
+        """Post one receive on a QP's own receive ring."""
+        return self._post_recv(qp.rq, qp.id, qp, sges)
 
     def post_srq_recv(self, srq, sges):
         """Post one receive on a shared receive queue."""
         return self._post_recv(srq.ring, srq.id, srq, sges)
 
-    def _post_recv(self, ring, qid, owner, sges, *, expdb=False):
+    def _post_recv(self, ring, qid, owner, sges):
         stride = 1 << WQE_STRIDE_LOG2
         if len(sges) > (stride - WQE_PLD_OFF) // 16:
             raise ValueError("receive WQE has too many SGEs")
@@ -1006,36 +1017,24 @@ class IonicDriver(EthQueueMixin):
         struct.pack_into("<Q", wqe, 0, wqe_id)
         wqe[9] = len(sges)
         _put_sges(wqe, sges)
-        self._write_wqe(ring, bytes(wqe), expdb)
+        self._write_wqe(ring, bytes(wqe))
         ring.prod += 1
-        if not expdb:
-            self.doorbell(QTYPE_RQ, qid, 0, ring.prod % ring.depth)
+        self.doorbell(QTYPE_RQ, qid, 0, ring.prod % ring.depth)
         return wqe_id
 
-    def _write_wqe(self, ring, wqe, expdb=False, before_last=None):
+    def _write_wqe(self, ring, wqe):
         """Write @wqe at @ring's producer index, in the CMB if it is there.
 
-        With @expdb, @ring must be in the CMB, and @wqe, which fills its
-        slot, is written front to back in MMIO_WRITE_MAX pieces, as QEMU
-        delivers a guest's stores. The caller rings no doorbell: the
-        write that ends the slot is the express doorbell. @before_last,
-        if given, is called before that write, by when the device has
-        handled the others: it replies to a write once it has.
+        A WQE for a ring in the CMB is stored through the mapping if
+        map_cmb() made one, and written through the socket if not.
         """
-        if expdb and not ring.cmb:
-            raise ValueError("the express doorbell needs a ring in the CMB")
+        at = ring.slot(ring.prod)
         if not ring.cmb:
-            self.mem.write(ring.slot(ring.prod), wqe)
-            return
-        step = MMIO_WRITE_MAX if expdb else len(wqe)
-        for off in range(0, len(wqe), step):
-            if before_last and off + step >= len(wqe):
-                before_last()
-            self.client.write_region(
-                VFU_PCI_DEV_BAR4_REGION_IDX,
-                ring.slot(ring.prod) + off,
-                wqe[off : off + step],
-            )
+            self.mem.write(at, wqe)
+        elif self.cmb is not None:
+            self.cmb.map[at : at + len(wqe)] = wqe
+        else:
+            self.client.write_region(VFU_PCI_DEV_BAR4_REGION_IDX, at, wqe)
 
     def poll_cq(self, cq):
         """Take the next completion off @cq, or None if there is none."""

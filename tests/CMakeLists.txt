@@ -24,9 +24,12 @@ set_source_files_properties(${PROJECT_SOURCE_DIR}/src/ernic_map.c PROPERTIES
 # needing a different set lists its own.
 
 # The ionic Ethernet emulator and what it calls: guest DMA, NIC profiles,
-# the LIF counters, Rx steering and fault injection
+# the LIF counters, Rx steering, fault injection, and the CMB's shared
+# memory and the GNU extensions it's made with
 set(ERNIC_TEST_IONIC_ETH_SOURCES
     ${PROJECT_SOURCE_DIR}/src/ernic_dma.c
+    ${PROJECT_SOURCE_DIR}/src/ernic_gnu.c
+    ${PROJECT_SOURCE_DIR}/src/ernic_shm.c
     ${PROJECT_SOURCE_DIR}/src/ionic/ionic_eth_emu.c
     ${PROJECT_SOURCE_DIR}/src/ionic/ionic_profile.c
     ${PROJECT_SOURCE_DIR}/src/ionic/ionic_profiles.c
@@ -223,6 +226,20 @@ ernic_add_test_program(ernic-test-ernic-alloc
 )
 target_link_options(ernic-test-ernic-alloc PRIVATE
     "LINKER:--wrap=malloc,--wrap=calloc")
+
+# The memory the server shares with its client (ernic_shm.h), and the GNU
+# extensions it's made with. It fails each call that can fail on demand:
+# the linker routes the calls in its own objects through wrappers in the
+# test.
+ernic_add_test_program(ernic-test-ernic-shm
+    SOURCES
+        test_ernic_shm.c
+        ${PROJECT_SOURCE_DIR}/src/ernic_gnu.c
+        ${PROJECT_SOURCE_DIR}/src/ernic_shm.c
+)
+target_link_options(ernic-test-ernic-shm PRIVATE
+    "LINKER:--wrap=ernic_gnu_memfd_create,--wrap=ernic_gnu_seal_size"
+    "LINKER:--wrap=ftruncate,--wrap=mmap,--wrap=dup2")
 
 # The hash maps (ernic_map.h). It links the allocators and the log, which
 # the map aborts through when out of memory.
@@ -942,6 +959,10 @@ ernic_add_unit_test(siphash-unit ernic-test-siphash TIMEOUT 30)
 
 # The allocators: what each returns, and each abort
 ernic_add_unit_test(ernic-alloc-unit ernic-test-ernic-alloc TIMEOUT 30)
+
+# The memory shared with the client: made, sealed, renewed, and every
+# failure on the way
+ernic_add_unit_test(ernic-shm-unit ernic-test-ernic-shm TIMEOUT 30)
 
 # The hash maps: insert, replace, remove, walk, and growth
 ernic_add_unit_test(ernic-map-unit ernic-test-ernic-map TIMEOUT 30)

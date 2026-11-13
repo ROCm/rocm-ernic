@@ -18,6 +18,7 @@
 #include <fcntl.h>
 #include <pthread.h>
 #include <stddef.h>
+#include <sys/mman.h>
 #include <sys/resource.h>
 #include <sys/socket.h>
 #include <sys/types.h>
@@ -58,4 +59,14 @@ int ernic_gnu_prlimit_nofile(pid_t pid, const struct rlimit *new_limit,
                              struct rlimit *old_limit)
 {
     return prlimit(pid, RLIMIT_NOFILE, new_limit, old_limit);
+}
+
+int ernic_gnu_memfd_create(const char *name)
+{
+    return memfd_create(name, MFD_CLOEXEC | MFD_ALLOW_SEALING);
+}
+
+int ernic_gnu_seal_size(int fd)
+{
+    return fcntl(fd, F_ADD_SEALS, F_SEAL_SHRINK | F_SEAL_GROW | F_SEAL_SEAL);
 }

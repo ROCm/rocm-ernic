@@ -481,11 +481,10 @@ static void reset_pci_config(vfu_ctx_t *vfu_ctx, const rocm_ernic_dev_t *dev,
 /*
  * BAR4 (CMB) access callback.
  *
- * The guest writes WQEs directly into the CMB, and QEMU delivers its stores
- * at most 8 bytes at a time.  Reads are not part of the expdb protocol
- * but libvfio-user may deliver them.  Delegate to the eth_emu layer which
- * holds the shadow buffer and posts a WQE once the write ending its slot
- * arrives.
+ * The client maps BAR4 from the descriptor setup_bars() gives libvfio-user,
+ * so a guest's stores into the CMB go straight to its memory and never
+ * reach here.  A client that doesn't map it reads and writes it through the
+ * socket instead; the eth_emu layer, which owns the memory, serves those.
  */
 static ssize_t bar4_access(vfu_ctx_t *vfu_ctx, char *buf, size_t count,
                            loff_t offset, bool is_write)
@@ -868,6 +867,11 @@ static int setup_pci_config(vfu_ctx_t *vfu_ctx)
  *   BAR4 (64-bit): 8 MB Controller Memory Buffer (CMB), with --cmb only.
  *                  Without it the guest driver finds no CMB and puts every
  *                  ring in guest memory, whatever the application asked.
+ *                  With it, the client maps BAR4 into the guest from the
+ *                  descriptor of the memory behind it, so the guest's
+ *                  stores there don't exit to QEMU: KVM can't emulate some
+ *                  instructions a guest stores with, such as MOVDIR64B,
+ *                  and kills a program that tries.
  *
  * Returns 0, or -1 after saying why.
  */
@@ -910,9 +914,12 @@ static int setup_bars(vfu_ctx_t *vfu_ctx, rocm_ernic_dev_t *dev)
         return 0;
     }
 
+    /* With a descriptor and no list of areas, the whole region may be
+     * mapped */
     ret = vfu_setup_region(
         vfu_ctx, VFU_PCI_DEV_BAR4_REGION_IDX, IONIC_BAR4_CMB_SIZE, bar4_access,
-        VFU_REGION_FLAG_RW | VFU_REGION_FLAG_MEM, NULL, 0, -1, 0);
+        VFU_REGION_FLAG_RW | VFU_REGION_FLAG_MEM, NULL, 0,
+        ionic_eth_emu_cmb_fd(ionic_device_eth_emu(dev->ionic)), 0);
     if (ret < 0) {
         ernic_log_errno(ERNIC_LOG_ERROR, errno,
                         "ionic: Failed to setup BAR4 (CMB)");
@@ -2231,9 +2238,24 @@ static int run(rocm_ernic_dev_t *dev)
          * attached, there's no call to drop it, and attaching again fails
          * with EINVAL every time.
          */
-        if (!serve_client(dev) && !g_shutdown_requested) {
-            ernic_log(ERNIC_LOG_ERROR, "serving the client failed with it "
-                                       "still attached; exiting");
+        if (!serve_client(dev)) {
+            if (!g_shutdown_requested) {
+                ernic_log(ERNIC_LOG_ERROR, "serving the client failed with "
+                                           "it still attached; exiting");
+                ret = -1;
+                break;
+            }
+            continue;
+        }
+
+        /*
+         * The client that went keeps its mapping of the CMB, which nothing
+         * can take back, so the next client gets new memory, where the old
+         * one can't read or write it.
+         */
+        if (ionic_eth_emu_renew_cmb(ionic_device_eth_emu(dev->ionic)) != 0) {
+            ernic_log_errno(ERNIC_LOG_ERROR, errno,
+                            "no new CMB for the next client; exiting");
             ret = -1;
             break;
         }

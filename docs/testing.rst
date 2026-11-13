@@ -227,9 +227,10 @@ Eight suites are registered with CTest:
   must not get away with
 - ``ernic-cmb``: the Controller Memory Buffer, BAR 4, with
   ``--cmb`` and without -- what ``DISCOVER_CMB`` and
-  ``Q_IDENTIFY`` report, a QP with its send ring in it, and
-  that a device reset, ``RESET`` and a client's going each
-  clear it
+  ``Q_IDENTIFY`` report, a QP with its send ring in it, the
+  file the client maps it from, whose size can't change, that
+  a device reset, ``RESET`` and a client's going each clear
+  it, and that a client that went can't reach the next one's
 - ``ernic-ionic-driver``: bring-up, connected queue pairs,
   memory regions whose pages are deliberately out of order,
   sends with several SGEs or an inline payload, RDMA reads
