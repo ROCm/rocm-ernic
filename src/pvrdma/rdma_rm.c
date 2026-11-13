@@ -20,6 +20,7 @@
 #include <string.h>
 #include <errno.h>
 #include <inttypes.h> /* For PRIu32 */
+#include <stdlib.h>
 
 #include <glib.h> /* For GBytes and GHashTable */
 
@@ -58,8 +59,8 @@ static inline int res_tbl_init(const char *name, RdmaRmResTbl *tbl,
     }
     tbl_bytes = (size_t)tbl_sz * res_sz;
 
-    /* g_try_malloc() returns NULL for zero bytes, which isn't a failure. */
-    tbl->tbl = g_try_malloc(tbl_bytes);
+    /* malloc() may return NULL for zero bytes, which isn't a failure. */
+    tbl->tbl = malloc(tbl_bytes);
     if (!tbl->tbl && tbl_bytes != 0) {
         rdma_error_report("Table %s, failed to allocate %zu bytes", tbl->name,
                           tbl_bytes);
@@ -69,7 +70,7 @@ static inline int res_tbl_init(const char *name, RdmaRmResTbl *tbl,
     tbl->bitmap = bitmap_new(tbl_sz);
     if (!tbl->bitmap) {
         rdma_error_report("Table %s, failed to allocate the bitmap", tbl->name);
-        g_free(tbl->tbl);
+        free(tbl->tbl);
         tbl->tbl = NULL;
         return -ENOMEM;
     }
@@ -88,9 +89,9 @@ static inline void res_tbl_free(RdmaRmResTbl *tbl)
         return;
     }
     qemu_mutex_destroy(&tbl->lock);
-    g_free(tbl->tbl);
+    free(tbl->tbl);
     tbl->tbl = NULL;
-    g_free(tbl->bitmap);
+    free(tbl->bitmap);
     tbl->bitmap = NULL;
 }
 

@@ -19,17 +19,20 @@
 #include <string.h>
 #include <unistd.h>
 
+#include "ernic_alloc.h"
 #include "ernic_log.h"
 #include "ernic_siphash.h"
 
 static uint32_t ernic_map_hash(const void *key, size_t len);
 
 /*
- * uthash's settings, which it reads when its macros expand.  An allocation
- * it can't make aborts, as one of ours does (uthash's default is exit(-1)).
- * Its default hash is unkeyed, and when one spreads keys badly it stops
- * growing the table, so colliding keys would leave long chains.
+ * uthash's settings, which it reads when its macros expand.  Its tables come
+ * from ernic_xmalloc(), which aborts when out of memory, and anything else
+ * it finds fatal aborts too (uthash's default is exit(-1)).  Its default
+ * hash is unkeyed, and when one spreads keys badly it stops growing the
+ * table, so colliding keys would leave long chains.
  */
+#define uthash_malloc(sz) ernic_xmalloc(sz)
 #define uthash_fatal(msg) ernic_log_fatal("ernic_map: %s", msg)
 #define HASH_FUNCTION(keyptr, keylen, hashv) \
     ((hashv) = ernic_map_hash((keyptr), (keylen)))
@@ -141,12 +144,7 @@ void ernic_u32_map_insert(ErnicU32Map *map, uint32_t key, void *value)
         return;
     }
 
-    /* A fixed size, so failing means the process is out of memory */
-    e = malloc(sizeof(*e));
-    if (!e) {
-        ernic_log_fatal("ernic_map: out of memory");
-    }
-    memset(e, 0, sizeof(*e));
+    e = ernic_xcalloc(1, sizeof(*e));
     e->key = key;
     e->value = value;
     HASH_ADD(hh, map->head, key, sizeof(e->key), e);

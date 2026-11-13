@@ -306,7 +306,7 @@ static int fixture_init(struct fixture *f, uint32_t num_nodes)
     f->priv.connections = g_hash_table_new(g_direct_hash, g_direct_equal);
     /* No node has claims, so the GID broadcast sends each an empty set */
     f->priv.node_gids =
-        g_hash_table_new_full(g_direct_hash, g_direct_equal, NULL, g_free);
+        g_hash_table_new_full(g_direct_hash, g_direct_equal, NULL, free);
     f->priv.gid_owner = g_hash_table_new_full(g_bytes_hash, g_bytes_equal,
                                               tcp_gid_key_free, NULL);
     ROCM_ERNIC_WARN_THREAD_SAFETY_ON

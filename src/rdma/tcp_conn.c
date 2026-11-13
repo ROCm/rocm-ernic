@@ -17,6 +17,7 @@
  */
 
 #include "rdma/rdma_backend_tcp_priv.h"
+#include "ernic_alloc.h"
 #include "ernic_gnu.h"
 #include "ernic_time.h"
 #include "pvrdma/rdma_utils.h"
@@ -95,11 +96,11 @@ static void tcp_connection_free(TcpConnection *conn)
         close(fd);
     }
 
-    g_free(conn->remote_host);
+    free(conn->remote_host);
     qemu_mutex_destroy(&conn->lock);
     qemu_cond_destroy(&conn->sendq_cond);
     qemu_mutex_destroy(&conn->sendq_lock);
-    g_free(conn);
+    free(conn);
 }
 
 /*
@@ -133,10 +134,10 @@ void tcp_connection_destroy_notify(gpointer data)
 TcpConnection *tcp_connection_new(TcpBackendPrivate *priv, uint32_t node_id,
                                   const char *host, uint16_t port, int sockfd)
 {
-    TcpConnection *conn = g_new0(TcpConnection, 1);
+    TcpConnection *conn = ernic_xcalloc(1, sizeof(*conn));
     conn->priv = priv;
     conn->node_id = node_id;
-    conn->remote_host = g_strdup(host);
+    conn->remote_host = ernic_xstrdup(host);
     conn->remote_port = port;
     atomic_init(&conn->refcount, 1);
     atomic_init(&conn->is_connected, true);
@@ -444,8 +445,7 @@ static int tcp_sendq_start(TcpConnection *conn) TSA_REQUIRES(conn->sendq_lock)
  * so the size can't wrap.
  *
  * The guest chooses len, so running out of memory here mustn't abort the
- * server, as g_malloc() would.  The message is from malloc() rather than
- * g_try_malloc() so that a test can fail the allocation.
+ * server, as ernic_xmalloc() would.
  */
 static TcpQueuedMsg *tcp_queued_msg_new(const TcpConnection *conn,
                                         TcpMsgType msg_type, uint32_t dst_node,
@@ -930,7 +930,7 @@ void *tcp_accept_thread(void *opaque)
 
         client_str = tcp_addr_str(client_host, client_port);
         rdma_info_report("TCP: Accepted connection from %s", client_str);
-        g_free(client_str);
+        free(client_str);
 
         /* Either takes over sockfd */
         if (priv->is_manager) {

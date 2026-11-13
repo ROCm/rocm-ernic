@@ -18,7 +18,7 @@
 #include <stdio.h>
 #include <pthread.h>
 #include <signal.h>
-#include <glib.h>
+#include <stdlib.h>
 
 /*
  * The headers declaring the stubs defined below.  Including them is what
@@ -27,6 +27,7 @@
 #include "qemu/thread.h"
 #include "qemu/bitmap.h"
 
+#include "ernic_alloc.h"
 #include "ernic_gnu.h"
 #include "ernic_log.h"
 
@@ -57,7 +58,7 @@
  * the calling thread with prctl().
  */
 
-/* What qemu_thread_start() needs, from g_new() and freed by the thread */
+/* What qemu_thread_start() needs, freed by the thread */
 typedef struct QemuThreadStart {
     void *(*start_routine)(void *);
     void *arg;
@@ -68,7 +69,7 @@ static void *qemu_thread_start(void *opaque)
 {
     QemuThreadStart start = *(QemuThreadStart *)opaque;
 
-    g_free(opaque);
+    free(opaque);
     qemu_thread_set_name(start.name);
     return start.start_routine(start.arg);
 }
@@ -76,15 +77,15 @@ static void *qemu_thread_start(void *opaque)
 int qemu_thread_create(QemuThread *thread, const char *name,
                        void *(*start_routine)(void *), void *arg)
 {
-    QemuThreadStart *start = g_new0(QemuThreadStart, 1);
+    QemuThreadStart *start = ernic_xcalloc(1, sizeof(*start));
     sigset_t set;
     sigset_t oldset;
     int ret;
 
     start->start_routine = start_routine;
     start->arg = arg;
-    /* Cut short to what the kernel keeps */
-    g_strlcpy(start->name, name, sizeof(start->name));
+    /* Cut short to what the kernel keeps, on purpose */
+    (void)snprintf(start->name, sizeof(start->name), "%s", name);
 
     sigfillset(&set);
     sigdelset(&set, SIGSEGV);
@@ -99,7 +100,7 @@ int qemu_thread_create(QemuThread *thread, const char *name,
                       "pthread_sigmask");
 
     if (ret != 0) {
-        g_free(start);
+        free(start);
     }
     return ret;
 }
@@ -114,7 +115,7 @@ void qemu_thread_set_name(const char *name)
 {
     char buf[QEMU_THREAD_NAME_LEN];
 
-    g_strlcpy(buf, name, sizeof(buf));
+    (void)snprintf(buf, sizeof(buf), "%s", name);
     (void)ernic_gnu_pthread_setname_np(pthread_self(), buf);
 }
 
@@ -131,10 +132,7 @@ void qemu_thread_join(QemuThread *thread)
  * by platform, so it is measured rather than assumed. */
 #define BITMAP_WORD_BITS (CHAR_BIT * sizeof(unsigned long))
 
-/*
- * Returns a zeroed map, or NULL if allocation fails. The map is allocated
- * with GLib because the resource manager releases it with g_free().
- */
+/* Returns a zeroed map, to free(), or NULL if allocation fails. */
 unsigned long *bitmap_new(uint32_t nbits)
 {
     /* Round up by testing the remainder: nbits + BITMAP_WORD_BITS - 1
@@ -144,13 +142,13 @@ unsigned long *bitmap_new(uint32_t nbits)
         words++;
     }
 
-    /* g_try_new0() returns NULL for a zero count, which callers would
+    /* calloc() may return NULL for a zero count, which callers would
      * take for an allocation failure. An empty map gets one word. */
     if (words == 0) {
         words = 1;
     }
 
-    return g_try_new0(unsigned long, words);
+    return calloc(words, sizeof(unsigned long));
 }
 
 void set_bit(uint32_t nr, unsigned long *addr)

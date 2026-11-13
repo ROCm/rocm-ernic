@@ -35,12 +35,12 @@
 
 #include <arpa/inet.h>
 #include <errno.h>
-#include <glib.h>
 #include <netinet/in.h>
 #include <stdbool.h>
 #include <stddef.h>
 #include <stdint.h>
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 #include <sys/socket.h>
 #include <unistd.h>
@@ -278,7 +278,7 @@ static void test_host_port_is_parsed(void)
               c->host);
         CHECK(port == c->port, "\"%s\" gave port %u, not %u", c->s, port,
               c->port);
-        g_free(host);
+        free(host);
     }
 }
 
@@ -302,7 +302,7 @@ static void test_bad_host_port_is_refused(void)
         CHECK(port == 7, "\"%s\" set port %u", s, port);
         CHECK(last_error && strstr(last_error, "invalid address"),
               "\"%s\" didn't report an invalid address", s);
-        g_free(host);
+        free(host);
     }
 }
 
@@ -339,7 +339,7 @@ static void test_long_host(void)
             CHECK(last_error && strstr(last_error, "invalid address"),
                   "a %zu-character host didn't report an invalid address", len);
         }
-        g_free(host);
+        free(host);
     }
 }
 

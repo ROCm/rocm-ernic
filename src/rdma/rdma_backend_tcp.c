@@ -21,6 +21,7 @@
 
 #include "rdma/rdma_backend_ops.h"
 #include "rdma/rdma_backend_tcp_priv.h"
+#include "ernic_alloc.h"
 #include "ernic_limits.h"
 #include "ernic_mesh.h"
 #include "ernic_time.h"
@@ -133,7 +134,7 @@ const char *tcp_config_role(const char *config, TcpMode *mode)
 }
 
 /*
- * Split @s, "host:port", into a newly allocated *host and *port.  An IPv6
+ * Split @s, "host:port", into *host, to free(), and *port.  An IPv6
  * address goes in brackets, as in a URL ("[fe80::1%eth0]:5000"), and *host
  * is what's inside them.  A host outside brackets can't contain a colon, so a
  * bare IPv6 address, or anything after the port, is refused rather than split
@@ -189,7 +190,7 @@ int tcp_parse_host_port(const char *s, const char *who, char **host,
         goto invalid;
     }
 
-    *host = g_strndup(start, (gsize)(end - start));
+    *host = ernic_xstrndup(start, (size_t)(end - start));
     return 0;
 
 invalid:
@@ -313,14 +314,14 @@ static void tcp_priv_free(TcpBackendPrivate *priv)
     tcp_connection_unref(atomic_load(&priv->manager_conn));
     qemu_cond_destroy(&priv->registration_cond);
     qemu_mutex_destroy(&priv->registration_mutex);
-    g_free(priv->manager_host);
+    free(priv->manager_host);
     qemu_cond_destroy(&priv->ionic_recv_idle);
     qemu_mutex_destroy(&priv->lock);
     qemu_mutex_destroy(&priv->conn_table_lock);
     qemu_mutex_destroy(&priv->gid_table_lock);
     qemu_mutex_destroy(&priv->gid_advertise_lock);
     tcp_broadcaster_destroy(priv);
-    g_free(priv);
+    free(priv);
 }
 
 /*
@@ -353,7 +354,7 @@ int tcp_init_with_interval(RdmaBackendDev *backend_dev, const char *config,
 
     rdma_info_report("TCP backend: Initializing");
 
-    priv = g_new0(TcpBackendPrivate, 1);
+    priv = ernic_xcalloc(1, sizeof(*priv));
 
     /*
      * No other thread can reach priv until the first is started, below, so
@@ -364,7 +365,7 @@ int tcp_init_with_interval(RdmaBackendDev *backend_dev, const char *config,
         g_direct_hash, g_direct_equal, NULL, tcp_connection_destroy_notify);
     priv->pending_conns = g_ptr_array_new();
     priv->node_gids =
-        g_hash_table_new_full(g_direct_hash, g_direct_equal, NULL, g_free);
+        g_hash_table_new_full(g_direct_hash, g_direct_equal, NULL, free);
     priv->gid_owner = g_hash_table_new_full(g_bytes_hash, g_bytes_equal,
                                             tcp_gid_key_free, NULL);
 
@@ -460,7 +461,7 @@ int tcp_init_with_interval(RdmaBackendDev *backend_dev, const char *config,
         MeshNodeInfo *manager_node = tcp_mesh_node_info_new(
             0, listen_mode ? "localhost" : manager_host, manager_port);
         if (!manager_node) {
-            g_free(manager_host);
+            free(manager_host);
             goto error;
         }
         g_hash_table_insert(mesh_nodes, GUINT_TO_POINTER(0), manager_node);
@@ -471,7 +472,7 @@ int tcp_init_with_interval(RdmaBackendDev *backend_dev, const char *config,
         priv->listen_port = manager_port;
         priv->listen_fd = tcp_listen_on_port(&priv->listen_port);
         if (priv->listen_fd < 0) {
-            g_free(manager_host);
+            free(manager_host);
             goto error;
         }
 
@@ -485,11 +486,11 @@ int tcp_init_with_interval(RdmaBackendDev *backend_dev, const char *config,
             !tcp_start_thread(&priv->broadcast_thread, "tcp-broadcast",
                               tcp_broadcast_thread, priv,
                               &priv->broadcast_running)) {
-            g_free(manager_host);
+            free(manager_host);
             goto error;
         }
 
-        g_free(manager_host);
+        free(manager_host);
         rdma_info_report("TCP backend: Manager initialized");
 
     } else {
@@ -883,7 +884,7 @@ static int tcp_get_backend_gid_index(RdmaBackendDev *backend_dev, int sgid_idx)
 static int tcp_create_srq(RdmaBackendSRQ *srq, RdmaBackendPD *pd,
                           uint32_t max_wr, uint32_t max_sge, uint32_t srq_limit)
 {
-    TcpSRQ *tsrq = g_new0(TcpSRQ, 1);
+    TcpSRQ *tsrq = ernic_xcalloc(1, sizeof(*tsrq));
 
     (void)pd;
 
@@ -909,7 +910,7 @@ static void tcp_destroy_srq(RdmaBackendSRQ *srq)
 
     qemu_mutex_destroy(&tsrq->lock);
 
-    g_free(tsrq);
+    free(tsrq);
     srq->priv = NULL;
     rdma_info_report("TCP: Destroyed SRQ");
 }

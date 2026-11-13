@@ -33,11 +33,13 @@
 #include <inttypes.h>
 #include <stdbool.h>
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 
 #include <glib.h>
 #include <infiniband/verbs.h>
 
+#include "ernic_alloc.h"
 #include "pvrdma/rdma_backend_defs.h"
 #include "qemu/error-report.h"
 #include "qemu/thread.h"
@@ -138,7 +140,7 @@ static uint32_t loopback_new_mr(LoopbackDev *d)
 /* A TCP backend with only what its QP operations use */
 static TcpBackendPrivate *tcp_priv_new(void)
 {
-    TcpBackendPrivate *priv = g_new0(TcpBackendPrivate, 1);
+    TcpBackendPrivate *priv = ernic_xcalloc(1, sizeof(*priv));
 
     qemu_mutex_init(&priv->lock);
     qemu_mutex_lock(&priv->lock);
@@ -154,7 +156,7 @@ static void tcp_priv_free_qps(TcpBackendPrivate *priv)
     g_hash_table_destroy(priv->qpns);
     qemu_mutex_unlock(&priv->lock);
     qemu_mutex_destroy(&priv->lock);
-    g_free(priv);
+    free(priv);
 }
 
 static void tcp_set_next_qpn(TcpBackendPrivate *priv, uint32_t qpn)
