@@ -995,8 +995,10 @@ request a peer sent before the reset that is still on its way
 can arrive after it; nothing in it says it was for a QP or
 memory region from before the reset.</p>
 <p>The <code class="docutils literal notranslate"><span class="pre">RESET</span></code> device command resets the device in the same way,
-but leaves the config space and the P4 program alone (see
-<a class="reference internal" href="#device-commands-over-bar-0">Device Commands over BAR 0</a>).</p>
+but leaves the config space, the server’s copy of the MSI-X
+table and PBA, and the P4 program alone (see <a class="reference internal" href="#device-commands-over-bar-0">Device Commands
+over BAR 0</a>). It does still mask every vector in the ionic
+interrupt controller.</p>
 </section>
 </section>
 <section id="bringing-the-device-up">
@@ -1062,7 +1064,8 @@ writing into the LIF block</p></td>
 </tr>
 <tr class="row-even"><td><p>RESET</p></td>
 <td><p>Resets the whole device as a function-level reset does,
-but for the PCI function’s registers and the P4 engine:
+but for the PCI function’s registers (config space, and
+the MSI-X table and PBA) and the P4 engine:
 every queue and RDMA resource goes, nothing more is
 written into the blocks, every counter restarts at
 zero, and the CMB is zeroed. The driver sends it before

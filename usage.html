@@ -497,8 +497,8 @@ front, owned by the user running the server:</p>
 data path, <code class="docutils literal notranslate"><span class="pre">--tap</span></code> the Ethernet one. See <a class="reference internal" href="ionic.html"><span class="doc">The ionic Device</span></a> for
 the full picture.</p>
 <p><code class="docutils literal notranslate"><span class="pre">--mac</span> <span class="pre">XX:XX:XX:XX:XX:XX</span></code> (short <code class="docutils literal notranslate"><span class="pre">-m</span></code>) sets the MAC
-address the device reports. Without it every server reports
-<code class="docutils literal notranslate"><span class="pre">72:6f:63:6d:2d:6e</span></code>, so give each server on a shared
+address the device reports. Without it every server’s guest
+sees <code class="docutils literal notranslate"><span class="pre">02:a0:d1:00:00:01</span></code>, so give each server on a shared
 segment its own, as the service does (see <a class="reference internal" href="service.html"><span class="doc">systemd Service and ernicctl</span></a>).
 The guest can change it, as on any NIC, until the next
 reset.</p>

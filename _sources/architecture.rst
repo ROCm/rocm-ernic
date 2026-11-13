@@ -559,8 +559,10 @@ can arrive after it; nothing in it says it was for a QP or
 memory region from before the reset.
 
 The ``RESET`` device command resets the device in the same way,
-but leaves the config space and the P4 program alone (see
-`Device Commands over BAR 0`_).
+but leaves the config space, the server's copy of the MSI-X
+table and PBA, and the P4 program alone (see `Device Commands
+over BAR 0`_). It does still mask every vector in the ionic
+interrupt controller.
 
 Bringing the Device Up
 ----------------------
@@ -618,7 +620,8 @@ the data window, and sets ``done``.
        writing into the LIF block
    * - RESET
      - Resets the whole device as a function-level reset does,
-       but for the PCI function's registers and the P4 engine:
+       but for the PCI function's registers (config space, and
+       the MSI-X table and PBA) and the P4 engine:
        every queue and RDMA resource goes, nothing more is
        written into the blocks, every counter restarts at
        zero, and the CMB is zeroed. The driver sends it before

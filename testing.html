@@ -1077,25 +1077,26 @@ RDMA-Tutorial and runs each between the two VMs; see
 </section>
 <section id="running-individual-plays">
 <h3>Running individual plays<a class="headerlink" href="#running-individual-plays" title="Link to this heading">#</a></h3>
-<p>Each play can also be run separately:</p>
+<p>Each play can also be run separately. <code class="docutils literal notranslate"><span class="pre">guest-setup</span></code>,
+<code class="docutils literal notranslate"><span class="pre">nvmeof-tests</span></code>, <code class="docutils literal notranslate"><span class="pre">nvmeof-kv-tests</span></code> and <code class="docutils literal notranslate"><span class="pre">s3-tests</span></code> run on
+the <code class="docutils literal notranslate"><span class="pre">ernic_vms</span></code> group, which only <code class="docutils literal notranslate"><span class="pre">vm-register</span></code> fills, and
+only for the rest of the <code class="docutils literal notranslate"><span class="pre">ansible-playbook</span></code> run that called
+it, so those run behind it in the same command; on their own
+they find no hosts and do nothing:</p>
 <div class="highlight-bash notranslate"><div class="highlight"><pre><span></span>ansible-playbook<span class="w"> </span>playbooks/host-setup.yml
-ansible-playbook<span class="w"> </span>playbooks/vm-register.yml
-ansible-playbook<span class="w"> </span>playbooks/guest-setup.yml
+ansible-playbook<span class="w"> </span>playbooks/vm-register.yml<span class="w"> </span>playbooks/guest-setup.yml
 ansible-playbook<span class="w"> </span>playbooks/sanity-tests.yml
 ansible-playbook<span class="w"> </span>playbooks/tutorial-tests.yml
-ansible-playbook<span class="w"> </span>playbooks/nvmeof-tests.yml
-ansible-playbook<span class="w"> </span>playbooks/nvmeof-kv-tests.yml
-ansible-playbook<span class="w"> </span>playbooks/s3-tests.yml
+ansible-playbook<span class="w"> </span>playbooks/vm-register.yml<span class="w"> </span>playbooks/nvmeof-tests.yml
+ansible-playbook<span class="w"> </span>playbooks/vm-register.yml<span class="w"> </span><span class="se">\</span>
+<span class="w">  </span>playbooks/nvmeof-kv-tests.yml
+ansible-playbook<span class="w"> </span>playbooks/vm-register.yml<span class="w"> </span>playbooks/s3-tests.yml
 ansible-playbook<span class="w"> </span>playbooks/tcp-performance-tests.yml
 ansible-playbook<span class="w"> </span>playbooks/performance-tests.yml
 </pre></div>
 </div>
-<p><code class="docutils literal notranslate"><span class="pre">guest-setup</span></code>, <code class="docutils literal notranslate"><span class="pre">nvmeof-tests</span></code>, <code class="docutils literal notranslate"><span class="pre">nvmeof-kv-tests</span></code> and
-<code class="docutils literal notranslate"><span class="pre">s3-tests</span></code> run on the <code class="docutils literal notranslate"><span class="pre">ernic_vms</span></code> group, which only
-<code class="docutils literal notranslate"><span class="pre">vm-register</span></code> fills, so run alone they find no hosts and do
-nothing. Run them through <code class="docutils literal notranslate"><span class="pre">ci-site.yml</span></code>, which runs
-<code class="docutils literal notranslate"><span class="pre">vm-register</span></code> first, selected by tag, as <a class="reference internal" href="nvmeof.html"><span class="doc">NVMe-oF Controller</span></a>
-shows (<code class="docutils literal notranslate"><span class="pre">site.yml</span></code> runs <code class="docutils literal notranslate"><span class="pre">guest-setup</span></code> the same way).</p>
+<p><code class="docutils literal notranslate"><span class="pre">ci-site.yml</span></code> runs them the same way, behind <code class="docutils literal notranslate"><span class="pre">vm-register</span></code>,
+selected by tag, as <a class="reference internal" href="nvmeof.html"><span class="doc">NVMe-oF Controller</span></a> shows.</p>
 </section>
 <section id="variable-overrides">
 <h3>Variable overrides<a class="headerlink" href="#variable-overrides" title="Link to this heading">#</a></h3>
