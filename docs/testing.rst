@@ -38,7 +38,8 @@ Comprehensive RDMA data transfer test using libibverbs:
   (64 to 4096 bytes)
 
 Requires an RDMA device (via the guest ``ionic_rdma`` driver
-or real hardware). Skipped if no device is found.
+or real hardware). Exits 77, skipped, if it finds no device,
+or if creating a QP on the one it found fails.
 
 find-rdma-device-tuple
 ^^^^^^^^^^^^^^^^^^^^^^^

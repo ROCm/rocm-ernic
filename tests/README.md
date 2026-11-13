@@ -47,11 +47,16 @@ generation.
 
 **Exit Codes:**
 - 0: All tests passed
-- 1: Test failure, or the device it was told to use is missing
-- 77: Skipped, because no RDMA device was found
+- 1: Test failure, or the device `RDMA_DEVICE` names is missing
+- 77: Skipped, because no RDMA device was found or `ibv_create_qp()`
+  failed on the one that was, so a skip doesn't always mean there's no
+  device
 
 **Note:** This test needs an RDMA device, so it isn't registered with
-CTest. CI runs it under `tests/test_loopback_ci.sh`, and in guests.
+CTest. The Build and Test workflow builds it, but
+`tests/test_loopback_ci.sh` doesn't run it: that script checks only
+that the server starts. It runs in the guests of the system tests'
+VM lanes, which set `RDMA_DEVICE` and fail it if it exits 77.
 
 ### test_ionic_ci.sh
 

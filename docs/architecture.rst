@@ -543,14 +543,15 @@ hasn't applied yet. It disconnects the NVMe-oF controller's and
 the S3 store's connections, restores the P4 program the server
 was started with, clears the Ethernet side and the CMB, and
 zeroes the Ethernet LIF and port counters and the data path's
-RDMA error counters. The server's own device and per-QP
-counters carry on, and count a device reset or FLR in
-``reset_count``. Every interrupt vector is masked again, and
-the config-space registers a driver writes go back to what
-they were before any driver ran, but for the link settings an
-FLR keeps. A device left running would go on writing into
-memory the guest has reused for something else, or that the
-next client maps at the same addresses. A reset does no DMA.
+RDMA error counters. The server's own device-wide counters
+carry on, and count a device reset or FLR in ``reset_count``,
+but each QP's counters go with the QP. Every interrupt vector
+is masked again, and the config-space registers a driver writes
+go back to what they were before any driver ran, but for the
+link settings an FLR keeps. A device left running would go on
+writing into memory the guest has reused for something else, or
+that the next client maps at the same addresses. A reset does
+no DMA.
 
 The mesh connections stay up, and the node keeps its id. A
 request a peer sent before the reset that is still on its way

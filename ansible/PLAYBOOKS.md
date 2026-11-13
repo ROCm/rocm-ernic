@@ -136,10 +136,19 @@ ansible-playbook playbooks/tcp-performance-tests.yml
 # Full performance sweep (BW + latency + reliability)
 ansible-playbook playbooks/performance-tests.yml
 
-# Compile checks for the SRQ-patched ionic modules and the P4
-# control driver, against the running kernel on this host
-ansible-playbook playbooks/srq-dkms-build.yml
-ansible-playbook playbooks/p4-dkms-build.yml
+# Compile check for the SRQ-patched ionic modules, against the
+# running kernel on this host.  Without ernic_srq_build_provider
+# set false, the play also builds rdma-core's SRQ provider and
+# installs it under /usr/local, which changes the RDMA libraries
+# everything on the host loads.
+ansible-playbook playbooks/srq-dkms-build.yml \
+  -e ernic_srq_build_provider=false
+
+# The P4 control driver.  Not just a compile check: this builds
+# ernic_p4.ko with DKMS and installs it for the running kernel,
+# and without ernic_p4_dkms_load set false, loads it too.
+ansible-playbook playbooks/p4-dkms-build.yml \
+  -e ernic_p4_dkms_repo_dir="$PWD/.." -e ernic_p4_dkms_load=false
 ```
 
 `ci-site.yml` runs the guest plays the same way, behind
@@ -238,8 +247,8 @@ ansible/                  # this directory is the collection
     ├── p4-tests.yml           # P4 control driver, CI lane
     ├── tcp-performance-tests.yml  # iperf3 sweeps
     ├── performance-tests.yml  # Full BW/lat sweeps
-    ├── srq-dkms-build.yml     # SRQ module compile gate
-    ├── p4-dkms-build.yml      # ernic_p4.ko compile gate
+    ├── srq-dkms-build.yml     # SRQ modules (compile gate) + provider
+    ├── p4-dkms-build.yml      # Build, install, load ernic_p4.ko
     ├── files/                 # Helper scripts, RDMA-Tutorial patches
     └── tasks/                 # Shared task files
 ```
