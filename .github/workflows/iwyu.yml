@@ -72,7 +72,7 @@ jobs:
       #
       # iwyu brings in LLVM, about 100 MB, which the action caches.
       - name: Install system dependencies
-        uses: ./.github/actions/apt-install
+        uses: $/.github/actions/apt-install
         with:
           packages: >-
             iwyu
