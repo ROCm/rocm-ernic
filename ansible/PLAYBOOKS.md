@@ -31,7 +31,8 @@ wrappers around the roles; the test playbooks are repo-local.
 - Ansible core 2.18+ — Ubuntu 24.04's `ansible` package ships 2.16,
   which is too old for `community.general` 13; use `pipx install
   ansible-core` or the Ansible PPA
-- QEMU 10.1+ installed (default `/opt/qemu-v10.1.2/`)
+- QEMU 10.1+ installed (default `/opt/qemu/`; set `ernic_qemu_path`
+  for another)
 - `cloud-image-utils` and `openssh-client`, which `ernicctl
   vm-launch` uses to give each guest boot its own SSH key
 

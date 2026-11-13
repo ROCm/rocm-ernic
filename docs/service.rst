@@ -229,7 +229,7 @@ VM and QEMU settings
      - Default
      - Description
    * - ``ERNIC_QEMU_PATH``
-     - ``/opt/qemu-v10.1.2/bin/``
+     - ``/opt/qemu/bin/``
      - Directory containing ``qemu-system-x86_64`` and
        ``qemu-img``.  Empty means search ``PATH``.
    * - ``ERNIC_VM_IMAGE_DIR``
@@ -237,7 +237,7 @@ VM and QEMU settings
      - Directory with qcow2 VM images, written out in full:
        ``ernicctl`` doesn't expand ``$VARS`` in the env file
    * - ``ERNIC_VM_NAME``
-     - ``stebates-test-vm``
+     - ``rocm-ernic-vm``
      - Base VM name: instance N's VM is
        ``ERNIC_VM_NAME-N``, its hostname, and
        ``ERNIC_VM_NAME-N.qcow2`` its disk
@@ -585,7 +585,7 @@ Example:
            "ssh_identity": "/run/rocm-ernic/vm-1/id_ed25519",
            "attached": true,
            "vm_pid": 67890,
-           "vm_name": "stebates-test-vm-1"
+           "vm_name": "rocm-ernic-vm-1"
          }
        }
      ]

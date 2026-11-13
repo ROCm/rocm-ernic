@@ -72,7 +72,8 @@ ernic_guest_build_deps: true
 ernic_guest_ionic_fetch_on_controller: true
 
 # ── QEMU / VM defaults ──────────────────────────
-ernic_qemu_path: /opt/qemu-10.2.2-pci-mmio-bridge-submit/bin/
+# Where the CI builder image installs QEMU.  Empty means PATH.
+ernic_qemu_path: /opt/qemu/bin/
 ernic_vm_image_dir: /opt/qemu-images
 ernic_vm_name_base: rocm-ernic-ionic-vm
 ernic_vm_vcpus: 16
@@ -290,10 +291,13 @@ ernic_rdma_tutorial_port: 18600
 # vfio-pci binding in ernic_host_setup is what this gates.
 # Requires IOMMU enabled and GPUs unbound from amdgpu on the host.
 ernic_gpu_passthrough: false
-ernic_pci_mmio_bridge: true
-ernic_gpu_pci_devices:
-  1: "0000:4a:00.0"
-  2: "0000:0f:00.0"
+# Builds the guest's rocm-xio kernel module, which needs the
+# pci-mmio-bridge device that only a QEMU fork has.
+ernic_pci_mmio_bridge: false
+# The host's GPUs to pass through, by VM index; none by default.
+# ernic_gpu_pci_devices:
+#   1: "0000:41:00.0"
+#   2: "0000:c1:00.0"
 
 # ── rocm-xio ───────────────────────────────────
 ernic_rocm_xio_repo: "git@github.com:ROCm/rocm-xio.git"
