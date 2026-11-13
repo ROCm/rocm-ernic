@@ -710,7 +710,7 @@ To assign explicit MACs, set <code class="docutils literal notranslate"><span cl
 </thead>
 <tbody>
 <tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">ERNIC_QEMU_PATH</span></code></p></td>
-<td><p><code class="docutils literal notranslate"><span class="pre">/opt/qemu-v10.1.2/bin/</span></code></p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">/opt/qemu/bin/</span></code></p></td>
 <td><p>Directory containing <code class="docutils literal notranslate"><span class="pre">qemu-system-x86_64</span></code> and
 <code class="docutils literal notranslate"><span class="pre">qemu-img</span></code>.  Empty means search <code class="docutils literal notranslate"><span class="pre">PATH</span></code>.</p></td>
 </tr>
@@ -720,7 +720,7 @@ To assign explicit MACs, set <code class="docutils literal notranslate"><span cl
 <code class="docutils literal notranslate"><span class="pre">ernicctl</span></code> doesn’t expand <code class="docutils literal notranslate"><span class="pre">$VARS</span></code> in the env file</p></td>
 </tr>
 <tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">ERNIC_VM_NAME</span></code></p></td>
-<td><p><code class="docutils literal notranslate"><span class="pre">stebates-test-vm</span></code></p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">rocm-ernic-vm</span></code></p></td>
 <td><p>Base VM name: instance N’s VM is
 <code class="docutils literal notranslate"><span class="pre">ERNIC_VM_NAME-N</span></code>, its hostname, and
 <code class="docutils literal notranslate"><span class="pre">ERNIC_VM_NAME-N.qcow2</span></code> its disk</p></td>
@@ -1060,7 +1060,7 @@ and the launcher.</p>
 <span class="w">        </span><span class="nt">"ssh_identity"</span><span class="p">:</span><span class="w"> </span><span class="s2">"/run/rocm-ernic/vm-1/id_ed25519"</span><span class="p">,</span>
 <span class="w">        </span><span class="nt">"attached"</span><span class="p">:</span><span class="w"> </span><span class="kc">true</span><span class="p">,</span>
 <span class="w">        </span><span class="nt">"vm_pid"</span><span class="p">:</span><span class="w"> </span><span class="mi">67890</span><span class="p">,</span>
-<span class="w">        </span><span class="nt">"vm_name"</span><span class="p">:</span><span class="w"> </span><span class="s2">"stebates-test-vm-1"</span>
+<span class="w">        </span><span class="nt">"vm_name"</span><span class="p">:</span><span class="w"> </span><span class="s2">"rocm-ernic-vm-1"</span>
 <span class="w">      </span><span class="p">}</span>
 <span class="w">    </span><span class="p">}</span>
 <span class="w">  </span><span class="p">]</span>
