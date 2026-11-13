@@ -2402,6 +2402,10 @@ static int run_connect_case(const struct connect_case *c)
     double took = 0.0;
     bool ok = false;
 
+    /*
+     * Open the row's targets and note their ports.  A setup failure leaves
+     * a port 0, which skips the connect below and fails the row.
+     */
     switch (c->target) {
     case CT_LISTENING:
     case CT_CLOSED:
@@ -2427,6 +2431,7 @@ static int run_connect_case(const struct connect_case *c)
         }
         break;
     case CT_UNANSWERING_FIRST:
+        /* The first doesn't answer; the second listens */
         lfd[0] = listen_unanswering(&port[0], &filler[0]);
         lfd[1] = listen_loopback();
         if (lfd[1] >= 0 &&
@@ -2452,6 +2457,13 @@ static int run_connect_case(const struct connect_case *c)
         ai[i].ai_next = i + 1 < addrs ? &ai[i + 1] : NULL;
     }
 
+    /*
+     * Connect, timing the call, and check its result: an fd if the row
+     * wants one, non-blocking and close-on-exec, within the row's time.
+     * One address goes through tcp_connect_to_remote(), two through
+     * tcp_connect_any(), which shares the deadline between them.  The
+     * alarm catches a call that never returns.
+     */
     g_current_row = c->description;
     alarm(row_timeout_s());
     if (port[0] != 0 && (addrs == 1 || port[1] != 0)) {
@@ -2480,6 +2492,7 @@ static int run_connect_case(const struct connect_case *c)
                took);
     }
 
+    /* Close everything the row opened, whether or not it passed */
     if (fd >= 0) {
         close(fd);
     }
@@ -4111,6 +4124,11 @@ static const char *wr_run(const struct wr_case *c, struct wr_init *in, int lfd,
     int low = -1;
     int high = -1;
 
+    /*
+     * The receive thread for the manager's connection can't start, so the
+     * worker closes the connection before registering, and tcp_init()
+     * must fail at once rather than wait out its timeout for an answer.
+     */
     if (c->scenario == WR_NO_RECV) {
         *mgr = accept_within(lfd);
         if (*mgr < 0) {
@@ -4125,6 +4143,8 @@ static const char *wr_run(const struct wr_case *c, struct wr_init *in, int lfd,
         }
         return in->took < 2.0 ? NULL : "tcp_init() waited for the timeout";
     }
+
+    /* Every other row registers, then the switch plays its answer */
     why = wr_registered(lfd, mgr, &port);
     if (why) {
         return why;
@@ -4134,6 +4154,8 @@ static const char *wr_run(const struct wr_case *c, struct wr_init *in, int lfd,
     case WR_ASSIGNED:
     case WR_TWICE:
     case WR_FROM_PEER:
+        /* Rows in which tcp_init() succeeds: check the worker it set up,
+         * then that a later answer can't change its id */
         if (!wr_assign(*mgr, WR_ID)) {
             return "could not answer the registration";
         }
@@ -4146,6 +4168,8 @@ static const char *wr_run(const struct wr_case *c, struct wr_init *in, int lfd,
             why = wr_from_peer(in, *mgr, port, peer);
         }
         return why;
+    /* Answers the worker must reject: a refusal, an old or short message,
+     * or an id it can't take (0 is the manager's, UINT32_MAX none) */
     case WR_REFUSED:
         if (!send_register_resp(*mgr, 0, -EPROTO, TCP_REGISTER_RESP_LEN)) {
             return "could not answer the registration";
@@ -4178,6 +4202,7 @@ static const char *wr_run(const struct wr_case *c, struct wr_init *in, int lfd,
         break;
     case WR_NO_ACCEPT:
     case WR_NO_PEERS:
+        /* A valid answer, but a thread it needs afterwards can't start */
         if (!wr_assign(*mgr, WR_ID)) {
             return "could not answer the registration";
         }
@@ -4185,6 +4210,8 @@ static const char *wr_run(const struct wr_case *c, struct wr_init *in, int lfd,
     case WR_EARLY_PEER:
         return wr_early_peer(in, *mgr, port, peer);
     case WR_EARLY_TOPOLOGY:
+        /* Listeners for the lower and higher peers the early update names;
+         * the worker must connect to neither until a later update */
         low = listen_loopback();
         high = listen_loopback();
         why = low < 0 || high < 0
