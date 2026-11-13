@@ -15,6 +15,7 @@
 
 #include "rdma/rdma_backend_ops.h"
 #include "ernic_limits.h"
+#include "ernic_map.h"
 #include "pvrdma/rdma_backend_defs.h"
 #include "pvrdma/rdma_utils.h"
 #include "qemu/thread.h"
@@ -56,7 +57,7 @@ typedef struct {
     QemuMutex lock;
 
     /* Resource tracking */
-    GHashTable *qps TSA_GUARDED_BY(lock); /* qpn -> LoopbackQP, the live QPs */
+    ErnicU32Map qps TSA_GUARDED_BY(lock); /* qpn -> LoopbackQP, the live QPs */
 
     /* Handle generators */
     uint32_t next_pd_handle TSA_GUARDED_BY(lock);
@@ -106,8 +107,7 @@ static int loopback_init(RdmaBackendDev *backend_dev, const char *config)
 
     /* Nothing else can reach priv until it is published below */
     ROCM_ERNIC_WARN_THREAD_SAFETY_OFF
-    priv->qps =
-        g_hash_table_new_full(g_direct_hash, g_direct_equal, NULL, g_free);
+    ernic_u32_map_init(&priv->qps, g_free);
 
     priv->next_pd_handle = 1;
     priv->next_mr_handle = 1;
@@ -133,7 +133,7 @@ static void loopback_fini(RdmaBackendDev *backend_dev)
 
     /* The device is done with the backend, which has no threads */
     ROCM_ERNIC_WARN_THREAD_SAFETY_OFF
-    g_hash_table_destroy(priv->qps);
+    ernic_u32_map_destroy(&priv->qps);
     ROCM_ERNIC_WARN_THREAD_SAFETY_ON
 
     qemu_mutex_destroy(&priv->lock);
@@ -297,8 +297,8 @@ static int loopback_create_qp(RdmaBackendQP *qp, uint8_t qp_type,
     do {
         lqp->qpn = priv->next_qpn++;
     } while (lqp->qpn < LOOPBACK_FIRST_QPN ||
-             g_hash_table_contains(priv->qps, GUINT_TO_POINTER(lqp->qpn)));
-    g_hash_table_insert(priv->qps, GUINT_TO_POINTER(lqp->qpn), lqp);
+             ernic_u32_map_contains(&priv->qps, lqp->qpn));
+    ernic_u32_map_insert(&priv->qps, lqp->qpn, lqp);
     qemu_mutex_unlock(&priv->lock);
 
     qp->backend_dev = scq->backend_dev; /* For destroy and auto-pairing */
@@ -327,9 +327,9 @@ static void loopback_destroy_qp(RdmaBackendQP *qp, RdmaDeviceResources *dev_res)
     priv = get_private(qp->backend_dev);
     qp->priv = NULL;
     if (priv) {
-        /* The table's value destructor frees lqp. */
+        /* The map's value destructor frees lqp. */
         qemu_mutex_lock(&priv->lock);
-        g_hash_table_remove(priv->qps, GUINT_TO_POINTER(qpn));
+        ernic_u32_map_remove(&priv->qps, qpn);
         qemu_mutex_unlock(&priv->lock);
     }
     rdma_info_report("Loopback: Destroyed QP %u", qpn);
@@ -399,9 +399,8 @@ static int loopback_qp_state_rtr(RdmaBackendDev *backend_dev, RdmaBackendQP *qp,
  */
 static void loopback_auto_pair_qp(LoopbackBackendPrivate *priv, LoopbackQP *lqp)
 {
-    GHashTableIter iter;
-    gpointer key;
-    gpointer value;
+    ErnicU32MapIter iter;
+    void *value;
     LoopbackQP *other_qp;
     uint32_t other_qpn;
 
@@ -435,9 +434,8 @@ static void loopback_auto_pair_qp(LoopbackBackendPrivate *priv, LoopbackQP *lqp)
     uint32_t best_qpn = 0;
     uint32_t best_distance = UINT32_MAX;
 
-    g_hash_table_iter_init(&iter, priv->qps);
-    while (g_hash_table_iter_next(&iter, &key, &value)) {
-        other_qpn = GPOINTER_TO_UINT(key);
+    ernic_u32_map_iter_init(&iter, &priv->qps);
+    while (ernic_u32_map_iter_next(&iter, &other_qpn, &value)) {
         other_qp = (LoopbackQP *)value;
 
         /* Skip self */

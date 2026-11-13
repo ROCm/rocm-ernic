@@ -17,6 +17,7 @@ on:
       # The server includes shared/rocm-ernic-warnings.h, so a change
       # there changes the server these lanes build and run
       - 'shared/**'
+      - 'third-party/**'          # uthash, compiled into the server
       - 'tests/**'                # rdma_verify, test_write_imm, ...
       - 'CMakeLists.txt'
       - 'cmake/**'

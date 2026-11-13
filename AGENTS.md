@@ -117,7 +117,8 @@ workflow for their environment).
 
 - **C11 for 64-bit Linux**, with no GNU extensions unless you have
   permission. Atomics (`<stdatomic.h>`) and threads (`qemu/thread.h`)
-  are available.
+  are available. The one exception is uthash's `__typeof`, inside
+  `src/ernic_map.c` (see [Third-party code](#third-party-code)).
 - **No bare `__attribute__`.** Use C11's forms (`_Alignas`, `_Noreturn`,
   `_Static_assert`), or a macro from
   [`src/ernic_attributes.h`](src/ernic_attributes.h), which expand to
@@ -533,6 +534,27 @@ rewritten. Upstream deleted it, so it's ours to modify, built and checked
 like the rest of `src/`. Keep each file's original copyright lines.
 History: [src/pvrdma/README.md](src/pvrdma/README.md).
 
+## Third-party code
+
+`third-party/` holds other projects' code, copied unchanged. Each
+directory's README gives the version and where it came from, and its
+license is listed in `LICENSE.md` and installed with the server
+(`cmake/ErnicInstall.cmake`, checked by `tests/package/`).
+
+- **Don't edit or reformat it**, or hold it to this file's rules.
+  Update it by replacing it with a newer release, as its README says.
+  `third-party/.clang-format` turns formatting off.
+- **uthash** (`third-party/uthash/uthash.h`): only `src/ernic_map.c`
+  includes it, as a `SYSTEM` include set on that one file in
+  `CMakeLists.txt` and `tests/CMakeLists.txt`, so no other file can.
+  Everything else uses the typed maps in `src/ernic_map.h`. Its macros
+  use `__typeof`, which is allowed there and nowhere else.
+- `SYSTEM` hides clang-tidy's findings in uthash's own lines, but not
+  the analyzer's in how our code uses its macros. Emptying a table by
+  deleting from its head is reported as a use after free, because the
+  analyzer can't tell the head has no predecessor;
+  `ernic_u32_map_destroy()` frees the table first instead.
+
 ## Copyright lines
 
 AMD copyright lines carry no year; don't add or "update" one. By
@@ -548,6 +570,7 @@ license:
   rights reserved"), then the QEMU GPL boilerplate.
 
 Leave third-party copyright lines exactly as they are, years included.
+The READMEs in `third-party/` are ours, and MIT, with no notice.
 Patches under `ansible/files/patches/` take the licenses of the Linux
 ionic and rdma-core files they modify (see `LICENSE.md`); don't add a
 notice to them.

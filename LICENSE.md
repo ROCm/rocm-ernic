@@ -43,6 +43,16 @@ The emulator itself is `GPL-2.0-or-later` (see `LICENSE_GPL.md`):
   `src/pvrdma/vmw_pvrdma-abi.h` is instead dual `GPL-2.0` / `BSD-2-Clause`,
   as stated in its header comment.
 
+`third-party/` holds code from other projects, each under its own license,
+which is in its directory, along with a README giving its version and
+source:
+
+* `third-party/uthash/uthash.h` is uthash 2.4.0
+  (`https://github.com/troydhanson/uthash`), which is `BSD-1-Clause`
+  (`third-party/uthash/LICENSE`). It is compiled into the emulator.
+
+The READMEs and the `.clang-format` in `third-party/` are ours, and MIT.
+
 The patches under `ansible/files/patches/` modify code from other projects
 and are licensed under the terms of the files they modify:
 
@@ -70,7 +80,8 @@ builds. The
 `GPL-2.0` tag inside the script belongs to that generated file.
 
 The groupings above are a summary; the per-file notice is authoritative.
-Every `.c` and `.h` file carries an `SPDX-License-Identifier` tag. Some
+Every `.c` and `.h` file outside `third-party/` carries an
+`SPDX-License-Identifier` tag. Some
 other files -- build fragments, dotfiles, documentation, data -- carry no
 notice at all and take the license of the directory they sit in. The
 patches under `ansible/files/patches/` carry no notice of their own; the

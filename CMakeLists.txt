@@ -153,14 +153,24 @@ endif()
 
 # The server's log, which the rest of the sources print through, and its
 # statistics, which the device counts into; SipHash, for values a guest
-# must not predict; and the GNU extensions, which only ernic_gnu.c may
-# call (see ernic_gnu.h)
+# must not predict; the hash maps; and the GNU extensions, which only
+# ernic_gnu.c may call (see ernic_gnu.h)
 set(COMMON_SOURCES
     src/ernic_gnu.c
     src/ernic_log.c
+    src/ernic_map.c
     src/ernic_siphash.c
     src/ernic_stats.c
 )
+
+# uthash (third-party/uthash/), which only ernic_map.c may include. It is a
+# SYSTEM include, so its warnings stay quiet, and it is set on that one
+# file rather than on a target, so no other file can include it.
+# tests/CMakeLists.txt sets it for the test programs too.
+set(ERNIC_UTHASH_COMPILE_OPTIONS
+    "-isystem${PROJECT_SOURCE_DIR}/third-party/uthash")
+set_source_files_properties(src/ernic_map.c PROPERTIES
+    COMPILE_OPTIONS "${ERNIC_UTHASH_COMPILE_OPTIONS}")
 
 # rocm-ernic's fork of QEMU's PVRDMA resource manager and backend device,
 # under Oracle / Red Hat copyright (see src/pvrdma/README.md)
