@@ -501,17 +501,14 @@ queue type, the page index the process ID</p></td>
 <td><p>8 MB</p></td>
 <td><p>Controller Memory Buffer (CMB), only with <code class="docutils literal notranslate"><span class="pre">--cmb</span></code>:
 without it there is no BAR 4, the driver finds no CMB,
-and every queue is in guest memory.  <code class="docutils literal notranslate"><span class="pre">DISCOVER_CMB</span></code> (opcode 80)
-returns two regions here: <code class="docutils literal notranslate"><span class="pre">DEVMEM</span></code> (type 0) and <code class="docutils literal notranslate"><span class="pre">EXPDB512</span></code>
-(type 4), each 128 × 64 KiB pages.  <code class="docutils literal notranslate"><span class="pre">Q_IDENTIFY</span></code> for TXQ
-and RXQ sets <code class="docutils literal notranslate"><span class="pre">IONIC_QIDENT_F_EXPDB</span></code> so the driver may
-request express-doorbell QPs that write WQEs directly into
-this memory instead of ringing a separate doorbell.  The
-write that ends a WQE’s slot posts it, whatever its size,
-since QEMU delivers the guest’s stores at most 8 bytes at
-a time, so the guest must write each WQE front to back.
-While Bus Master Enable is clear, or the function is in
-D3hot, the WQE waits, as one posted by a doorbell does.</p></td>
+and every queue is in guest memory.  QEMU maps it into
+the guest, so the driver writes WQEs directly into it,
+then rings the queue’s doorbell.  <code class="docutils literal notranslate"><span class="pre">DISCOVER_CMB</span></code>
+(opcode 80) returns one region here, <code class="docutils literal notranslate"><span class="pre">DEVMEM</span></code> (type 0),
+128 × 64 KiB pages.  <code class="docutils literal notranslate"><span class="pre">Q_IDENTIFY</span></code> doesn’t set
+<code class="docutils literal notranslate"><span class="pre">IONIC_QIDENT_F_EXPDB</span></code>: the device offers no express
+doorbell, since it never sees the guest’s stores into
+the CMB.</p></td>
 </tr>
 </tbody>
 </table>
