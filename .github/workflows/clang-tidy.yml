@@ -81,7 +81,7 @@ jobs:
       # the configure step's -DERNIC_BUILD_P4=ON requires it, and that
       # step only runs on a cache miss.
       - name: Install system dependencies
-        uses: ./.github/actions/apt-install
+        uses: $/.github/actions/apt-install
         with:
           packages: >-
             libibverbs-dev
@@ -117,7 +117,7 @@ jobs:
       # no-install-recommends leaves out. The packages are about 75 MB
       # from the one host, which the action caches.
       - name: Install clang and clang-tidy
-        uses: ./.github/actions/apt-install
+        uses: $/.github/actions/apt-install
         with:
           packages: >-
             clang-${{ env.LLVM_VERSION }}
