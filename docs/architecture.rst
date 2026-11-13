@@ -206,8 +206,9 @@ the server:
 - **Interrupts.** ``vfu_irq_trigger()`` signals an eventfd that
   QEMU turns into an MSI-X interrupt in the guest. The device
   has no INTx (see :doc:`ionic`).
-- **Resets.** libvfio-user tells the server when the guest
-  resets the device or the client disconnects.
+- **Resets.** libvfio-user tells the server when QEMU resets
+  the device, when the guest starts a function-level reset,
+  and when the client disconnects (see `Resets`_).
 
 The libvfio-user context isn't thread-safe, so in rocm-ernic
 **only the main thread may touch guest memory or the
@@ -245,7 +246,8 @@ built-in profiles and ini files over the default, ``compat``,
 whose values this page gives. See :doc:`ionic` for the keys and
 the built-in profiles.
 
-The device has two BARs:
+The device has two BARs, or three with ``--cmb``. Each is
+64-bit, so it takes two of the six BAR slots:
 
 .. list-table::
    :header-rows: 1
@@ -261,6 +263,11 @@ The device has two BARs:
    * - BAR 2
      - 4 MiB
      - Doorbell pages, 4 KiB each
+   * - BAR 4
+     - 8 MiB
+     - Controller Memory Buffer (CMB), only with ``--cmb``: a
+       QP's rings may be put here instead of in guest memory
+       (see `Queues in the CMB`_)
 
 The BAR 0 register window is laid out exactly as the driver's
 ``ionic_dev_setup()`` expects:
@@ -288,7 +295,8 @@ distinguishes "new work" from "arm this CQ":
 
    bits 15:0   p_index   producer index (or CQ consumer index)
    bits 23:16  ring      0 = work, 1 = arm CQ,
-                         2 = arm CQ for solicited events
+                         2 = arm CQ for solicited events,
+                         3 = post to an SRQ
    bits 47:24  qid
 
 The kernel uses doorbell page 0; each user process gets its own
@@ -304,8 +312,12 @@ emulator implements both halves:
 - **Ethernet** queue types 0 to 3: the Ethernet admin queue,
   notify queue, receive queues, and transmit queues.
 - **RDMA** queue types 5 to 9: the RDMA admin queue (AQ), SQ,
-  RQ, CQ, and EQ. Shared receive queues ring the RQ doorbell
-  type with ids above the QP id range.
+  RQ, CQ, and EQ. A receive posted to a shared receive queue
+  rings either the RQ type, with the SRQ's id, which lies
+  above the QP id range, or the CQ type with ring 3. The
+  guest kernel uses the first; rdma-core's provider uses the
+  second as proposed upstream, and the first with the local
+  fix in ``ansible/files/patches/rdma-core/``.
 
 Inside the Server
 -----------------
@@ -324,7 +336,7 @@ Inside the Server
        │  ionic_eth_emu.c ─── BAR 0 registers, device        │
        │    │    │            commands, Ethernet queues,     │
        │    │    │            interrupt controller, BAR 2    │
-       │    │    │            doorbell decode                │
+       │    │    │            doorbell decode, BAR 4 CMB     │
        │    │    └──► ionic_eth_net.c   host TAP interface   │
        │    ▼                                                │
        │  ionic_rdma_devcmd.c ─ RDMA bootstrap: EQs and the  │
@@ -447,9 +459,9 @@ loops:
 #. Write the stats file, if there is one, about once a second.
 #. ``vfu_run_ctx()``: handle pending vfio-user messages. BAR
    accesses arrive here as callbacks, and **BAR 2 doorbells for
-   send queues are executed inside the callback** (see
-   `The Data Path`_).
-#. Run any GLib idle callbacks.
+   send queues are executed inside the callback**, as are
+   express doorbells written into the CMB (see `The Data
+   Path`_). If the client has gone, stop here.
 #. ``ionic_device_poll()``, the device's share, which is the
    next three steps, unless the guest has Bus Master Enable
    clear or the function in D3hot (see `Bus Master Enable`_).
@@ -461,12 +473,18 @@ loops:
 #. Run the S3 store's TCP timers, apply messages that arrived
    from other servers over the mesh, and time out requests that
    never got an answer.
-#. If no vfio-user message or idle callback ran, and nothing is
-   waiting from the mesh or the S3 store, sleep 100 µs.
+#. If no vfio-user message was handled, and nothing is waiting
+   from the mesh or the S3 store, sleep 100 µs.
 
 The server is a polling design. Latency is bounded by the loop
 period, and an idle server still wakes up as often as 10,000
 times a second.
+
+When QEMU disconnects, the device is reset (see `Resets`_) and
+the server waits for the next client, so a VM can be restarted,
+or the device hot-plugged again, without restarting the server.
+So does a client that drops while the two are still
+negotiating.
 
 Bus Master Enable
 ^^^^^^^^^^^^^^^^^
@@ -504,6 +522,44 @@ management, and a function in D3hot may not use the bus either.
 The device supports only D0 and D3hot, and sets No_Soft_Reset,
 so it keeps its state in D3hot, and going back to D0 lets the
 held work go on as setting BME does. A reset returns it to D0.
+
+Resets
+^^^^^^
+
+Three events reset the device, and each resets all of it:
+
+- QEMU resets the device, as when the VM resets.
+- The guest starts a function-level reset (FLR), which the PCI
+  Express capability advertises, by writing Initiate FLR, as
+  Linux does when asked through
+  ``/sys/bus/pci/devices/*/reset``.
+- The client disconnects. libvfio-user has already unmapped the
+  guest's memory by then.
+
+A reset takes back every queue, memory registration, and
+request in flight, including those queued for other nodes on
+the mesh, and drops what peers have sent that the main loop
+hasn't applied yet. It disconnects the NVMe-oF controller's and
+the S3 store's connections, restores the P4 program the server
+was started with, clears the Ethernet side and the CMB, and
+zeroes the Ethernet LIF and port counters and the data path's
+RDMA error counters. The server's own device and per-QP
+counters carry on, and count a device reset or FLR in
+``reset_count``. Every interrupt vector is masked again, and
+the config-space registers a driver writes go back to what
+they were before any driver ran, but for the link settings an
+FLR keeps. A device left running would go on writing into
+memory the guest has reused for something else, or that the
+next client maps at the same addresses. A reset does no DMA.
+
+The mesh connections stay up, and the node keeps its id. A
+request a peer sent before the reset that is still on its way
+can arrive after it; nothing in it says it was for a QP or
+memory region from before the reset.
+
+The ``RESET`` device command resets the device in the same way,
+but leaves the config space and the P4 program alone (see
+`Device Commands over BAR 0`_).
 
 Bringing the Device Up
 ----------------------
@@ -692,7 +748,9 @@ guest put the object's memory.
        its EQ with the data path
    * - CREATE_QP
      - Allocate a QP; register its SQ and RQ rings (or bind it
-       to an SRQ) and its CQs with the data path
+       to an SRQ) and its CQs with the data path. A ring the
+       driver put in the CMB is named by its offset there, and
+       must lie inside it
    * - CREATE_MR
      - Allocate an MR; register its address range and page
        table with the data path under its key
@@ -721,7 +779,7 @@ guest put the object's memory.
      - DMA the names, or the values, of the device's or one
        QP's counters into the driver's buffer; this is what the
        guest reads as ``hw_counters`` (see :doc:`monitoring`)
-   * - MODIFY_DCQCN, DEBUG, QUERY_AH
+   * - NOOP, MODIFY_DCQCN, DEBUG, QUERY_AH
      - Succeed without doing anything
 
 A few details worth knowing:
@@ -895,6 +953,30 @@ either report the guest's consumer index (ring 0) or arm the CQ
 (ring 1 or 2). Arming behaves like a level, not an edge: if
 completions are already waiting when the CQ is armed, the event
 fires at once.
+
+Queues in the CMB
+^^^^^^^^^^^^^^^^^
+
+With ``--cmb`` the device has a Controller Memory Buffer, BAR
+4, and the driver may put a QP's send or receive ring there
+instead of in guest memory (see :doc:`usage` for when it does).
+``DISCOVER_CMB`` reports the buffer, and ``Q_IDENTIFY`` offers
+the *express doorbell*. The server keeps the CMB in a buffer of
+its own. Like the other BARs, BAR 4 isn't mapped into the guest,
+so each store the guest makes there exits to QEMU and reaches
+the server as a write of at most 8 bytes.
+
+A ring in the CMB needs no doorbell. A write that ends at the
+end of one of its slots posts the WQE in that slot, as a
+doorbell naming the next slot would, and a send queue runs at
+once, inside the BAR 4 callback. That holds only for a guest
+that writes each WQE front to back, as the provider does. The
+data path then reads the WQE out of the server's copy of the
+CMB rather than guest memory. A WQE there is in no guest page,
+so its inline payload is taken from that copy, and only a SEND
+or WRITE may have one. When a QP is destroyed its CMB rings are
+zeroed, since the driver hands the same space to the next QP,
+which may belong to another process.
 
 Datagrams (UD and GSI)
 ^^^^^^^^^^^^^^^^^^^^^^
@@ -1258,8 +1340,11 @@ NVMe over Fabrics
   guest's GSI receive queue with a GRH, as from a real peer.
 - **I/O.** A SEND on a bound QP is an NVMe command capsule. The
   data path hands it to ``src/nvmeof/nvmeof_target.c``, which
-  executes it synchronously against a RAM- or file-backed
-  namespace. It moves data through the keyed SGL in the
+  executes it synchronously against the namespace it names. A
+  controller has up to eight namespaces, each either a block
+  namespace, in RAM or backed by a file, or a Key Value one,
+  whose store (``src/nvmeof/nvmeof_kv.c``) is a hash table in
+  RAM. It moves data through the keyed SGL in the
   command (the guest's rkey, usually from a fast registration
   just before), and the response capsule is delivered into the
   guest's next posted receive.
@@ -1354,6 +1439,12 @@ mesh exists and whether a target is attached.
 Threads
 -------
 
+Each thread the mesh starts has a name, which ``ps -L`` and a
+debugger show, given in brackets below. A receive or send
+thread's ends in its peer's node id, or in ``new`` while that
+isn't known yet; a worker's receive thread for its connection
+to the manager is ``tcp-mgr-recv``.
+
 .. list-table::
    :header-rows: 1
    :widths: 25 20 55
@@ -1365,27 +1456,27 @@ Threads
      - always
      - vfio-user, every register access, every guest-memory
        access, every interrupt
-   * - accept
+   * - accept (``tcp-accept``)
      - ``tcp``
      - Accepts incoming mesh connections
-   * - receive (one per connection)
+   * - receive (``tcp-recv-<node>``), one per connection
      - ``tcp``
      - Reads mesh messages and queues them for the main thread
-   * - send (one per connection)
+   * - send (``tcp-send-<node>``), one per connection
      - ``tcp``, once the data path sends on it, or a heartbeat
        finds it busy
      - Writes the messages the main thread queues for the
        connection's peer, so the main thread never waits for one,
        and heartbeats that couldn't be written at once
-   * - health check
+   * - health check (``tcp-health``)
      - ``tcp`` manager
      - Heartbeats, dead-node detection, closing dead nodes'
        connections, and those of nodes that never registered
-   * - broadcast
+   * - broadcast (``tcp-broadcast``)
      - ``tcp`` manager
      - Sends the topology and GID ownership to the workers (see
        `Which Server Owns a GID?`_)
-   * - peer connect
+   * - peer connect (``tcp-peers``)
      - ``tcp`` worker
      - Connects to peers as the topology changes, and closes dead
        connections; connects to the manager again when its
@@ -1438,7 +1529,8 @@ model:
 - Every ring's depth and stride is bounded before it is used in
   a shift. A command creating a queue (an RDMA admin queue,
   EQ, CQ, QP, or SRQ, or a Q_INIT of an Ethernet queue) that
-  exceeds the bounds is refused.
+  exceeds the bounds is refused, as is a QP whose ring in the
+  CMB doesn't lie wholly inside it.
 - Datagram delivery within one VM checks that the destination
   is a UD or GSI QP, so a datagram can't land in an RC or UC
   QP, and that the sender's Q_Key matches the destination's. A
@@ -1502,6 +1594,9 @@ Where to Look in the Source
      - Startup, PCI identity, BARs, MSI-X, main loop
    * - ``src/ernic_socket.c``
      - The vfio-user socket's permissions
+   * - ``src/ernic_log.c``, ``.h``
+     - The log every message goes through (``--log-level``,
+       ``--log-file``)
    * - ``src/rocm_ernic_internal.h``
      - The top-level device struct
    * - ``src/ionic/ionic_bar.h``
@@ -1511,7 +1606,7 @@ Where to Look in the Source
        tears down the files below
    * - ``src/ionic/ionic_eth_emu.c``
      - Registers, device commands, LIF, Ethernet queues,
-       interrupt controller, doorbell decode
+       interrupt controller, doorbell decode, the CMB
    * - ``src/ionic/ionic_eth_net.c``
      - Host TAP interface
    * - ``src/ionic/ionic_eth_steer.c``
@@ -1530,7 +1625,8 @@ Where to Look in the Source
    * - ``src/ionic/ionic_adminq.c``
      - RDMA control path
    * - ``src/ionic/ionic_datapath.c``
-     - RDMA data path and inter-server wire protocol
+     - RDMA data path, express doorbell, and inter-server wire
+       protocol
    * - ``src/ionic/ionic_datapath_nvmeof.c``,
        ``src/ionic/ionic_datapath_s3.c``,
        ``src/ionic/ionic_datapath_p4.c``
@@ -1558,8 +1654,10 @@ Where to Look in the Source
    * - ``src/qemu-compat/``
      - Stand-ins for the QEMU APIs the QEMU-derived code calls
    * - ``src/nvmeof/nvmeof_cm.c``,
-       ``src/nvmeof/nvmeof_target.c``
-     - In-process NVMe-oF CM responder and controller
+       ``src/nvmeof/nvmeof_target.c``,
+       ``src/nvmeof/nvmeof_kv.c``
+     - In-process NVMe-oF CM responder, controller, and Key
+       Value store
    * - ``src/s3/s3_tcp.c``, ``src/s3/s3_http.c``,
        ``src/s3/s3_token.c``, ``src/s3/s3_target.c``
      - In-process S3 store

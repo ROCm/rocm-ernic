@@ -28,6 +28,13 @@ Start the server with a UNIX socket and the desired backend:
      --socket /tmp/vfio-user-rocm-ernic.sock \
      --backend loopback --tap ernic0
 
+``rocm-ernic --help`` lists every option and each backend's
+settings. Those that shape the NIC (``--nic-profile``,
+``--print-profile``, ``--eth-queues``,
+``--stats-interval-ms``) and ``--inject`` are described in
+:doc:`ionic`, and the P4 engine's (``--p4``,
+``--p4-program``, ``--p4-guest-scope``) in :doc:`p4`.
+
 Whoever connects to the socket drives the device as the
 guest's QEMU, so the server makes it mode ``0600``: only the
 user the server runs as, and root, can connect. Run QEMU as
@@ -105,6 +112,13 @@ The two paths are independent: ``--backend`` governs the RDMA
 data path, ``--tap`` the Ethernet one. See :doc:`ionic` for
 the full picture.
 
+``--mac XX:XX:XX:XX:XX:XX`` (short ``-m``) sets the MAC
+address the device reports. Without it every server reports
+``72:6f:63:6d:2d:6e``, so give each server on a shared
+segment its own, as the service does (see :doc:`service`).
+The guest can change it, as on any NIC, until the next
+reset.
+
 ``--cmb`` gives the device an 8 MB Controller Memory Buffer
 (CMB), BAR 4, which the guest's RDMA driver may put queues
 in. It is off by default, so every queue is in guest memory.
@@ -119,7 +133,82 @@ memory is written directly.
 ``nvmeof`` is the odd one out: rather than carrying guest
 RDMA traffic somewhere, it answers it, presenting an NVMe
 over Fabrics target the guest connects to with stock
-``nvme connect -t rdma``. See :doc:`nvmeof`.
+``nvme connect -t rdma``. See :doc:`nvmeof`. ``s3`` is
+similar, with an object store in place of the controller;
+see :doc:`s3`.
+
+Connecting Several VMs
+----------------------
+
+One server serves one VM. For guests in different VMs to
+reach each other over RDMA, run each server with the ``tcp``
+backend, which joins the servers in a mesh over TCP. One
+server is the manager, and the rest are workers that connect
+to it:
+
+.. code-block:: bash
+
+   # The manager, listening on port 5000
+   ERNIC_TCP_GUEST_GIDS=fe80::706f:63ff:fe6d:2d01 \
+     ./build/rocm-ernic --socket /tmp/ernic-1.sock \
+     --backend tcp:manager:listen:5000 \
+     --mac 72:6f:63:6d:2d:01 --tap ernic1
+
+   # A worker, connecting to the manager
+   ERNIC_TCP_GUEST_GIDS=fe80::706f:63ff:fe6d:2d02 \
+     ./build/rocm-ernic --socket /tmp/ernic-2.sock \
+     --backend tcp:worker:192.168.1.100:5000 \
+     --mac 72:6f:63:6d:2d:02 --tap ernic2
+
+A host is a name, or an IPv4 or IPv6 address; an IPv6
+address goes in brackets, as in
+``tcp:worker:[fe80::1%eth0]:5000``.
+
+Each server must be told its guest's RoCE addresses (GIDs)
+in ``ERNIC_TCP_GUEST_GIDS``, since nothing else tells it
+which addresses its guest will use. A destination no server
+claims is unreachable: connecting a QP to it fails. The
+systemd service sets all of this up, deriving each
+instance's link-local GID from its MAC (see :doc:`service`).
+:doc:`architecture` describes how the mesh works.
+
+Environment Variables
+---------------------
+
+.. list-table::
+   :header-rows: 1
+   :widths: 35 65
+
+   * - Variable
+     - Effect
+   * - ``ERNIC_LOG_LEVEL``
+     - The log level, as ``--log-level`` (see `Log Levels`_),
+       which wins over it
+   * - ``ERNIC_TCP_GUEST_GIDS``
+     - ``tcp`` only: up to eight comma-separated RoCE
+       addresses of this server's guest, each an IPv6 or IPv4
+       address. A malformed one is logged and skipped
+   * - ``ERNIC_TCP_HEALTH_INTERVAL``
+     - ``tcp`` only: seconds between the manager's
+       heartbeats (default 5). A worker that hears nothing
+       from the manager for three intervals connects again
+   * - ``ERNIC_TCP_SEND_TIMEOUT_MS``
+     - ``tcp`` only: how long a send to a node that has
+       stopped reading may make no progress before the
+       connection is closed (default 10000; the manager uses
+       half)
+   * - ``ERNIC_TCP_SOCKBUF``
+     - ``tcp`` only: a fixed size, in bytes, for each mesh
+       socket's send and receive buffers. Unset, the kernel
+       sizes them itself, which is usually faster, since a
+       fixed size is capped at ``net.core.wmem_max`` and
+       ``rmem_max``
+   * - ``ERNIC_TCP_LISTEN_BACKLOG``
+     - ``tcp`` only: the listening socket's backlog
+       (default 32)
+
+A numeric variable whose value isn't a positive integer is
+ignored, and its default used.
 
 Log Levels
 ----------
@@ -224,14 +313,21 @@ while the server is running.
 
 The statistics file includes:
 
-- Device-level statistics (commands, register reads/writes,
-  UAR writes, interrupts)
+- The instance: its socket, backend, PCI ID, MAC, client
+  connection state, and NIC profile
+- Device-level statistics (commands, BAR 0 and doorbell
+  reads and writes, interrupts, resets, and bytes moved by
+  RDMA and over the Ethernet side)
+- The Ethernet LIF and port counters (see :doc:`ionic`)
 - Per-QP statistics:
 
-  - Doorbell rings (send, receive, SRQ)
+  - Doorbell rings (send and receive)
   - WQEs processed (total and by opcode type)
   - CQEs posted
-  - Continuation callbacks scheduled
+  - Bytes sent, received, read, and written
+
+:doc:`monitoring` describes how ``ernic-exporter`` publishes
+them.
 
 Statistics are automatically written on server exit
 (``SIGINT`` / ``SIGTERM``) in addition to the periodic

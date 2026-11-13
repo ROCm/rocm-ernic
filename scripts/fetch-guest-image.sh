@@ -246,7 +246,7 @@ verify_image() {
              "version; skipping the skew check)" >&2
     fi
 
-    # 3. README.md line 9 hardcodes the guest kernel in a shields.io
+    # 3. README.md hardcodes the guest kernel in a shields.io
     #    badge, because shields.io has no way to read the image.  That
     #    makes it the one copy with nothing tying it to the tag: bump
     #    the tag and the front page advertises the old kernel forever.
@@ -260,7 +260,7 @@ verify_image() {
         "README.md carries no 'CI guest kernel' badge to check ${kernel} against"
     [ "$badge" = "$kver" ] || fail \
         "README.md advertises CI guest kernel ${badge}, but ${TAG} ships ${kernel}" \
-        "Update the badge on README.md line 9." \
+        "Update the CI guest kernel badge in README.md." \
         "Leave docs/performance.rst alone: its Reference Measurements are a" \
         "historical record of a run on the old guest, not a claim about this one."
 

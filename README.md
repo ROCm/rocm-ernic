@@ -59,8 +59,9 @@ Galaxy; install it from a pinned commit of this repo (see
 ## Documentation
 
 Full documentation lives in the [`docs/`](docs/) directory and covers building,
-architecture, usage, the kernel driver, the systemd service, testing, and the
-API reference.
+architecture, usage, the emulated ionic device and its guest driver, the
+systemd service, monitoring, testing, performance, the NVMe-oF, S3, and P4
+features, and the API reference.
 
 ## License
 

@@ -106,8 +106,15 @@ Each group of checks is its own CTest test:
 - ``ionic-harness-devcmds``, ``-bringup``: the devcmds, the
   Ethernet admin queue, the RDMA bootstrap, and MSI-X
   masking
+- ``ionic-harness-rdma-reset``, ``-rdma-reset-faults``,
+  ``-rdma-reset-frees``: ``RDMA_RESET_LIF``, with a doorbell
+  before the next admin queue exists, the ``--inject`` faults
+  still firing after it, and everything the driver made
+  freed, so a region from before it can't be written
 - ``ionic-harness-admin``: admin commands the device must
-  refuse
+  refuse; ``-admin-dma``, ``-dp-dma`` and ``-eth-dma`` refuse
+  one DMA at a time in the admin queue, the data path and
+  Ethernet
 - ``ionic-harness-rc``, ``-atomic``, ``-cq-events``: sends,
   RDMA reads and writes, atomics and fast registration
   between two RC QPs on the loopback backend, and CQ arming
@@ -118,11 +125,29 @@ Each group of checks is its own CTest test:
 - ``ionic-harness-wrap``: send lengths and memory regions
   whose sums or ends carry past 2^32 or 2^64, which the
   device must refuse rather than wrap
+- ``ionic-harness-mr-keys``: only the key an MR is bound
+  under reaches it, through fast registration's rotations,
+  ``LOCAL_INV`` and ``DESTROY_MR``
+- ``ionic-harness-tables``, ``-limits``: the EQ, admin queue
+  and MR tables filled, and the counts the LIF identity
+  promises held by every backend's tables, to the last CQ
+  and QP id
+- ``ionic-harness-qp-flush``, ``-qp-flush-srq``: the flush
+  completions a QP entering the Error state owes its
+  outstanding work requests
 - ``ionic-harness-ud``, ``-srq``: datagrams, address handles
-  and shared receive queues
-- ``ionic-harness-eth``: Ethernet transmit and receive
+  and shared receive queues; ``-srq-rq-ring`` and
+  ``-srq-cq-ring`` post to an SRQ with each of the provider's
+  two doorbell forms
+- ``ionic-harness-eth``, ``-eth-rx-sg``: Ethernet transmit
+  and receive, and a received frame scattered across a
+  receive descriptor's SG list
 - ``ionic-harness-nvmeof``: the IB CM handshake on GSI, then
-  a Fabrics Connect and an Identify on the RC QP it binds
+  a Fabrics Connect and an Identify on the RC QP it binds;
+  ``-nvmeof-queues`` refuses more queues than the MR table
+  can serve
+- ``ionic-harness-s3``: the S3 store's RDMA GET and PUT;
+  this and ``-nvmeof`` check that each target refuses key 0
 - ``ionic-harness-device-reset``, ``-nvmeof``, ``-s3``,
   ``-p4``: a device reset frees everything the guest set up,
   writes nothing to guest memory, and leaves a device the
@@ -133,6 +158,22 @@ Each group of checks is its own CTest test:
   the device does no DMA and raises no interrupt, and once it
   is set it does what it held, once; ``-d3hot`` checks the
   same of D3hot, with BME set
+- ``ionic-harness-backend-names``, ``-none``,
+  ``-loopback-pair``, ``-mesh-none``: which ``--backend``
+  strings name which backend, a QP's life on the ``none``
+  backend, the loopback backend pairing QPs that name no
+  destination, and that only the ``tcp`` backend has a mesh
+- ``ionic-harness-teardown``: a ``tcp`` device torn down with
+  resources still allocated frees them all
+- With ``ERNIC_BUILD_P4``, the P4 engine:
+  ``ionic-harness-p4-port`` and ``-p4-attach`` put it on the
+  Ethernet path and attach it at each guest scope;
+  ``-p4-rdma``, ``-fp8-map``, ``-fp8-overlap``, ``-p4-cvt``,
+  ``-p4-cvt-map``, ``-p4-drop-map`` and ``-p4-deny`` run
+  compiled programs on RDMA work requests;
+  ``-p4-devcmd`` and ``-p4-devcmd-errors`` drive the guest's
+  command surface; and ``-p4-log-limit`` checks that what a
+  guest can make the engine log is rate-limited
 
 .. code-block:: bash
 
@@ -172,7 +213,7 @@ The modules under ``tests/py/ernic/`` are:
 - ``check.py`` -- the small test runner the suites report
   through
 
-Seven suites are registered with CTest:
+Eight suites are registered with CTest:
 
 - ``ernic-vfu-client``: version negotiation, device and
   region info, PCI configuration space, BAR access, DMA
@@ -237,10 +278,14 @@ Seven suites are registered with CTest:
   the two connect and pass traffic both ways. The reset node
   must keep its place in the mesh: no new registration, the
   same node id, and no dropped connection
+- ``ernic-p4-driver``, built with ``ERNIC_BUILD_P4``: the P4
+  engine on the live device, with guest frames taken out of
+  the Ethernet transmit ring, through the pipeline, and out
+  the far side (see :doc:`p4`)
 
 .. code-block:: bash
 
-   ctest --test-dir build -R '^ernic-(vfu|ionic|mesh)'
+   ctest --test-dir build -R '^ernic-(vfu|cmb|ionic|mesh|p4)'
 
 To run one directly, and to vary the mesh:
 
@@ -300,12 +345,14 @@ runner that already has something on the default.
 NVMe-oF tests
 ^^^^^^^^^^^^^
 
-Three tests cover the in-process NVMe-oF controller without
+Four tests cover the in-process NVMe-oF controller without
 needing a VM: ``nvmeof-target-unit`` (capsule handling and
-the command set), ``nvmeof-cm-unit`` (the IB CM state
-machine) and ``nvmeof-ci`` (a shell test that starts the
-real server once per documented option spelling and checks
-what it reports, including that bad options are refused).
+the command sets, block and Key Value),
+``nvmeof-kv-compact-unit`` (compacting the Key Value store),
+``nvmeof-cm-unit`` (the IB CM state machine) and
+``nvmeof-ci`` (a shell test that starts the real server once
+per documented option spelling and checks what it reports,
+including that bad options are refused).
 
 .. code-block:: bash
 
@@ -313,8 +360,10 @@ what it reports, including that bad options are refused).
 
 The guest-side connect needs a VM. It lives in
 ``ansible/playbooks/nvmeof-tests.yml``, which the hosted
-``system-test-nvmeof`` job runs end to end. See
-:doc:`nvmeof`.
+``system-test-nvmeof`` job runs end to end, and the Key Value
+namespace's in ``ansible/playbooks/nvmeof-kv-tests.yml``, which
+``system-test-nvmeof-kv`` runs against a controller with a
+block and a Key Value namespace. See :doc:`nvmeof`.
 
 S3-over-RDMA tests
 ^^^^^^^^^^^^^^^^^^
@@ -347,8 +396,8 @@ Quick Local Test
 
    ./scripts/run-local-tests.sh
 
-This script builds the project (if needed), starts the
-server, runs the test client, and cleans up automatically.
+This script needs a build in ``build/``. It starts the
+server, runs ``test_pci_client`` against it, and cleans up.
 
 Manual Testing
 ^^^^^^^^^^^^^^
@@ -360,7 +409,7 @@ Build and start the server in one terminal:
    cmake -B build -G Ninja -DCMAKE_BUILD_TYPE=Debug
    cmake --build build
 
-   ./build/rocm-ernic /tmp/test.sock
+   ./build/rocm-ernic --socket /tmp/test.sock
 
 Run the test client in another terminal:
 
@@ -402,7 +451,8 @@ valgrind would only check the script for:
    skip+='|ernic-vfu-client|ernic-cmb|ernic-ionic-driver|ernic-p4-driver'
    skip+='|ernic-ionic-hw-stats|ernic-mesh-stress|ernic-mesh-flow'
    skip+='|ernic-mesh-flr'
-   skip+='|ernic-feature-macros'
+   skip+='|ernic-feature-macros|ernic-boot-guest|ernic-ci-images'
+   skip+='|ernic-check-guest-image-tag'
    opts='--leak-check=full --track-origins=yes --num-callers=40'
    opts+=' --error-exitcode=1'
    ctest --test-dir build -T memcheck --output-on-failure \
@@ -470,21 +520,34 @@ Prerequisites:
    The ``ernic_host_setup`` Ansible role does this for you.
 2. Start the rocm-ernic service and launch two VMs
    (see :doc:`service`).
-3. Install the guest drivers and rdma-core v62 in both VMs
-   (see ``ernicctl driver-push``).
-4. Configure IP addresses on the rocm-ernic NICs
-   (``enp1s0``) in both VMs.
-5. In each VM, find the index of the IPv4-mapped GID
-   (``::ffff:a.b.c.d``) for its address, which the examples
-   below pass as ``$GID``. It is often 1, but it isn't
-   fixed, and the two VMs can differ.
-   ``scripts/find-ipv4-gid-index.sh`` looks it up; run it in
-   each guest with the device and that guest's own address,
-   for example from the host:
+3. Provision both guests with the ionic driver, built by
+   DKMS, and an rdma-core with the ionic provider, which the
+   CI guest image already has. The ``guest-setup`` play does
+   both (see `Ansible-Based Testing`_), and
+   ``ernicctl driver-push --install`` the driver alone.
+4. Give the emulated NICs IP addresses in both VMs, as
+   `Ethernet Connectivity`_ shows, unless the guest-setup
+   play has, which gives instance 1 ``192.168.200.10``,
+   instance 2 ``192.168.200.20``, and so on. With its udev
+   rules (``udev/99-rocm-ernic.rules``) the interface is
+   ``rocm-ernic0``; without them it has a name from its PCI
+   address, such as ``enp1s0``.
+5. In each VM, find the RDMA device's name, which the
+   examples below pass as ``$DEV``, and the index of the
+   IPv4-mapped GID (``::ffff:a.b.c.d``) for its address,
+   which they pass as ``$GID``. The name is
+   ``rocm-rdma-ernic0`` with the udev rules, and one such as
+   ``rocep1s0`` without them. The GID index is often 1, but
+   it isn't fixed, and the two VMs can differ.
+   ``scripts/find-rdma-device.sh`` and
+   ``scripts/find-ipv4-gid-index.sh`` look them up; run them
+   in each guest, the second with the device and that
+   guest's own address, for example from the host:
 
    .. code-block:: bash
 
-      GID=$(ssh vm1 'sh -s -- rocep1s0 192.168.100.10' \
+      DEV=$(ssh vm1 'sh -s' < scripts/find-rdma-device.sh)
+      GID=$(ssh vm1 "sh -s -- $DEV 192.168.200.10" \
         < scripts/find-ipv4-gid-index.sh)
 
 ibv_rc_pingpong
@@ -495,13 +558,11 @@ Latency test using RC (Reliable Connection) QPs:
 .. code-block:: bash
 
    # VM 1 (server):
-   LD_LIBRARY_PATH=/opt/rdma-core-ernic/lib \
-     ibv_rc_pingpong -d rocep1s0 -g "$GID" -n 100
+   ibv_rc_pingpong -d "$DEV" -g "$GID" -n 100
 
-   # VM 2 (client, use multicast NIC for OOB):
-   LD_LIBRARY_PATH=/opt/rdma-core-ernic/lib \
-     ibv_rc_pingpong -d rocep1s0 -g "$GID" -n 100 \
-     192.168.100.10
+   # VM 2 (client), reaching the server over IP to swap
+   # connection details:
+   ibv_rc_pingpong -d "$DEV" -g "$GID" -n 100 192.168.200.10
 
 Expected output (TCP mesh backend):
 
@@ -518,14 +579,11 @@ Bandwidth test using the perftest suite:
 .. code-block:: bash
 
    # VM 1 (server):
-   LD_LIBRARY_PATH=/opt/rdma-core-ernic/lib \
-     ib_send_bw -d rocep1s0 -x "$GID" -n 10 \
-     --report_gbits
+   ib_send_bw -d "$DEV" -x "$GID" -n 10 --report_gbits
 
    # VM 2 (client):
-   LD_LIBRARY_PATH=/opt/rdma-core-ernic/lib \
-     ib_send_bw -d rocep1s0 -x "$GID" -n 10 \
-     --report_gbits 192.168.100.10
+   ib_send_bw -d "$DEV" -x "$GID" -n 10 --report_gbits \
+     192.168.200.10
 
 Expected output:
 
@@ -537,18 +595,19 @@ Expected output:
 Ethernet Connectivity
 ^^^^^^^^^^^^^^^^^^^^^
 
-The emulated NICs support IP over Ethernet via frame
-forwarding through the TCP mesh.  Ping between VMs:
+The emulated NICs carry IP over Ethernet through their host
+TAPs and the bridge joining them; the TCP mesh carries only
+RDMA. Ping between VMs:
 
 .. code-block:: bash
 
    # VM 1:
-   sudo ip link set enp1s0 up
-   sudo ip addr add 192.168.200.10/24 dev enp1s0
+   sudo ip link set rocm-ernic0 up
+   sudo ip addr add 192.168.200.10/24 dev rocm-ernic0
 
    # VM 2:
-   sudo ip link set enp1s0 up
-   sudo ip addr add 192.168.200.20/24 dev enp1s0
+   sudo ip link set rocm-ernic0 up
+   sudo ip addr add 192.168.200.20/24 dev rocm-ernic0
 
    # From VM 1:
    ping 192.168.200.20
@@ -625,7 +684,7 @@ The CI lanes launch their own VMs and drive them with
 ``ci-site.yml``, which imports no host-setup play and so
 neither tears them down nor touches the systemd service.
 
-``site.yml`` runs six plays in order:
+``site.yml`` runs seven plays in order:
 
 1. **host-setup** -- builds the project, installs the
    service and ``ernicctl``, templates the env file, and
@@ -645,7 +704,8 @@ neither tears them down nor touches the systemd service.
 5. **tutorial-tests** -- builds examples from the
    RDMA-Tutorial and runs each between the two VMs; see
    :ref:`ansible-rdma-tutorial`.
-6. **performance-tests** -- the TCP and RDMA sweeps.
+6. **tcp-performance-tests** -- the ``iperf3`` sweep.
+7. **performance-tests** -- the RDMA ``perftest`` sweep.
 
 The setup plays are thin wrappers around the roles of the
 ``rocm.ernic`` collection, whose source lives in
@@ -664,8 +724,17 @@ Each play can also be run separately:
    ansible-playbook playbooks/sanity-tests.yml
    ansible-playbook playbooks/tutorial-tests.yml
    ansible-playbook playbooks/nvmeof-tests.yml
+   ansible-playbook playbooks/nvmeof-kv-tests.yml
    ansible-playbook playbooks/s3-tests.yml
+   ansible-playbook playbooks/tcp-performance-tests.yml
    ansible-playbook playbooks/performance-tests.yml
+
+``guest-setup``, ``nvmeof-tests``, ``nvmeof-kv-tests`` and
+``s3-tests`` run on the ``ernic_vms`` group, which only
+``vm-register`` fills, so run alone they find no hosts and do
+nothing. Run them through ``ci-site.yml``, which runs
+``vm-register`` first, selected by tag, as :doc:`nvmeof`
+shows (``site.yml`` runs ``guest-setup`` the same way).
 
 Variable overrides
 ^^^^^^^^^^^^^^^^^^
@@ -794,10 +863,10 @@ major.minor against ``IONIC_KERNEL_REF`` in
 ``ernic_guest_setup``, against the kernel the guest actually
 booted, before it starts that build.
 
-The ``CI guest kernel`` badge on line 9 of ``README.md`` has
-to be hardcoded -- shields.io cannot read the image -- so
-without a check a tag bump would leave the front page
-advertising a kernel nothing ships. Two independent
+The ``CI guest kernel`` badge in ``README.md`` has to be
+hardcoded -- shields.io cannot read the image -- so without a
+check a tag bump would leave the front page advertising a
+kernel nothing ships. Two independent
 implementations compare them: the fetch script, on the
 manual path, and an inline copy in the
 ``Read VM info`` step of the loopback job in
@@ -835,9 +904,10 @@ be turned into a rocm-ernic RDMA node without the playbooks
 here:
 
 ``ernic_guest_setup``
-   Installs the DKMS driver, builds rdma-core with the
-   ``rocm_ernic`` provider, applies the udev rules, addresses
-   the emulated NIC and builds rocm-xio.
+   Installs the DKMS driver, installs rdma-core with the
+   ``ionic`` provider (building it only when the guest's
+   doesn't match), applies the udev rules, addresses the
+   emulated NIC and builds rocm-xio.
 
 ``ernic_host_setup``
    Builds, installs and starts the rocm-ernic service, binds
@@ -847,6 +917,17 @@ here:
    Resolves the rocm-ernic checkout the others copy from,
    cloning it on the controller when ``ernic_source_dir`` is
    not set.
+
+``ernic_srq_dkms``, ``ernic_srq_provider``
+   Build the kernel and userspace halves of shared receive
+   queue support from the patch series in
+   ``ansible/files/patches/srq/`` and ``rdma-core/``: the
+   ionic modules as a DKMS package (by default only checking
+   that they compile), and rdma-core's ionic provider.
+
+``ernic_p4_dkms``
+   Builds and loads ``ernic_p4.ko``, which gives a guest
+   program the P4 engine's control surface (see :doc:`p4`).
 
 The collection is not published to Ansible Galaxy. Consumers
 outside this repo install it from a pinned commit, matching the
@@ -1019,7 +1100,10 @@ The ``ernic-ci-images``, ``ernic-check-guest-image-tag``
 and ``ernic-prune-images`` tests check these scripts
 against stand-ins for Docker, ``oras``, ``gh`` and the
 registry. For
-the details, see ``ci/images/README.md``.
+the details, see ``ci/images/README.md``. Likewise,
+``ernic-boot-guest`` checks ``ci/boot-guest.sh``, and
+``ernicctl vm-launch`` and ``vm-stop`` through it, against
+stand-ins for QEMU and ``ssh``, so no guest boots.
 
 Adding New Tests
 ----------------

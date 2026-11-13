@@ -47,12 +47,11 @@ generation.
 
 **Exit Codes:**
 - 0: All tests passed
-- 1: Test failure or no RDMA device available
+- 1: Test failure, or the device it was told to use is missing
+- 77: Skipped, because no RDMA device was found
 
-**Note:** This test requires an RDMA device to be available. In CI,
-this may require the rocm-ernic server running with loopback backend
-and a VM with the driver loaded, or it will be skipped if no device
-is found.
+**Note:** This test needs an RDMA device, so it isn't registered with
+CTest. CI runs it under `tests/test_loopback_ci.sh`, and in guests.
 
 ### test_ionic_ci.sh
 
@@ -60,12 +59,14 @@ Shell test for the emulated ionic device, registered with CTest as
 `ionic-ci`. Needs neither a VM nor an RDMA device.
 
 **Tests Performed:**
-- Server starts on the `loopback` and `none` backends
+- Server starts on the `loopback` and `none` backends, and with no
+  extra flags at all
 - PCI identity verification (ionic ERNIC: `0x1dd8:0x1002`,
   subsystem `0x1dd8:0x5400`)
 - BAR geometry (64K BAR0 with a 32K register window, 4M BAR2)
-- MSI-X vector count (32)
+- MSI-X vector count (32 under `compat`, 97 under `generic-400g`)
 - Clean shutdown on `SIGTERM`
+- The stats file carries the full counter set
 - `--tap` attaches to an existing host TAP interface
 
 **Requirements:**
@@ -81,7 +82,6 @@ Shell test for the emulated ionic device, registered with CTest as
 **Exit Codes:**
 - 0: All tests passed
 - 1: Test failure
-- 77: Skipped (server binary not built)
 
 ### test_find_rdma_device.sh
 
@@ -115,11 +115,22 @@ and `check.py` (the test runner).
 
 The suites, each registered with CTest:
 
-- `py/test_vfu_client.py` (`ernic-vfu-client`): the vfio-user protocol
+- `py/test_vfu_client.py` (`ernic-vfu-client`): the vfio-user protocol,
+  config space, Bus Master Enable, power states and resets
+- `py/test_cmb.py` (`ernic-cmb`): the Controller Memory Buffer, with
+  `--cmb` and without
 - `py/test_ionic_driver.py` (`ernic-ionic-driver`): the device, driven
   as the guest driver drives it
+- `py/test_ionic_hw_stats.py` (`ernic-ionic-hw-stats`): the counters
+  behind a guest's `hw_counters`, and the stats file
 - `py/test_mesh_stress.py` (`ernic-mesh-stress`): a multi-node mesh
   under traffic, malformed peers, and churn
+- `py/test_mesh_flow.py` (`ernic-mesh-flow`): a mesh pushed past what a
+  node queues from its peers
+- `py/test_mesh_flr.py` (`ernic-mesh-flr`): a function-level reset on
+  each node of a two-node mesh
+- `py/test_p4.py` (`ernic-p4-driver`, with `ERNIC_BUILD_P4`): the P4
+  engine on the live device
 
 See `docs/testing.rst` for what each covers and how to run one directly.
 
@@ -151,7 +162,7 @@ cmake --build build
 Start the server in one terminal:
 
 ```bash
-./build/rocm-ernic /tmp/test.sock
+./build/rocm-ernic --socket /tmp/test.sock
 ```
 
 Run the test client in another terminal:
@@ -191,8 +202,10 @@ Test harness script that orchestrates test execution:
 CMake build configuration for tests:
 - Builds test executables
 - Registers tests with CTest
-- Sets test timeouts (30 or 60 seconds)
-- Ensures tests run sequentially (not in parallel)
+- Gives each test a timeout
+- Marks `RUN_SERIAL` the tests that can't run beside others, such as
+  those that bind a fixed port; the rest run in parallel under
+  `ctest -j`
 
 ## Adding New Tests
 

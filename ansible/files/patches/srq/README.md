@@ -34,7 +34,7 @@ them semantic:
 
 **The offsets were verified, not reasoned about.** 0004 moves
 `srq_qtype` and `alloc_qid_cap` inside a reserved block, and those byte
-positions are the wire contract `src/ionic_eth_emu.c` encodes as
+positions are the wire contract `src/ionic/ionic_eth_emu.c` encodes as
 `LIF_ID_SRQ_QTYPE_OFF` and `LIF_ID_ALLOC_QID_CAP_OFF`. Getting that wrong
 fails silently — the driver reads the capability from the wrong offset and
 the symptom is an absent SRQ, indistinguishable from the bug this series

@@ -58,13 +58,13 @@ The scheduled run publishes its medians to the docs site at
 <https://rocm.github.io/rocm-ernic/>, under *Performance
 trends*.
 
-All three badges are fed on identical terms. `system-tests.yml`
-is the single entry point, and both of its publishing lanes --
+All the badges are fed on identical terms. `system-tests.yml`
+is the single entry point, and each of its publishing lanes --
 the two-VM one for `perftest`/`iperf3`, the NVMe-oF one for the
-fio sweep -- hand off to the same composite action,
-`.github/actions/publish-perf`. There is one copy of the commit,
-push and Pages-dispatch logic, so a bug in it is fixed once rather
-than per lane.
+fio sweep, and the NVMe Key Value, S3 and P4 ones -- hands off
+to the same composite action, `.github/actions/publish-perf`.
+There is one copy of the commit, push and Pages-dispatch logic,
+so a bug in it is fixed once rather than per lane.
 
 ### Nothing CI writes lands on `develop`
 
@@ -166,7 +166,7 @@ shields.io renders an *error*, which looks far worse than a grey
 
 Waiting for 04:23 UTC is optional. `system-tests.yml` takes a
 `workflow_dispatch` with a `publish` boolean (default true), so a
-manual run against `develop` fills all three shields:
+manual run against `develop` fills all five shields:
 
 ```bash
 gh workflow run system-tests.yml --ref develop
@@ -179,8 +179,8 @@ never publishes, by the same rule below.
 
 Budget for it: the two-VM lane boots two guests and runs for the
 best part of an hour, so this is not a quick way to refresh a
-badge. The NVMe-oF lane finishes much sooner and pushes as soon
-as it does, rather than waiting for its slower sibling.
+badge. The single-VM lanes finish much sooner and push as soon
+as they do, rather than waiting for their slower sibling.
 
 The workflow does not cancel in-progress runs on `develop`, so a
 dispatch will not kill a scheduled run part-way through its push;
