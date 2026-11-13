@@ -266,7 +266,10 @@ int main(int argc, char **argv)
         return 2;
     }
 
-    char dev[sizeof("/dev/ng2147483647n2147483647")];
+    /* Room for two of any uint64_t, the type kv_dev_path() prints, not
+     * just the INT_MAX it accepts: GCC can lose that bound and then
+     * reports the snprintf() as able to truncate. */
+    char dev[sizeof("/dev/ng18446744073709551615n18446744073709551615")];
     if (!kv_dev_path(argv[1], dev, sizeof(dev))) {
         fprintf(stderr,
                 "kv_bench: device must be a generic char device, "
