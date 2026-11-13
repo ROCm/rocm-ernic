@@ -304,3 +304,7 @@ Useful options:
   kernel module
 - ``--backend TYPE`` -- choose a different backend
   (default: ``loopback``)
+
+It logs in to the guest at ``localhost`` port
+``SSH_PORT`` (default ``2222``) as ``SSH_USER``
+(default: the user running the script).

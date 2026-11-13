@@ -76,8 +76,7 @@ ernic_log_level: warn           # none|error|warn|info|debug
 ernic_verbose: "false"          # deprecated shorthand for debug
 
 ernic_gpu_passthrough: true
-ernic_pci_mmio_bridge: true
-ernic_gpu_pci_devices: {}       # {1: "0000:4a:00.0", 2: "0000:0f:00.0"}
+ernic_gpu_pci_devices: {}       # {1: "0000:41:00.0", 2: "0000:c1:00.0"}
 
 ernic_rocm_xio_repo: "https://github.com/ROCm/rocm-xio.git"
 ernic_rocm_xio_branch: "main"
@@ -85,7 +84,8 @@ ernic_rocm_xio_commit: ""       # pin for reproducibility
 ```
 
 `ernic_gpu_pci_devices` empty means nothing is bound to vfio-pci — the role
-says so and moves on. See `defaults/main.yml` for the QEMU/VM values written
+says so and moves on. The role only binds the GPUs; pass each to its VM with
+`ernicctl vm-launch --pci-hostdev`. See `defaults/main.yml` for the QEMU/VM values written
 into the env file.
 
 ## Example

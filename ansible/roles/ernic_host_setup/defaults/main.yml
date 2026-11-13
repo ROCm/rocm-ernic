@@ -74,8 +74,9 @@ ernic_vm_launch_user: ""
 # ── GPU passthrough (vfio-pci) ──────────────────
 # Bind the listed GPUs to vfio-pci so QEMU can pass them into
 # the VMs.  Requires IOMMU enabled on the kernel command line.
+# Nothing passes them through: give each to ernicctl vm-launch
+# with --pci-hostdev.
 ernic_gpu_passthrough: true
-ernic_pci_mmio_bridge: true
 ernic_gpu_pci_devices: {}
 
 # ── rocm-xio staging ────────────────────────────

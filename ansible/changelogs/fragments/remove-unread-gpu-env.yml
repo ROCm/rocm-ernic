@@ -1,0 +1,15 @@
+# Copyright (c) Advanced Micro Devices, Inc. All rights reserved.
+#
+# SPDX-License-Identifier: MIT
+
+---
+minor_changes:
+  - >-
+    ``ernic_host_setup`` - the env file it writes no longer sets
+    ``ERNIC_GPU_PCI_N`` or ``ERNIC_PCI_MMIO_BRIDGE``, which nothing read,
+    and the role's ``ernic_pci_mmio_bridge`` variable, which only set the
+    second, is gone.  A leftover ``ernic_pci_mmio_bridge`` in an inventory
+    still reaches ``ernic_guest_setup``, which decides from it whether to
+    build rocm-xio's kernel module.  The role binds the GPUs in
+    ``ernic_gpu_pci_devices`` to vfio-pci as before; pass each to its VM
+    with ``ernicctl vm-launch --pci-hostdev``.

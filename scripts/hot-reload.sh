@@ -38,7 +38,8 @@ QMP_SOCKET=${QMP_SOCKET:-/tmp/qemu-qmp.sock}
 SERVER_LOG="/tmp/rocm-ernic-server.log"
 PID_FILE="/tmp/rocm-ernic-server.pid"
 SSH_PORT=${SSH_PORT:-2222}
-SSH_USER=${SSH_USER:-stebates}
+# The guest account; by default, the one running this script
+SSH_USER=${SSH_USER:-$(id -un)}
 BACKEND=${BACKEND:-loopback}
 DEVICE_ID="ernic0"
 ROOT_PORT="rp0"

@@ -716,6 +716,33 @@
 
 ### Changed
 
+* **Breaking:** **The default VM name is `rocm-ernic-vm`**, not one
+  developer's `stebates-test-vm`, in `ernicctl` and the packaged
+  `rocm-ernic.env`, as in the `ernic_host_setup` role, so instance
+  N's VM is `rocm-ernic-vm-N` with the disk `rocm-ernic-vm-N.qcow2`. To
+  keep using VMs and disks under the old name, set
+  `ERNIC_VM_NAME=stebates-test-vm` in `rocm-ernic.env`. Likewise,
+  `scripts/hot-reload.sh` logs in to the guest as the user running it,
+  not `stebates`; set `SSH_USER` for another account.
+* **Breaking:** **`ERNIC_QEMU_PATH` defaults to `/opt/qemu/bin/`**, not
+  `/opt/qemu-v10.1.2/bin/`, in `ernicctl` and the packaged
+  `rocm-ernic.env`, matching the Ansible host setup and the CI images.
+  If your QEMU is in the old place, set `ERNIC_QEMU_PATH` to it, or empty
+  to find QEMU on `PATH`.
+* The Ansible host setup no longer writes `ERNIC_GPU_PCI_N` and
+  `ERNIC_PCI_MMIO_BRIDGE` into `rocm-ernic.env`. Nothing read them: no
+  GPU was ever passed through from them. Pass each GPU to its VM with
+  `ernicctl vm-launch --pci-hostdev`, as before. The `ernic_host_setup`
+  role's `ernic_pci_mmio_bridge`, which only set the second, is gone; the
+  `ernic_guest_setup` role's still says whether to build rocm-xio's kernel
+  module in the guest.
+* **Breaking:** **The playbooks' defaults no longer describe one lab
+  machine.** `ansible/group_vars/all.yml` sets `ernic_qemu_path` to
+  `/opt/qemu/bin/`, as the `ernic_host_setup` role does, rather than a
+  QEMU fork's install; `ernic_pci_mmio_bridge`, which needs that fork,
+  is off; and `ernic_gpu_pci_devices` lists no GPUs, where it named two
+  of a retired lab host's. Set these in your inventory or with `-e` to
+  keep the old values.
 * `tests/kv_bench.c`, the Key Value benchmark the `nvmeof-kv-tests`
   playbook builds in the guest, opens only a namespace's generic char
   device, named `/dev/ng<ctrl>n<ns>` as Linux names it, and refuses any
