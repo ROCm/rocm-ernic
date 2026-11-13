@@ -18,8 +18,10 @@ Key Features
 - An AMD Pensando ionic NIC, driven in the guest by the
   upstream Linux ``ionic`` and ``ionic_rdma`` drivers
   (see :doc:`ionic`)
-- Memory-mapped BARs (MSI-X, registers, doorbells)
-- MSI-X interrupt support
+- Memory BARs: registers, the MSI-X table, doorbells, and an
+  optional Controller Memory Buffer
+- MSI-X interrupts, PCI Express and Power Management
+  capabilities, and function-level reset
 - Multiple RDMA backends (loopback, TCP/IP)
 - An in-process NVMe-oF target, so one VM and one server
   are a complete fabric (see :doc:`nvmeof`)

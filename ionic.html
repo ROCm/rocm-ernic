@@ -1165,11 +1165,17 @@ ibv_devices<span class="w">              </span><span class="c1"># the RDMA devi
 <h3>Userspace: the Upstream Provider<a class="headerlink" href="#userspace-the-upstream-provider" title="Link to this heading">#</a></h3>
 <p>No patched rdma-core is needed:
 <code class="docutils literal notranslate"><span class="pre">providers/ionic</span></code> landed upstream in rdma-core
-v61, and the guest role installs v62.0. The
-<code class="docutils literal notranslate"><span class="pre">ernic_guest_setup</span></code> role therefore skips the provider
-injection and registration steps entirely and only verifies
-that <code class="docutils literal notranslate"><span class="pre">libionic*.so</span></code> landed in <code class="docutils literal notranslate"><span class="pre">libibverbs/</span></code>.</p>
-<p>The one exception is GPU work. With
+v61, which Ubuntu 26.04 packages and the CI guest image
+carries. The <code class="docutils literal notranslate"><span class="pre">ernic_guest_setup</span></code> role installs
+<code class="docutils literal notranslate"><span class="pre">ernic_rdma_core_version</span></code> (61.0 by default), building it
+only when the guest’s provider doesn’t already match, and
+then only verifies that <code class="docutils literal notranslate"><span class="pre">libionic*.so</span></code> landed in
+<code class="docutils literal notranslate"><span class="pre">libibverbs/</span></code>.</p>
+<p>There are two exceptions. No rdma-core release has shared
+receive queues in <code class="docutils literal notranslate"><span class="pre">providers/ionic</span></code> yet, so a guest that
+needs them builds the provider from the series in
+<code class="docutils literal notranslate"><span class="pre">ansible/files/patches/rdma-core/</span></code> (the
+<code class="docutils literal notranslate"><span class="pre">ernic_srq_provider</span></code> role). The other is GPU work. With
 <code class="docutils literal notranslate"><span class="pre">ernic_gpu_passthrough</span></code> on, the role applies
 <code class="docutils literal notranslate"><span class="pre">rdma-core/ionic-gda/*.patch</span></code> from the guest’s rocm-xio
 checkout before configuring, so the installed provider

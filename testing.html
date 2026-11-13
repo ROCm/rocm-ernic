@@ -462,7 +462,8 @@ basic PCI configuration space queries:</p>
 (64 to 4096 bytes)</p></li>
 </ul>
 <p>Requires an RDMA device (via the guest <code class="docutils literal notranslate"><span class="pre">ionic_rdma</span></code> driver
-or real hardware). Skipped if no device is found.</p>
+or real hardware). Exits 77, skipped, if it finds no device,
+or if creating a QP on the one it found fails.</p>
 </section>
 <section id="find-rdma-device-tuple">
 <h3>find-rdma-device-tuple<a class="headerlink" href="#find-rdma-device-tuple" title="Link to this heading">#</a></h3>
@@ -523,8 +524,15 @@ CI build leg, sanitizers included.</p>
 <li><p><code class="docutils literal notranslate"><span class="pre">ionic-harness-devcmds</span></code>, <code class="docutils literal notranslate"><span class="pre">-bringup</span></code>: the devcmds, the
 Ethernet admin queue, the RDMA bootstrap, and MSI-X
 masking</p></li>
+<li><p><code class="docutils literal notranslate"><span class="pre">ionic-harness-rdma-reset</span></code>, <code class="docutils literal notranslate"><span class="pre">-rdma-reset-faults</span></code>,
+<code class="docutils literal notranslate"><span class="pre">-rdma-reset-frees</span></code>: <code class="docutils literal notranslate"><span class="pre">RDMA_RESET_LIF</span></code>, with a doorbell
+before the next admin queue exists, the <code class="docutils literal notranslate"><span class="pre">--inject</span></code> faults
+still firing after it, and everything the driver made
+freed, so a region from before it can’t be written</p></li>
 <li><p><code class="docutils literal notranslate"><span class="pre">ionic-harness-admin</span></code>: admin commands the device must
-refuse</p></li>
+refuse; <code class="docutils literal notranslate"><span class="pre">-admin-dma</span></code>, <code class="docutils literal notranslate"><span class="pre">-dp-dma</span></code> and <code class="docutils literal notranslate"><span class="pre">-eth-dma</span></code> refuse
+one DMA at a time in the admin queue, the data path and
+Ethernet</p></li>
 <li><p><code class="docutils literal notranslate"><span class="pre">ionic-harness-rc</span></code>, <code class="docutils literal notranslate"><span class="pre">-atomic</span></code>, <code class="docutils literal notranslate"><span class="pre">-cq-events</span></code>: sends,
 RDMA reads and writes, atomics and fast registration
 between two RC QPs on the loopback backend, and CQ arming</p></li>
@@ -535,11 +543,29 @@ refuse</p></li>
 <li><p><code class="docutils literal notranslate"><span class="pre">ionic-harness-wrap</span></code>: send lengths and memory regions
 whose sums or ends carry past 2^32 or 2^64, which the
 device must refuse rather than wrap</p></li>
+<li><p><code class="docutils literal notranslate"><span class="pre">ionic-harness-mr-keys</span></code>: only the key an MR is bound
+under reaches it, through fast registration’s rotations,
+<code class="docutils literal notranslate"><span class="pre">LOCAL_INV</span></code> and <code class="docutils literal notranslate"><span class="pre">DESTROY_MR</span></code></p></li>
+<li><p><code class="docutils literal notranslate"><span class="pre">ionic-harness-tables</span></code>, <code class="docutils literal notranslate"><span class="pre">-limits</span></code>: the EQ, admin queue
+and MR tables filled, and the counts the LIF identity
+promises held by every backend’s tables, to the last CQ
+and QP id</p></li>
+<li><p><code class="docutils literal notranslate"><span class="pre">ionic-harness-qp-flush</span></code>, <code class="docutils literal notranslate"><span class="pre">-qp-flush-srq</span></code>: the flush
+completions a QP entering the Error state owes its
+outstanding work requests</p></li>
 <li><p><code class="docutils literal notranslate"><span class="pre">ionic-harness-ud</span></code>, <code class="docutils literal notranslate"><span class="pre">-srq</span></code>: datagrams, address handles
-and shared receive queues</p></li>
-<li><p><code class="docutils literal notranslate"><span class="pre">ionic-harness-eth</span></code>: Ethernet transmit and receive</p></li>
+and shared receive queues; <code class="docutils literal notranslate"><span class="pre">-srq-rq-ring</span></code> and
+<code class="docutils literal notranslate"><span class="pre">-srq-cq-ring</span></code> post to an SRQ with each of the provider’s
+two doorbell forms</p></li>
+<li><p><code class="docutils literal notranslate"><span class="pre">ionic-harness-eth</span></code>, <code class="docutils literal notranslate"><span class="pre">-eth-rx-sg</span></code>: Ethernet transmit
+and receive, and a received frame scattered across a
+receive descriptor’s SG list</p></li>
 <li><p><code class="docutils literal notranslate"><span class="pre">ionic-harness-nvmeof</span></code>: the IB CM handshake on GSI, then
-a Fabrics Connect and an Identify on the RC QP it binds</p></li>
+a Fabrics Connect and an Identify on the RC QP it binds;
+<code class="docutils literal notranslate"><span class="pre">-nvmeof-queues</span></code> refuses more queues than the MR table
+can serve</p></li>
+<li><p><code class="docutils literal notranslate"><span class="pre">ionic-harness-s3</span></code>: the S3 store’s RDMA GET and PUT;
+this and <code class="docutils literal notranslate"><span class="pre">-nvmeof</span></code> check that each target refuses key 0</p></li>
 <li><p><code class="docutils literal notranslate"><span class="pre">ionic-harness-device-reset</span></code>, <code class="docutils literal notranslate"><span class="pre">-nvmeof</span></code>, <code class="docutils literal notranslate"><span class="pre">-s3</span></code>,
 <code class="docutils literal notranslate"><span class="pre">-p4</span></code>: a device reset frees everything the guest set up,
 writes nothing to guest memory, and leaves a device the
@@ -550,6 +576,22 @@ driver’s <code class="docutils literal notranslate"><span class="pre">RESET</s
 the device does no DMA and raises no interrupt, and once it
 is set it does what it held, once; <code class="docutils literal notranslate"><span class="pre">-d3hot</span></code> checks the
 same of D3hot, with BME set</p></li>
+<li><p><code class="docutils literal notranslate"><span class="pre">ionic-harness-backend-names</span></code>, <code class="docutils literal notranslate"><span class="pre">-none</span></code>,
+<code class="docutils literal notranslate"><span class="pre">-loopback-pair</span></code>, <code class="docutils literal notranslate"><span class="pre">-mesh-none</span></code>: which <code class="docutils literal notranslate"><span class="pre">--backend</span></code>
+strings name which backend, a QP’s life on the <code class="docutils literal notranslate"><span class="pre">none</span></code>
+backend, the loopback backend pairing QPs that name no
+destination, and that only the <code class="docutils literal notranslate"><span class="pre">tcp</span></code> backend has a mesh</p></li>
+<li><p><code class="docutils literal notranslate"><span class="pre">ionic-harness-teardown</span></code>: a <code class="docutils literal notranslate"><span class="pre">tcp</span></code> device torn down with
+resources still allocated frees them all</p></li>
+<li><p>With <code class="docutils literal notranslate"><span class="pre">ERNIC_BUILD_P4</span></code>, the P4 engine:
+<code class="docutils literal notranslate"><span class="pre">ionic-harness-p4-port</span></code> and <code class="docutils literal notranslate"><span class="pre">-p4-attach</span></code> put it on the
+Ethernet path and attach it at each guest scope;
+<code class="docutils literal notranslate"><span class="pre">-p4-rdma</span></code>, <code class="docutils literal notranslate"><span class="pre">-fp8-map</span></code>, <code class="docutils literal notranslate"><span class="pre">-fp8-overlap</span></code>, <code class="docutils literal notranslate"><span class="pre">-p4-cvt</span></code>,
+<code class="docutils literal notranslate"><span class="pre">-p4-cvt-map</span></code>, <code class="docutils literal notranslate"><span class="pre">-p4-drop-map</span></code> and <code class="docutils literal notranslate"><span class="pre">-p4-deny</span></code> run
+compiled programs on RDMA work requests;
+<code class="docutils literal notranslate"><span class="pre">-p4-devcmd</span></code> and <code class="docutils literal notranslate"><span class="pre">-p4-devcmd-errors</span></code> drive the guest’s
+command surface; and <code class="docutils literal notranslate"><span class="pre">-p4-log-limit</span></code> checks that what a
+guest can make the engine log is rate-limited</p></li>
 </ul>
 <div class="highlight-bash notranslate"><div class="highlight"><pre><span></span>ctest<span class="w"> </span>--test-dir<span class="w"> </span>build<span class="w"> </span>-R<span class="w"> </span>ionic-harness
 </pre></div>
@@ -586,7 +628,7 @@ puts back</p></li>
 <li><p><code class="docutils literal notranslate"><span class="pre">check.py</span></code> – the small test runner the suites report
 through</p></li>
 </ul>
-<p>Seven suites are registered with CTest:</p>
+<p>Eight suites are registered with CTest:</p>
 <ul class="simple">
 <li><p><code class="docutils literal notranslate"><span class="pre">ernic-vfu-client</span></code>: version negotiation, device and
 region info, PCI configuration space, BAR access, DMA
@@ -651,8 +693,12 @@ node’s driver loads and makes its QP and region again, and
 the two connect and pass traffic both ways. The reset node
 must keep its place in the mesh: no new registration, the
 same node id, and no dropped connection</p></li>
+<li><p><code class="docutils literal notranslate"><span class="pre">ernic-p4-driver</span></code>, built with <code class="docutils literal notranslate"><span class="pre">ERNIC_BUILD_P4</span></code>: the P4
+engine on the live device, with guest frames taken out of
+the Ethernet transmit ring, through the pipeline, and out
+the far side (see <a class="reference internal" href="p4.html"><span class="doc">P4 Match-Action Engine</span></a>)</p></li>
 </ul>
-<div class="highlight-bash notranslate"><div class="highlight"><pre><span></span>ctest<span class="w"> </span>--test-dir<span class="w"> </span>build<span class="w"> </span>-R<span class="w"> </span><span class="s1">'^ernic-(vfu|ionic|mesh)'</span>
+<div class="highlight-bash notranslate"><div class="highlight"><pre><span></span>ctest<span class="w"> </span>--test-dir<span class="w"> </span>build<span class="w"> </span>-R<span class="w"> </span><span class="s1">'^ernic-(vfu|cmb|ionic|mesh|p4)'</span>
 </pre></div>
 </div>
 <p>To run one directly, and to vary the mesh:</p>
@@ -704,19 +750,23 @@ runner that already has something on the default.</p>
 </section>
 <section id="nvme-of-tests">
 <h3>NVMe-oF tests<a class="headerlink" href="#nvme-of-tests" title="Link to this heading">#</a></h3>
-<p>Three tests cover the in-process NVMe-oF controller without
+<p>Four tests cover the in-process NVMe-oF controller without
 needing a VM: <code class="docutils literal notranslate"><span class="pre">nvmeof-target-unit</span></code> (capsule handling and
-the command set), <code class="docutils literal notranslate"><span class="pre">nvmeof-cm-unit</span></code> (the IB CM state
-machine) and <code class="docutils literal notranslate"><span class="pre">nvmeof-ci</span></code> (a shell test that starts the
-real server once per documented option spelling and checks
-what it reports, including that bad options are refused).</p>
+the command sets, block and Key Value),
+<code class="docutils literal notranslate"><span class="pre">nvmeof-kv-compact-unit</span></code> (compacting the Key Value store),
+<code class="docutils literal notranslate"><span class="pre">nvmeof-cm-unit</span></code> (the IB CM state machine) and
+<code class="docutils literal notranslate"><span class="pre">nvmeof-ci</span></code> (a shell test that starts the real server once
+per documented option spelling and checks what it reports,
+including that bad options are refused).</p>
 <div class="highlight-bash notranslate"><div class="highlight"><pre><span></span>ctest<span class="w"> </span>--test-dir<span class="w"> </span>build<span class="w"> </span>-R<span class="w"> </span>nvmeof
 </pre></div>
 </div>
 <p>The guest-side connect needs a VM. It lives in
 <code class="docutils literal notranslate"><span class="pre">ansible/playbooks/nvmeof-tests.yml</span></code>, which the hosted
-<code class="docutils literal notranslate"><span class="pre">system-test-nvmeof</span></code> job runs end to end. See
-<a class="reference internal" href="nvmeof.html"><span class="doc">NVMe-oF Controller</span></a>.</p>
+<code class="docutils literal notranslate"><span class="pre">system-test-nvmeof</span></code> job runs end to end, and the Key Value
+namespace’s in <code class="docutils literal notranslate"><span class="pre">ansible/playbooks/nvmeof-kv-tests.yml</span></code>, which
+<code class="docutils literal notranslate"><span class="pre">system-test-nvmeof-kv</span></code> runs against a controller with a
+block and a Key Value namespace. See <a class="reference internal" href="nvmeof.html"><span class="doc">NVMe-oF Controller</span></a>.</p>
 </section>
 <section id="s3-over-rdma-tests">
 <h3>S3-over-RDMA tests<a class="headerlink" href="#s3-over-rdma-tests" title="Link to this heading">#</a></h3>
@@ -744,8 +794,8 @@ by <code class="docutils literal notranslate"><span class="pre">ansible/playbook
 <div class="highlight-bash notranslate"><div class="highlight"><pre><span></span>./scripts/run-local-tests.sh
 </pre></div>
 </div>
-<p>This script builds the project (if needed), starts the
-server, runs the test client, and cleans up automatically.</p>
+<p>This script needs a build in <code class="docutils literal notranslate"><span class="pre">build/</span></code>. It starts the
+server, runs <code class="docutils literal notranslate"><span class="pre">test_pci_client</span></code> against it, and cleans up.</p>
 </section>
 <section id="manual-testing">
 <h3>Manual Testing<a class="headerlink" href="#manual-testing" title="Link to this heading">#</a></h3>
@@ -753,7 +803,7 @@ server, runs the test client, and cleans up automatically.</p>
 <div class="highlight-bash notranslate"><div class="highlight"><pre><span></span>cmake<span class="w"> </span>-B<span class="w"> </span>build<span class="w"> </span>-G<span class="w"> </span>Ninja<span class="w"> </span>-DCMAKE_BUILD_TYPE<span class="o">=</span>Debug
 cmake<span class="w"> </span>--build<span class="w"> </span>build
 
-./build/rocm-ernic<span class="w"> </span>/tmp/test.sock
+./build/rocm-ernic<span class="w"> </span>--socket<span class="w"> </span>/tmp/test.sock
 </pre></div>
 </div>
 <p>Run the test client in another terminal:</p>
@@ -787,7 +837,8 @@ cmake<span class="w"> </span>--build<span class="w"> </span>build
 <span class="nv">skip</span><span class="o">+=</span><span class="s1">'|ernic-vfu-client|ernic-cmb|ernic-ionic-driver|ernic-p4-driver'</span>
 <span class="nv">skip</span><span class="o">+=</span><span class="s1">'|ernic-ionic-hw-stats|ernic-mesh-stress|ernic-mesh-flow'</span>
 <span class="nv">skip</span><span class="o">+=</span><span class="s1">'|ernic-mesh-flr'</span>
-<span class="nv">skip</span><span class="o">+=</span><span class="s1">'|ernic-feature-macros'</span>
+<span class="nv">skip</span><span class="o">+=</span><span class="s1">'|ernic-feature-macros|ernic-boot-guest|ernic-ci-images'</span>
+<span class="nv">skip</span><span class="o">+=</span><span class="s1">'|ernic-check-guest-image-tag'</span>
 <span class="nv">opts</span><span class="o">=</span><span class="s1">'--leak-check=full --track-origins=yes --num-callers=40'</span>
 <span class="nv">opts</span><span class="o">+=</span><span class="s1">' --error-exitcode=1'</span>
 ctest<span class="w"> </span>--test-dir<span class="w"> </span>build<span class="w"> </span>-T<span class="w"> </span>memcheck<span class="w"> </span>--output-on-failure<span class="w"> </span><span class="se">\</span>
@@ -851,18 +902,31 @@ sudo<span class="w"> </span>ip<span class="w"> </span>link<span class="w"> </spa
 </li>
 <li><p>Start the rocm-ernic service and launch two VMs
 (see <a class="reference internal" href="service.html"><span class="doc">systemd Service and ernicctl</span></a>).</p></li>
-<li><p>Install the guest drivers and rdma-core v62 in both VMs
-(see <code class="docutils literal notranslate"><span class="pre">ernicctl</span> <span class="pre">driver-push</span></code>).</p></li>
-<li><p>Configure IP addresses on the rocm-ernic NICs
-(<code class="docutils literal notranslate"><span class="pre">enp1s0</span></code>) in both VMs.</p></li>
-<li><p>In each VM, find the index of the IPv4-mapped GID
-(<code class="docutils literal notranslate"><span class="pre">::ffff:a.b.c.d</span></code>) for its address, which the examples
-below pass as <code class="docutils literal notranslate"><span class="pre">$GID</span></code>. It is often 1, but it isn’t
-fixed, and the two VMs can differ.
-<code class="docutils literal notranslate"><span class="pre">scripts/find-ipv4-gid-index.sh</span></code> looks it up; run it in
-each guest with the device and that guest’s own address,
-for example from the host:</p>
-<div class="highlight-bash notranslate"><div class="highlight"><pre><span></span><span class="nv">GID</span><span class="o">=</span><span class="k">$(</span>ssh<span class="w"> </span>vm1<span class="w"> </span><span class="s1">'sh -s -- rocep1s0 192.168.100.10'</span><span class="w"> </span><span class="se">\</span>
+<li><p>Provision both guests with the ionic driver, built by
+DKMS, and an rdma-core with the ionic provider, which the
+CI guest image already has. The <code class="docutils literal notranslate"><span class="pre">guest-setup</span></code> play does
+both (see <a class="reference internal" href="#ansible-based-testing">Ansible-Based Testing</a>), and
+<code class="docutils literal notranslate"><span class="pre">ernicctl</span> <span class="pre">driver-push</span> <span class="pre">--install</span></code> the driver alone.</p></li>
+<li><p>Give the emulated NICs IP addresses in both VMs, as
+<a class="reference internal" href="#ethernet-connectivity">Ethernet Connectivity</a> shows, unless the guest-setup
+play has, which gives instance 1 <code class="docutils literal notranslate"><span class="pre">192.168.200.10</span></code>,
+instance 2 <code class="docutils literal notranslate"><span class="pre">192.168.200.20</span></code>, and so on. With its udev
+rules (<code class="docutils literal notranslate"><span class="pre">udev/99-rocm-ernic.rules</span></code>) the interface is
+<code class="docutils literal notranslate"><span class="pre">rocm-ernic0</span></code>; without them it has a name from its PCI
+address, such as <code class="docutils literal notranslate"><span class="pre">enp1s0</span></code>.</p></li>
+<li><p>In each VM, find the RDMA device’s name, which the
+examples below pass as <code class="docutils literal notranslate"><span class="pre">$DEV</span></code>, and the index of the
+IPv4-mapped GID (<code class="docutils literal notranslate"><span class="pre">::ffff:a.b.c.d</span></code>) for its address,
+which they pass as <code class="docutils literal notranslate"><span class="pre">$GID</span></code>. The name is
+<code class="docutils literal notranslate"><span class="pre">rocm-rdma-ernic0</span></code> with the udev rules, and one such as
+<code class="docutils literal notranslate"><span class="pre">rocep1s0</span></code> without them. The GID index is often 1, but
+it isn’t fixed, and the two VMs can differ.
+<code class="docutils literal notranslate"><span class="pre">scripts/find-rdma-device.sh</span></code> and
+<code class="docutils literal notranslate"><span class="pre">scripts/find-ipv4-gid-index.sh</span></code> look them up; run them
+in each guest, the second with the device and that
+guest’s own address, for example from the host:</p>
+<div class="highlight-bash notranslate"><div class="highlight"><pre><span></span><span class="nv">DEV</span><span class="o">=</span><span class="k">$(</span>ssh<span class="w"> </span>vm1<span class="w"> </span><span class="s1">'sh -s'</span><span class="w"> </span>&lt;<span class="w"> </span>scripts/find-rdma-device.sh<span class="k">)</span>
+<span class="nv">GID</span><span class="o">=</span><span class="k">$(</span>ssh<span class="w"> </span>vm1<span class="w"> </span><span class="s2">"sh -s -- </span><span class="nv">$DEV</span><span class="s2"> 192.168.200.10"</span><span class="w"> </span><span class="se">\</span>
 <span class="w">  </span>&lt;<span class="w"> </span>scripts/find-ipv4-gid-index.sh<span class="k">)</span>
 </pre></div>
 </div>
@@ -872,13 +936,11 @@ for example from the host:</p>
 <h3>ibv_rc_pingpong<a class="headerlink" href="#ibv-rc-pingpong" title="Link to this heading">#</a></h3>
 <p>Latency test using RC (Reliable Connection) QPs:</p>
 <div class="highlight-bash notranslate"><div class="highlight"><pre><span></span><span class="c1"># VM 1 (server):</span>
-<span class="nv">LD_LIBRARY_PATH</span><span class="o">=</span>/opt/rdma-core-ernic/lib<span class="w"> </span><span class="se">\</span>
-<span class="w">  </span>ibv_rc_pingpong<span class="w"> </span>-d<span class="w"> </span>rocep1s0<span class="w"> </span>-g<span class="w"> </span><span class="s2">"</span><span class="nv">$GID</span><span class="s2">"</span><span class="w"> </span>-n<span class="w"> </span><span class="m">100</span>
+ibv_rc_pingpong<span class="w"> </span>-d<span class="w"> </span><span class="s2">"</span><span class="nv">$DEV</span><span class="s2">"</span><span class="w"> </span>-g<span class="w"> </span><span class="s2">"</span><span class="nv">$GID</span><span class="s2">"</span><span class="w"> </span>-n<span class="w"> </span><span class="m">100</span>
 
-<span class="c1"># VM 2 (client, use multicast NIC for OOB):</span>
-<span class="nv">LD_LIBRARY_PATH</span><span class="o">=</span>/opt/rdma-core-ernic/lib<span class="w"> </span><span class="se">\</span>
-<span class="w">  </span>ibv_rc_pingpong<span class="w"> </span>-d<span class="w"> </span>rocep1s0<span class="w"> </span>-g<span class="w"> </span><span class="s2">"</span><span class="nv">$GID</span><span class="s2">"</span><span class="w"> </span>-n<span class="w"> </span><span class="m">100</span><span class="w"> </span><span class="se">\</span>
-<span class="w">  </span><span class="m">192</span>.168.100.10
+<span class="c1"># VM 2 (client), reaching the server over IP to swap</span>
+<span class="c1"># connection details:</span>
+ibv_rc_pingpong<span class="w"> </span>-d<span class="w"> </span><span class="s2">"</span><span class="nv">$DEV</span><span class="s2">"</span><span class="w"> </span>-g<span class="w"> </span><span class="s2">"</span><span class="nv">$GID</span><span class="s2">"</span><span class="w"> </span>-n<span class="w"> </span><span class="m">100</span><span class="w"> </span><span class="m">192</span>.168.200.10
 </pre></div>
 </div>
 <p>Expected output (TCP mesh backend):</p>
@@ -891,14 +953,11 @@ for example from the host:</p>
 <h3>ib_send_bw<a class="headerlink" href="#ib-send-bw" title="Link to this heading">#</a></h3>
 <p>Bandwidth test using the perftest suite:</p>
 <div class="highlight-bash notranslate"><div class="highlight"><pre><span></span><span class="c1"># VM 1 (server):</span>
-<span class="nv">LD_LIBRARY_PATH</span><span class="o">=</span>/opt/rdma-core-ernic/lib<span class="w"> </span><span class="se">\</span>
-<span class="w">  </span>ib_send_bw<span class="w"> </span>-d<span class="w"> </span>rocep1s0<span class="w"> </span>-x<span class="w"> </span><span class="s2">"</span><span class="nv">$GID</span><span class="s2">"</span><span class="w"> </span>-n<span class="w"> </span><span class="m">10</span><span class="w"> </span><span class="se">\</span>
-<span class="w">  </span>--report_gbits
+ib_send_bw<span class="w"> </span>-d<span class="w"> </span><span class="s2">"</span><span class="nv">$DEV</span><span class="s2">"</span><span class="w"> </span>-x<span class="w"> </span><span class="s2">"</span><span class="nv">$GID</span><span class="s2">"</span><span class="w"> </span>-n<span class="w"> </span><span class="m">10</span><span class="w"> </span>--report_gbits
 
 <span class="c1"># VM 2 (client):</span>
-<span class="nv">LD_LIBRARY_PATH</span><span class="o">=</span>/opt/rdma-core-ernic/lib<span class="w"> </span><span class="se">\</span>
-<span class="w">  </span>ib_send_bw<span class="w"> </span>-d<span class="w"> </span>rocep1s0<span class="w"> </span>-x<span class="w"> </span><span class="s2">"</span><span class="nv">$GID</span><span class="s2">"</span><span class="w"> </span>-n<span class="w"> </span><span class="m">10</span><span class="w"> </span><span class="se">\</span>
-<span class="w">  </span>--report_gbits<span class="w"> </span><span class="m">192</span>.168.100.10
+ib_send_bw<span class="w"> </span>-d<span class="w"> </span><span class="s2">"</span><span class="nv">$DEV</span><span class="s2">"</span><span class="w"> </span>-x<span class="w"> </span><span class="s2">"</span><span class="nv">$GID</span><span class="s2">"</span><span class="w"> </span>-n<span class="w"> </span><span class="m">10</span><span class="w"> </span>--report_gbits<span class="w"> </span><span class="se">\</span>
+<span class="w">  </span><span class="m">192</span>.168.200.10
 </pre></div>
 </div>
 <p>Expected output:</p>
@@ -909,15 +968,16 @@ for example from the host:</p>
 </section>
 <section id="ethernet-connectivity">
 <h3>Ethernet Connectivity<a class="headerlink" href="#ethernet-connectivity" title="Link to this heading">#</a></h3>
-<p>The emulated NICs support IP over Ethernet via frame
-forwarding through the TCP mesh.  Ping between VMs:</p>
+<p>The emulated NICs carry IP over Ethernet through their host
+TAPs and the bridge joining them; the TCP mesh carries only
+RDMA. Ping between VMs:</p>
 <div class="highlight-bash notranslate"><div class="highlight"><pre><span></span><span class="c1"># VM 1:</span>
-sudo<span class="w"> </span>ip<span class="w"> </span>link<span class="w"> </span><span class="nb">set</span><span class="w"> </span>enp1s0<span class="w"> </span>up
-sudo<span class="w"> </span>ip<span class="w"> </span>addr<span class="w"> </span>add<span class="w"> </span><span class="m">192</span>.168.200.10/24<span class="w"> </span>dev<span class="w"> </span>enp1s0
+sudo<span class="w"> </span>ip<span class="w"> </span>link<span class="w"> </span><span class="nb">set</span><span class="w"> </span>rocm-ernic0<span class="w"> </span>up
+sudo<span class="w"> </span>ip<span class="w"> </span>addr<span class="w"> </span>add<span class="w"> </span><span class="m">192</span>.168.200.10/24<span class="w"> </span>dev<span class="w"> </span>rocm-ernic0
 
 <span class="c1"># VM 2:</span>
-sudo<span class="w"> </span>ip<span class="w"> </span>link<span class="w"> </span><span class="nb">set</span><span class="w"> </span>enp1s0<span class="w"> </span>up
-sudo<span class="w"> </span>ip<span class="w"> </span>addr<span class="w"> </span>add<span class="w"> </span><span class="m">192</span>.168.200.20/24<span class="w"> </span>dev<span class="w"> </span>enp1s0
+sudo<span class="w"> </span>ip<span class="w"> </span>link<span class="w"> </span><span class="nb">set</span><span class="w"> </span>rocm-ernic0<span class="w"> </span>up
+sudo<span class="w"> </span>ip<span class="w"> </span>addr<span class="w"> </span>add<span class="w"> </span><span class="m">192</span>.168.200.20/24<span class="w"> </span>dev<span class="w"> </span>rocm-ernic0
 
 <span class="c1"># From VM 1:</span>
 ping<span class="w"> </span><span class="m">192</span>.168.200.20
@@ -988,7 +1048,7 @@ has to be repeated.</p>
 <p>The CI lanes launch their own VMs and drive them with
 <code class="docutils literal notranslate"><span class="pre">ci-site.yml</span></code>, which imports no host-setup play and so
 neither tears them down nor touches the systemd service.</p>
-<p><code class="docutils literal notranslate"><span class="pre">site.yml</span></code> runs six plays in order:</p>
+<p><code class="docutils literal notranslate"><span class="pre">site.yml</span></code> runs seven plays in order:</p>
 <ol class="arabic simple">
 <li><p><strong>host-setup</strong> – builds the project, installs the
 service and <code class="docutils literal notranslate"><span class="pre">ernicctl</span></code>, templates the env file, and
@@ -1008,7 +1068,8 @@ for TCP/IP validation and <code class="docutils literal notranslate"><span class
 <li><p><strong>tutorial-tests</strong> – builds examples from the
 RDMA-Tutorial and runs each between the two VMs; see
 <a class="reference internal" href="#ansible-rdma-tutorial"><span class="std std-ref">RDMA-Tutorial examples</span></a>.</p></li>
-<li><p><strong>performance-tests</strong> – the TCP and RDMA sweeps.</p></li>
+<li><p><strong>tcp-performance-tests</strong> – the <code class="docutils literal notranslate"><span class="pre">iperf3</span></code> sweep.</p></li>
+<li><p><strong>performance-tests</strong> – the RDMA <code class="docutils literal notranslate"><span class="pre">perftest</span></code> sweep.</p></li>
 </ol>
 <p>The setup plays are thin wrappers around the roles of the
 <code class="docutils literal notranslate"><span class="pre">rocm.ernic</span></code> collection, whose source lives in
@@ -1023,10 +1084,18 @@ ansible-playbook<span class="w"> </span>playbooks/guest-setup.yml
 ansible-playbook<span class="w"> </span>playbooks/sanity-tests.yml
 ansible-playbook<span class="w"> </span>playbooks/tutorial-tests.yml
 ansible-playbook<span class="w"> </span>playbooks/nvmeof-tests.yml
+ansible-playbook<span class="w"> </span>playbooks/nvmeof-kv-tests.yml
 ansible-playbook<span class="w"> </span>playbooks/s3-tests.yml
+ansible-playbook<span class="w"> </span>playbooks/tcp-performance-tests.yml
 ansible-playbook<span class="w"> </span>playbooks/performance-tests.yml
 </pre></div>
 </div>
+<p><code class="docutils literal notranslate"><span class="pre">guest-setup</span></code>, <code class="docutils literal notranslate"><span class="pre">nvmeof-tests</span></code>, <code class="docutils literal notranslate"><span class="pre">nvmeof-kv-tests</span></code> and
+<code class="docutils literal notranslate"><span class="pre">s3-tests</span></code> run on the <code class="docutils literal notranslate"><span class="pre">ernic_vms</span></code> group, which only
+<code class="docutils literal notranslate"><span class="pre">vm-register</span></code> fills, so run alone they find no hosts and do
+nothing. Run them through <code class="docutils literal notranslate"><span class="pre">ci-site.yml</span></code>, which runs
+<code class="docutils literal notranslate"><span class="pre">vm-register</span></code> first, selected by tag, as <a class="reference internal" href="nvmeof.html"><span class="doc">NVMe-oF Controller</span></a>
+shows (<code class="docutils literal notranslate"><span class="pre">site.yml</span></code> runs <code class="docutils literal notranslate"><span class="pre">guest-setup</span></code> the same way).</p>
 </section>
 <section id="variable-overrides">
 <h3>Variable overrides<a class="headerlink" href="#variable-overrides" title="Link to this heading">#</a></h3>
@@ -1138,10 +1207,10 @@ major.minor against <code class="docutils literal notranslate"><span class="pre"
 <code class="docutils literal notranslate"><span class="pre">cmake/ErnicKernelModule.cmake</span></code> – as does
 <code class="docutils literal notranslate"><span class="pre">ernic_guest_setup</span></code>, against the kernel the guest actually
 booted, before it starts that build.</p>
-<p>The <code class="docutils literal notranslate"><span class="pre">CI</span> <span class="pre">guest</span> <span class="pre">kernel</span></code> badge on line 9 of <code class="docutils literal notranslate"><span class="pre">README.md</span></code> has
-to be hardcoded – shields.io cannot read the image – so
-without a check a tag bump would leave the front page
-advertising a kernel nothing ships. Two independent
+<p>The <code class="docutils literal notranslate"><span class="pre">CI</span> <span class="pre">guest</span> <span class="pre">kernel</span></code> badge in <code class="docutils literal notranslate"><span class="pre">README.md</span></code> has to be
+hardcoded – shields.io cannot read the image – so without a
+check a tag bump would leave the front page advertising a
+kernel nothing ships. Two independent
 implementations compare them: the fetch script, on the
 manual path, and an inline copy in the
 <code class="docutils literal notranslate"><span class="pre">Read</span> <span class="pre">VM</span> <span class="pre">info</span></code> step of the loopback job in
@@ -1172,9 +1241,10 @@ GPU rig needs a GPU-flavoured image.</p>
 be turned into a rocm-ernic RDMA node without the playbooks
 here:</p>
 <dl class="simple">
-<dt><code class="docutils literal notranslate"><span class="pre">ernic_guest_setup</span></code></dt><dd><p>Installs the DKMS driver, builds rdma-core with the
-<code class="docutils literal notranslate"><span class="pre">rocm_ernic</span></code> provider, applies the udev rules, addresses
-the emulated NIC and builds rocm-xio.</p>
+<dt><code class="docutils literal notranslate"><span class="pre">ernic_guest_setup</span></code></dt><dd><p>Installs the DKMS driver, installs rdma-core with the
+<code class="docutils literal notranslate"><span class="pre">ionic</span></code> provider (building it only when the guest’s
+doesn’t match), applies the udev rules, addresses the
+emulated NIC and builds rocm-xio.</p>
 </dd>
 <dt><code class="docutils literal notranslate"><span class="pre">ernic_host_setup</span></code></dt><dd><p>Builds, installs and starts the rocm-ernic service, binds
 GPUs to <code class="docutils literal notranslate"><span class="pre">vfio-pci</span></code> and stages rocm-xio for the guests.</p>
@@ -1182,6 +1252,15 @@ GPUs to <code class="docutils literal notranslate"><span class="pre">vfio-pci</s
 <dt><code class="docutils literal notranslate"><span class="pre">ernic_source</span></code></dt><dd><p>Resolves the rocm-ernic checkout the others copy from,
 cloning it on the controller when <code class="docutils literal notranslate"><span class="pre">ernic_source_dir</span></code> is
 not set.</p>
+</dd>
+<dt><code class="docutils literal notranslate"><span class="pre">ernic_srq_dkms</span></code>, <code class="docutils literal notranslate"><span class="pre">ernic_srq_provider</span></code></dt><dd><p>Build the kernel and userspace halves of shared receive
+queue support from the patch series in
+<code class="docutils literal notranslate"><span class="pre">ansible/files/patches/srq/</span></code> and <code class="docutils literal notranslate"><span class="pre">rdma-core/</span></code>: the
+ionic modules as a DKMS package (by default only checking
+that they compile), and rdma-core’s ionic provider.</p>
+</dd>
+<dt><code class="docutils literal notranslate"><span class="pre">ernic_p4_dkms</span></code></dt><dd><p>Builds and loads <code class="docutils literal notranslate"><span class="pre">ernic_p4.ko</span></code>, which gives a guest
+program the P4 engine’s control surface (see <a class="reference internal" href="p4.html"><span class="doc">P4 Match-Action Engine</span></a>).</p>
 </dd>
 </dl>
 <p>The collection is not published to Ansible Galaxy. Consumers
@@ -1333,7 +1412,10 @@ only runs on develop delete.</p>
 and <code class="docutils literal notranslate"><span class="pre">ernic-prune-images</span></code> tests check these scripts
 against stand-ins for Docker, <code class="docutils literal notranslate"><span class="pre">oras</span></code>, <code class="docutils literal notranslate"><span class="pre">gh</span></code> and the
 registry. For
-the details, see <code class="docutils literal notranslate"><span class="pre">ci/images/README.md</span></code>.</p>
+the details, see <code class="docutils literal notranslate"><span class="pre">ci/images/README.md</span></code>. Likewise,
+<code class="docutils literal notranslate"><span class="pre">ernic-boot-guest</span></code> checks <code class="docutils literal notranslate"><span class="pre">ci/boot-guest.sh</span></code>, and
+<code class="docutils literal notranslate"><span class="pre">ernicctl</span> <span class="pre">vm-launch</span></code> and <code class="docutils literal notranslate"><span class="pre">vm-stop</span></code> through it, against
+stand-ins for QEMU and <code class="docutils literal notranslate"><span class="pre">ssh</span></code>, so no guest boots.</p>
 </section>
 </section>
 <section id="adding-new-tests">

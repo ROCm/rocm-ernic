@@ -309,6 +309,17 @@ Build Options
        project's version (see :ref:`packages`): letters, digits,
        ``+``, ``.``, and ``~``, but not a value CMake takes as
        false, such as ``0``, which CPack would leave out
+   * - ``ERNIC_BUILD_GUEST_PACKAGES``
+     - ``OFF``
+     - Register the guest-side DEB packages (the ionic DKMS
+       modules, the rdma-core SRQ provider, and the P4 DKMS
+       module) with CPack. Only their names and metadata so
+       far: nothing installs into them yet, so no usable
+       package is built
+   * - ``ERNIC_GUEST_PACKAGE_RELEASE``
+     - ``local``
+     - The release part of the guest packages' version, as
+       ``ERNIC_PACKAGE_RELEASE`` is for the server's
    * - ``CMAKE_INSTALL_PREFIX``
      - ``/usr/local``
      - Installation prefix

@@ -384,6 +384,7 @@
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#the-device-core">The Device Core</a></li>
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#the-main-loop">The Main Loop</a></li>
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#bus-master-enable">Bus Master Enable</a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#resets">Resets</a></li>
 </ul>
 </li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#bringing-the-device-up">Bringing the Device Up</a><ul class="pst-show_toc_level nav section-nav flex-column">
@@ -402,6 +403,7 @@
 </ul>
 </li>
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#receive-queues-and-cq-doorbells">Receive Queues and CQ Doorbells</a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#queues-in-the-cmb">Queues in the CMB</a></li>
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#datagrams-ud-and-gsi">Datagrams (UD and GSI)</a></li>
 </ul>
 </li>
@@ -640,8 +642,9 @@ would need.</p></li>
 <li><p><strong>Interrupts.</strong> <code class="docutils literal notranslate"><span class="pre">vfu_irq_trigger()</span></code> signals an eventfd that
 QEMU turns into an MSI-X interrupt in the guest. The device
 has no INTx (see <a class="reference internal" href="ionic.html"><span class="doc">The ionic Device</span></a>).</p></li>
-<li><p><strong>Resets.</strong> libvfio-user tells the server when the guest
-resets the device or the client disconnects.</p></li>
+<li><p><strong>Resets.</strong> libvfio-user tells the server when QEMU resets
+the device, when the guest starts a function-level reset,
+and when the client disconnects (see <a class="reference internal" href="#resets">Resets</a>).</p></li>
 </ul>
 <p>The libvfio-user context isn’t thread-safe, so in rocm-ernic
 <strong>only the main thread may touch guest memory or the
@@ -686,7 +689,8 @@ often it rewrites its statistics. <code class="docutils literal notranslate"><sp
 built-in profiles and ini files over the default, <code class="docutils literal notranslate"><span class="pre">compat</span></code>,
 whose values this page gives. See <a class="reference internal" href="ionic.html"><span class="doc">The ionic Device</span></a> for the keys and
 the built-in profiles.</p>
-<p>The device has two BARs:</p>
+<p>The device has two BARs, or three with <code class="docutils literal notranslate"><span class="pre">--cmb</span></code>. Each is
+64-bit, so it takes two of the six BAR slots:</p>
 <div class="pst-scrollable-table-container"><table class="table">
 <colgroup>
 <col style="width: 10.0%" />
@@ -708,6 +712,12 @@ PBA</p></td>
 <tr class="row-odd"><td><p>BAR 2</p></td>
 <td><p>4 MiB</p></td>
 <td><p>Doorbell pages, 4 KiB each</p></td>
+</tr>
+<tr class="row-even"><td><p>BAR 4</p></td>
+<td><p>8 MiB</p></td>
+<td><p>Controller Memory Buffer (CMB), only with <code class="docutils literal notranslate"><span class="pre">--cmb</span></code>: a
+QP’s rings may be put here instead of in guest memory
+(see <a class="reference internal" href="#queues-in-the-cmb">Queues in the CMB</a>)</p></td>
 </tr>
 </tbody>
 </table>
@@ -733,7 +743,8 @@ carries the queue id, a producer index, and a “ring” field that
 distinguishes “new work” from “arm this CQ”:</p>
 <div class="highlight-text notranslate"><div class="highlight"><pre><span></span>bits 15:0   p_index   producer index (or CQ consumer index)
 bits 23:16  ring      0 = work, 1 = arm CQ,
-                      2 = arm CQ for solicited events
+                      2 = arm CQ for solicited events,
+                      3 = post to an SRQ
 bits 47:24  qid
 </pre></div>
 </div>
@@ -749,8 +760,12 @@ emulator implements both halves:</p>
 <li><p><strong>Ethernet</strong> queue types 0 to 3: the Ethernet admin queue,
 notify queue, receive queues, and transmit queues.</p></li>
 <li><p><strong>RDMA</strong> queue types 5 to 9: the RDMA admin queue (AQ), SQ,
-RQ, CQ, and EQ. Shared receive queues ring the RQ doorbell
-type with ids above the QP id range.</p></li>
+RQ, CQ, and EQ. A receive posted to a shared receive queue
+rings either the RQ type, with the SRQ’s id, which lies
+above the QP id range, or the CQ type with ring 3. The
+guest kernel uses the first; rdma-core’s provider uses the
+second as proposed upstream, and the first with the local
+fix in <code class="docutils literal notranslate"><span class="pre">ansible/files/patches/rdma-core/</span></code>.</p></li>
 </ul>
 </section>
 <section id="inside-the-server">
@@ -767,7 +782,7 @@ type with ids above the QP id range.</p></li>
 │  ionic_eth_emu.c ─── BAR 0 registers, device        │
 │    │    │            commands, Ethernet queues,     │
 │    │    │            interrupt controller, BAR 2    │
-│    │    │            doorbell decode                │
+│    │    │            doorbell decode, BAR 4 CMB     │
 │    │    └──► ionic_eth_net.c   host TAP interface   │
 │    ▼                                                │
 │  ionic_rdma_devcmd.c ─ RDMA bootstrap: EQs and the  │
@@ -887,9 +902,9 @@ loops:</p>
 <li><p>Write the stats file, if there is one, about once a second.</p></li>
 <li><p><code class="docutils literal notranslate"><span class="pre">vfu_run_ctx()</span></code>: handle pending vfio-user messages. BAR
 accesses arrive here as callbacks, and <strong>BAR 2 doorbells for
-send queues are executed inside the callback</strong> (see
-<a class="reference internal" href="#the-data-path">The Data Path</a>).</p></li>
-<li><p>Run any GLib idle callbacks.</p></li>
+send queues are executed inside the callback</strong>, as are
+express doorbells written into the CMB (see <a class="reference internal" href="#the-data-path">The Data
+Path</a>). If the client has gone, stop here.</p></li>
 <li><p><code class="docutils literal notranslate"><span class="pre">ionic_device_poll()</span></code>, the device’s share, which is the
 next three steps, unless the guest has Bus Master Enable
 clear or the function in D3hot (see <a class="reference internal" href="#bus-master-enable">Bus Master Enable</a>).</p></li>
@@ -901,12 +916,17 @@ memory if the profile’s interval has passed.</p></li>
 <li><p>Run the S3 store’s TCP timers, apply messages that arrived
 from other servers over the mesh, and time out requests that
 never got an answer.</p></li>
-<li><p>If no vfio-user message or idle callback ran, and nothing is
-waiting from the mesh or the S3 store, sleep 100 µs.</p></li>
+<li><p>If no vfio-user message was handled, and nothing is waiting
+from the mesh or the S3 store, sleep 100 µs.</p></li>
 </ol>
 <p>The server is a polling design. Latency is bounded by the loop
 period, and an idle server still wakes up as often as 10,000
 times a second.</p>
+<p>When QEMU disconnects, the device is reset (see <a class="reference internal" href="#resets">Resets</a>) and
+the server waits for the next client, so a VM can be restarted,
+or the device hot-plugged again, without restarting the server.
+So does a client that drops while the two are still
+negotiating.</p>
 </section>
 <section id="bus-master-enable">
 <h3>Bus Master Enable<a class="headerlink" href="#bus-master-enable" title="Link to this heading">#</a></h3>
@@ -941,6 +961,42 @@ management, and a function in D3hot may not use the bus either.
 The device supports only D0 and D3hot, and sets No_Soft_Reset,
 so it keeps its state in D3hot, and going back to D0 lets the
 held work go on as setting BME does. A reset returns it to D0.</p>
+</section>
+<section id="resets">
+<h3>Resets<a class="headerlink" href="#resets" title="Link to this heading">#</a></h3>
+<p>Three events reset the device, and each resets all of it:</p>
+<ul class="simple">
+<li><p>QEMU resets the device, as when the VM resets.</p></li>
+<li><p>The guest starts a function-level reset (FLR), which the PCI
+Express capability advertises, by writing Initiate FLR, as
+Linux does when asked through
+<code class="docutils literal notranslate"><span class="pre">/sys/bus/pci/devices/*/reset</span></code>.</p></li>
+<li><p>The client disconnects. libvfio-user has already unmapped the
+guest’s memory by then.</p></li>
+</ul>
+<p>A reset takes back every queue, memory registration, and
+request in flight, including those queued for other nodes on
+the mesh, and drops what peers have sent that the main loop
+hasn’t applied yet. It disconnects the NVMe-oF controller’s and
+the S3 store’s connections, restores the P4 program the server
+was started with, clears the Ethernet side and the CMB, and
+zeroes the Ethernet LIF and port counters and the data path’s
+RDMA error counters. The server’s own device-wide counters
+carry on, and count a device reset or FLR in <code class="docutils literal notranslate"><span class="pre">reset_count</span></code>,
+but each QP’s counters go with the QP. Every interrupt vector
+is masked again, and the config-space registers a driver writes
+go back to what they were before any driver ran, but for the
+link settings an FLR keeps. A device left running would go on
+writing into memory the guest has reused for something else, or
+that the next client maps at the same addresses. A reset does
+no DMA.</p>
+<p>The mesh connections stay up, and the node keeps its id. A
+request a peer sent before the reset that is still on its way
+can arrive after it; nothing in it says it was for a QP or
+memory region from before the reset.</p>
+<p>The <code class="docutils literal notranslate"><span class="pre">RESET</span></code> device command resets the device in the same way,
+but leaves the config space and the P4 program alone (see
+<a class="reference internal" href="#device-commands-over-bar-0">Device Commands over BAR 0</a>).</p>
 </section>
 </section>
 <section id="bringing-the-device-up">
@@ -1160,7 +1216,9 @@ its EQ with the data path</p></td>
 </tr>
 <tr class="row-odd"><td><p>CREATE_QP</p></td>
 <td><p>Allocate a QP; register its SQ and RQ rings (or bind it
-to an SRQ) and its CQs with the data path</p></td>
+to an SRQ) and its CQs with the data path. A ring the
+driver put in the CMB is named by its offset there, and
+must lie inside it</p></td>
 </tr>
 <tr class="row-even"><td><p>CREATE_MR</p></td>
 <td><p>Allocate an MR; register its address range and page
@@ -1198,7 +1256,7 @@ its ring</p></td>
 QP’s counters into the driver’s buffer; this is what the
 guest reads as <code class="docutils literal notranslate"><span class="pre">hw_counters</span></code> (see <a class="reference internal" href="monitoring.html"><span class="doc">Prometheus Monitoring and Grafana Dashboard</span></a>)</p></td>
 </tr>
-<tr class="row-even"><td><p>MODIFY_DCQCN, DEBUG, QUERY_AH</p></td>
+<tr class="row-even"><td><p>NOOP, MODIFY_DCQCN, DEBUG, QUERY_AH</p></td>
 <td><p>Succeed without doing anything</p></td>
 </tr>
 </tbody>
@@ -1377,6 +1435,28 @@ either report the guest’s consumer index (ring 0) or arm the CQ
 (ring 1 or 2). Arming behaves like a level, not an edge: if
 completions are already waiting when the CQ is armed, the event
 fires at once.</p>
+</section>
+<section id="queues-in-the-cmb">
+<h3>Queues in the CMB<a class="headerlink" href="#queues-in-the-cmb" title="Link to this heading">#</a></h3>
+<p>With <code class="docutils literal notranslate"><span class="pre">--cmb</span></code> the device has a Controller Memory Buffer, BAR
+4, and the driver may put a QP’s send or receive ring there
+instead of in guest memory (see <a class="reference internal" href="usage.html"><span class="doc">Usage</span></a> for when it does).
+<code class="docutils literal notranslate"><span class="pre">DISCOVER_CMB</span></code> reports the buffer, and <code class="docutils literal notranslate"><span class="pre">Q_IDENTIFY</span></code> offers
+the <em>express doorbell</em>. The server keeps the CMB in a buffer of
+its own. Like the other BARs, BAR 4 isn’t mapped into the guest,
+so each store the guest makes there exits to QEMU and reaches
+the server as a write of at most 8 bytes.</p>
+<p>A ring in the CMB needs no doorbell. A write that ends at the
+end of one of its slots posts the WQE in that slot, as a
+doorbell naming the next slot would, and a send queue runs at
+once, inside the BAR 4 callback. That holds only for a guest
+that writes each WQE front to back, as the provider does. The
+data path then reads the WQE out of the server’s copy of the
+CMB rather than guest memory. A WQE there is in no guest page,
+so its inline payload is taken from that copy, and only a SEND
+or WRITE may have one. When a QP is destroyed its CMB rings are
+zeroed, since the driver hands the same space to the next QP,
+which may belong to another process.</p>
 </section>
 <section id="datagrams-ud-and-gsi">
 <h3>Datagrams (UD and GSI)<a class="headerlink" href="#datagrams-ud-and-gsi" title="Link to this heading">#</a></h3>
@@ -1738,8 +1818,11 @@ can’t collide with the guest’s QPs. Replies go back into the
 guest’s GSI receive queue with a GRH, as from a real peer.</p></li>
 <li><p><strong>I/O.</strong> A SEND on a bound QP is an NVMe command capsule. The
 data path hands it to <code class="docutils literal notranslate"><span class="pre">src/nvmeof/nvmeof_target.c</span></code>, which
-executes it synchronously against a RAM- or file-backed
-namespace. It moves data through the keyed SGL in the
+executes it synchronously against the namespace it names. A
+controller has up to eight namespaces, each either a block
+namespace, in RAM or backed by a file, or a Key Value one,
+whose store (<code class="docutils literal notranslate"><span class="pre">src/nvmeof/nvmeof_kv.c</span></code>) is a hash table in
+RAM. It moves data through the keyed SGL in the
 command (the guest’s rkey, usually from a fast registration
 just before), and the response capsule is delivered into the
 guest’s next posted receive.</p></li>
@@ -1843,6 +1926,11 @@ driver bring-up.</p></td>
 </section>
 <section id="threads">
 <h2><a class="toc-backref" href="#id14" role="doc-backlink">Threads</a><a class="headerlink" href="#threads" title="Link to this heading">#</a></h2>
+<p>Each thread the mesh starts has a name, which <code class="docutils literal notranslate"><span class="pre">ps</span> <span class="pre">-L</span></code> and a
+debugger show, given in brackets below. A receive or send
+thread’s ends in its peer’s node id, or in <code class="docutils literal notranslate"><span class="pre">new</span></code> while that
+isn’t known yet; a worker’s receive thread for its connection
+to the manager is <code class="docutils literal notranslate"><span class="pre">tcp-mgr-recv</span></code>.</p>
 <div class="pst-scrollable-table-container"><table class="table">
 <colgroup>
 <col style="width: 25.0%" />
@@ -1861,32 +1949,32 @@ driver bring-up.</p></td>
 <td><p>vfio-user, every register access, every guest-memory
 access, every interrupt</p></td>
 </tr>
-<tr class="row-odd"><td><p>accept</p></td>
+<tr class="row-odd"><td><p>accept (<code class="docutils literal notranslate"><span class="pre">tcp-accept</span></code>)</p></td>
 <td><p><code class="docutils literal notranslate"><span class="pre">tcp</span></code></p></td>
 <td><p>Accepts incoming mesh connections</p></td>
 </tr>
-<tr class="row-even"><td><p>receive (one per connection)</p></td>
+<tr class="row-even"><td><p>receive (<code class="docutils literal notranslate"><span class="pre">tcp-recv-&lt;node&gt;</span></code>), one per connection</p></td>
 <td><p><code class="docutils literal notranslate"><span class="pre">tcp</span></code></p></td>
 <td><p>Reads mesh messages and queues them for the main thread</p></td>
 </tr>
-<tr class="row-odd"><td><p>send (one per connection)</p></td>
+<tr class="row-odd"><td><p>send (<code class="docutils literal notranslate"><span class="pre">tcp-send-&lt;node&gt;</span></code>), one per connection</p></td>
 <td><p><code class="docutils literal notranslate"><span class="pre">tcp</span></code>, once the data path sends on it, or a heartbeat
 finds it busy</p></td>
 <td><p>Writes the messages the main thread queues for the
 connection’s peer, so the main thread never waits for one,
 and heartbeats that couldn’t be written at once</p></td>
 </tr>
-<tr class="row-even"><td><p>health check</p></td>
+<tr class="row-even"><td><p>health check (<code class="docutils literal notranslate"><span class="pre">tcp-health</span></code>)</p></td>
 <td><p><code class="docutils literal notranslate"><span class="pre">tcp</span></code> manager</p></td>
 <td><p>Heartbeats, dead-node detection, closing dead nodes’
 connections, and those of nodes that never registered</p></td>
 </tr>
-<tr class="row-odd"><td><p>broadcast</p></td>
+<tr class="row-odd"><td><p>broadcast (<code class="docutils literal notranslate"><span class="pre">tcp-broadcast</span></code>)</p></td>
 <td><p><code class="docutils literal notranslate"><span class="pre">tcp</span></code> manager</p></td>
 <td><p>Sends the topology and GID ownership to the workers (see
 <a class="reference internal" href="#which-server-owns-a-gid">Which Server Owns a GID?</a>)</p></td>
 </tr>
-<tr class="row-even"><td><p>peer connect</p></td>
+<tr class="row-even"><td><p>peer connect (<code class="docutils literal notranslate"><span class="pre">tcp-peers</span></code>)</p></td>
 <td><p><code class="docutils literal notranslate"><span class="pre">tcp</span></code> worker</p></td>
 <td><p>Connects to peers as the topology changes, and closes dead
 connections; connects to the manager again when its
@@ -1940,7 +2028,8 @@ the server allocate a large page table.</p></li>
 <li><p>Every ring’s depth and stride is bounded before it is used in
 a shift. A command creating a queue (an RDMA admin queue,
 EQ, CQ, QP, or SRQ, or a Q_INIT of an Ethernet queue) that
-exceeds the bounds is refused.</p></li>
+exceeds the bounds is refused, as is a QP whose ring in the
+CMB doesn’t lie wholly inside it.</p></li>
 <li><p>Datagram delivery within one VM checks that the destination
 is a UD or GSI QP, so a datagram can’t land in an RC or UC
 QP, and that the sender’s Q_Key matches the destination’s. A
@@ -2012,92 +2101,99 @@ and the main loop polls.</p></li>
 <tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">src/ernic_socket.c</span></code></p></td>
 <td><p>The vfio-user socket’s permissions</p></td>
 </tr>
-<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">src/rocm_ernic_internal.h</span></code></p></td>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">src/ernic_log.c</span></code>, <code class="docutils literal notranslate"><span class="pre">.h</span></code></p></td>
+<td><p>The log every message goes through (<code class="docutils literal notranslate"><span class="pre">--log-level</span></code>,
+<code class="docutils literal notranslate"><span class="pre">--log-file</span></code>)</p></td>
+</tr>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">src/rocm_ernic_internal.h</span></code></p></td>
 <td><p>The top-level device struct</p></td>
 </tr>
-<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">src/ionic/ionic_bar.h</span></code></p></td>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">src/ionic/ionic_bar.h</span></code></p></td>
 <td><p>BAR layout constants</p></td>
 </tr>
-<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">src/ionic/ionic_device.c</span></code></p></td>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">src/ionic/ionic_device.c</span></code></p></td>
 <td><p>The ionic device as one object: builds, wires, polls and
 tears down the files below</p></td>
 </tr>
-<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">src/ionic/ionic_eth_emu.c</span></code></p></td>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">src/ionic/ionic_eth_emu.c</span></code></p></td>
 <td><p>Registers, device commands, LIF, Ethernet queues,
-interrupt controller, doorbell decode</p></td>
+interrupt controller, doorbell decode, the CMB</p></td>
 </tr>
-<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">src/ionic/ionic_eth_net.c</span></code></p></td>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">src/ionic/ionic_eth_net.c</span></code></p></td>
 <td><p>Host TAP interface</p></td>
 </tr>
-<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">src/ionic/ionic_eth_steer.c</span></code></p></td>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">src/ionic/ionic_eth_steer.c</span></code></p></td>
 <td><p>Choosing the receive queue for a frame</p></td>
 </tr>
-<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">src/ionic/ionic_emu_stats.c</span></code></p></td>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">src/ionic/ionic_emu_stats.c</span></code></p></td>
 <td><p>Ethernet LIF and port counters, and the statistics blocks
 written into guest memory</p></td>
 </tr>
-<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">src/ionic/ionic_profile.c</span></code>,
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">src/ionic/ionic_profile.c</span></code>,
 <code class="docutils literal notranslate"><span class="pre">src/ionic/ionic_profiles.c</span></code></p></td>
 <td><p>NIC profiles: loading and layering them, and the built-in
 ones</p></td>
 </tr>
-<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">src/ionic/ionic_fault.c</span></code></p></td>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">src/ionic/ionic_fault.c</span></code></p></td>
 <td><p>Fault injection (<code class="docutils literal notranslate"><span class="pre">--inject</span></code>)</p></td>
 </tr>
-<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">src/ionic/ionic_rdma_devcmd.c</span></code></p></td>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">src/ionic/ionic_rdma_devcmd.c</span></code></p></td>
 <td><p>RDMA bootstrap (EQs, admin queues), EQE posting</p></td>
 </tr>
-<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">src/ionic/ionic_adminq.c</span></code></p></td>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">src/ionic/ionic_adminq.c</span></code></p></td>
 <td><p>RDMA control path</p></td>
 </tr>
-<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">src/ionic/ionic_datapath.c</span></code></p></td>
-<td><p>RDMA data path and inter-server wire protocol</p></td>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">src/ionic/ionic_datapath.c</span></code></p></td>
+<td><p>RDMA data path, express doorbell, and inter-server wire
+protocol</p></td>
 </tr>
-<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">src/ionic/ionic_datapath_nvmeof.c</span></code>,
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">src/ionic/ionic_datapath_nvmeof.c</span></code>,
 <code class="docutils literal notranslate"><span class="pre">src/ionic/ionic_datapath_s3.c</span></code>,
 <code class="docutils literal notranslate"><span class="pre">src/ionic/ionic_datapath_p4.c</span></code></p></td>
 <td><p>The data path’s side of the NVMe-oF and S3 targets and
 the P4 pipeline</p></td>
 </tr>
-<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">src/ionic/ionic_eth_p4.c</span></code></p></td>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">src/ionic/ionic_eth_p4.c</span></code></p></td>
 <td><p>The P4 pipeline on the Ethernet frame filters</p></td>
 </tr>
-<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">src/ernic_dma.c</span></code></p></td>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">src/ernic_dma.c</span></code></p></td>
 <td><p>Copying to and from guest memory, for all of the above</p></td>
 </tr>
-<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">src/ernic_stats.c</span></code>, <code class="docutils literal notranslate"><span class="pre">.h</span></code></p></td>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">src/ernic_stats.c</span></code>, <code class="docutils literal notranslate"><span class="pre">.h</span></code></p></td>
 <td><p>The device and per-QP counters, and the stats file</p></td>
 </tr>
-<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">src/ernic_siphash.c</span></code>, <code class="docutils literal notranslate"><span class="pre">.h</span></code></p></td>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">src/ernic_siphash.c</span></code>, <code class="docutils literal notranslate"><span class="pre">.h</span></code></p></td>
 <td><p>SipHash-2-4, for values a guest must not predict</p></td>
 </tr>
-<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">src/rocm_ernic_compat.c</span></code>, <code class="docutils literal notranslate"><span class="pre">.h</span></code>,
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">src/rocm_ernic_compat.c</span></code>, <code class="docutils literal notranslate"><span class="pre">.h</span></code>,
 <code class="docutils literal notranslate"><span class="pre">src/ernic_rm.h</span></code>, <code class="docutils literal notranslate"><span class="pre">src/ernic_mesh.h</span></code></p></td>
 <td><p>Bridge to the QEMU-derived core: the device’s lifecycle,
 and wrappers for the resource manager and the mesh</p></td>
 </tr>
-<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">src/pvrdma/</span></code></p></td>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">src/pvrdma/</span></code></p></td>
 <td><p>Resource manager and backend dispatch, forked from QEMU</p></td>
 </tr>
-<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">src/rdma/rdma_backend_*.c</span></code></p></td>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">src/rdma/rdma_backend_*.c</span></code></p></td>
 <td><p>Backend registry; none, loopback, and TCP mesh backends</p></td>
 </tr>
-<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">src/rdma/tcp_*.c</span></code></p></td>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">src/rdma/tcp_*.c</span></code></p></td>
 <td><p>The TCP mesh: connections, the wire format, GID
 ownership, and the manager’s and workers’ halves</p></td>
 </tr>
-<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">src/qemu-compat/</span></code></p></td>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">src/qemu-compat/</span></code></p></td>
 <td><p>Stand-ins for the QEMU APIs the QEMU-derived code calls</p></td>
 </tr>
-<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">src/nvmeof/nvmeof_cm.c</span></code>,
-<code class="docutils literal notranslate"><span class="pre">src/nvmeof/nvmeof_target.c</span></code></p></td>
-<td><p>In-process NVMe-oF CM responder and controller</p></td>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">src/nvmeof/nvmeof_cm.c</span></code>,
+<code class="docutils literal notranslate"><span class="pre">src/nvmeof/nvmeof_target.c</span></code>,
+<code class="docutils literal notranslate"><span class="pre">src/nvmeof/nvmeof_kv.c</span></code></p></td>
+<td><p>In-process NVMe-oF CM responder, controller, and Key
+Value store</p></td>
 </tr>
-<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">src/s3/s3_tcp.c</span></code>, <code class="docutils literal notranslate"><span class="pre">src/s3/s3_http.c</span></code>,
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">src/s3/s3_tcp.c</span></code>, <code class="docutils literal notranslate"><span class="pre">src/s3/s3_http.c</span></code>,
 <code class="docutils literal notranslate"><span class="pre">src/s3/s3_token.c</span></code>, <code class="docutils literal notranslate"><span class="pre">src/s3/s3_target.c</span></code></p></td>
 <td><p>In-process S3 store</p></td>
 </tr>
-<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">src/p4/</span></code></p></td>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">src/p4/</span></code></p></td>
 <td><p>P4 engine: program loader, tables, the pipeline, its
 device commands, and the fp8 and format conversion
 externs</p></td>
@@ -2164,6 +2260,7 @@ externs</p></td>
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#the-device-core">The Device Core</a></li>
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#the-main-loop">The Main Loop</a></li>
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#bus-master-enable">Bus Master Enable</a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#resets">Resets</a></li>
 </ul>
 </li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#bringing-the-device-up">Bringing the Device Up</a><ul class="pst-show_toc_level nav section-nav flex-column">
@@ -2182,6 +2279,7 @@ externs</p></td>
 </ul>
 </li>
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#receive-queues-and-cq-doorbells">Receive Queues and CQ Doorbells</a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#queues-in-the-cmb">Queues in the CMB</a></li>
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#datagrams-ud-and-gsi">Datagrams (UD and GSI)</a></li>
 </ul>
 </li>

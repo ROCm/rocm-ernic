@@ -708,12 +708,18 @@ Userspace: the Upstream Provider
 
 No patched rdma-core is needed:
 ``providers/ionic`` landed upstream in rdma-core
-v61, and the guest role installs v62.0. The
-``ernic_guest_setup`` role therefore skips the provider
-injection and registration steps entirely and only verifies
-that ``libionic*.so`` landed in ``libibverbs/``.
+v61, which Ubuntu 26.04 packages and the CI guest image
+carries. The ``ernic_guest_setup`` role installs
+``ernic_rdma_core_version`` (61.0 by default), building it
+only when the guest's provider doesn't already match, and
+then only verifies that ``libionic*.so`` landed in
+``libibverbs/``.
 
-The one exception is GPU work. With
+There are two exceptions. No rdma-core release has shared
+receive queues in ``providers/ionic`` yet, so a guest that
+needs them builds the provider from the series in
+``ansible/files/patches/rdma-core/`` (the
+``ernic_srq_provider`` role). The other is GPU work. With
 ``ernic_gpu_passthrough`` on, the role applies
 ``rdma-core/ionic-gda/*.patch`` from the guest's rocm-xio
 checkout before configuring, so the installed provider

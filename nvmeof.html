@@ -720,10 +720,13 @@ a 16-byte response capsule delivered into a posted receive.</p>
 <p>Admin commands cover what <code class="docutils literal notranslate"><span class="pre">nvme</span> <span class="pre">connect</span></code>, <code class="docutils literal notranslate"><span class="pre">nvme</span> <span class="pre">discover</span></code> and
 <code class="docutils literal notranslate"><span class="pre">nvme</span> <span class="pre">list</span></code> need: the fabrics Connect and Property
 Get/Set, Identify (controller, namespace, active namespace
-list and namespace descriptor list), Get/Set Features, Get
-Log Page, Keep Alive, Abort and Async Event. The I/O command
-set is Read, Write, Flush, Write Zeroes and Dataset
-Management.</p>
+list, namespace descriptor list, and I/O command set
+independent namespace), Get/Set Features, Get Log Page,
+Keep Alive, Abort and Async Event. The I/O command set of a
+block namespace is Read, Write, Flush, Write Zeroes and
+Dataset Management, and of a Key Value namespace the five
+commands listed in <a class="reference internal" href="#nvmeof-mixed"><span class="std std-ref">Key Value, and several namespaces at once</span></a>, which
+<code class="file docutils literal notranslate"><span class="pre">src/nvmeof/nvmeof_kv.c</span></code> stores in a hash table.</p>
 <p>Read and Write move their payload with keyed SGLs: the
 controller issues RDMA READ or WRITE against the guest’s
 memory key from inside the data path, using the same
@@ -760,7 +763,12 @@ key, so honoring it would expose all of guest memory.</p>
 </div>
 <ul class="simple">
 <li><p><code class="docutils literal notranslate"><span class="pre">nvmeof-target-unit</span></code> – capsule parsing, the admin and
-I/O command set, and namespace backing.</p></li>
+I/O command sets, Key Value namespaces, and namespace
+backing.</p></li>
+<li><p><code class="docutils literal notranslate"><span class="pre">nvmeof-kv-compact-unit</span></code> – compacting the Key Value
+store once deletes leave it mostly tombstones, and an
+allocation failure while it does, which leaves the store
+as it was.</p></li>
 <li><p><code class="docutils literal notranslate"><span class="pre">nvmeof-cm-unit</span></code> – the CM state machine, including the
 rejection paths.</p></li>
 <li><p><code class="docutils literal notranslate"><span class="pre">nvmeof-ci</span></code> – starts the real server binary once per
@@ -872,7 +880,10 @@ neither the play nor the hosted lane checks the accelerator.</p>
 <section id="limitations">
 <h2>Limitations<a class="headerlink" href="#limitations" title="Link to this heading">#</a></h2>
 <ul class="simple">
-<li><p>One subsystem with one namespace per server instance.</p></li>
+<li><p>One subsystem per server instance, with at most eight
+namespaces.</p></li>
+<li><p>A Key Value namespace is in RAM only, so its keys and
+values don’t survive a restart.</p></li>
 <li><p>No authentication, no discovery-controller persistence,
 no multipath, no reservations.</p></li>
 <li><p>No ANA, no namespace management, and no Format NVM.</p></li>

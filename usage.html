@@ -377,6 +377,8 @@
                 <ul class="pst-show_toc_level nav section-nav flex-column">
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#basic-usage">Basic Usage</a></li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#the-emulated-device">The Emulated Device</a></li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#connecting-several-vms">Connecting Several VMs</a></li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#environment-variables">Environment Variables</a></li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#log-levels">Log Levels</a></li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#launching-a-vm">Launching a VM</a></li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#statistics-collection">Statistics Collection</a></li>
@@ -422,6 +424,12 @@
 <span class="w">  </span>--backend<span class="w"> </span>loopback<span class="w"> </span>--tap<span class="w"> </span>ernic0
 </pre></div>
 </div>
+<p><code class="docutils literal notranslate"><span class="pre">rocm-ernic</span> <span class="pre">--help</span></code> lists every option and each backend’s
+settings. Those that shape the NIC (<code class="docutils literal notranslate"><span class="pre">--nic-profile</span></code>,
+<code class="docutils literal notranslate"><span class="pre">--print-profile</span></code>, <code class="docutils literal notranslate"><span class="pre">--eth-queues</span></code>,
+<code class="docutils literal notranslate"><span class="pre">--stats-interval-ms</span></code>) and <code class="docutils literal notranslate"><span class="pre">--inject</span></code> are described in
+<a class="reference internal" href="ionic.html"><span class="doc">The ionic Device</span></a>, and the P4 engine’s (<code class="docutils literal notranslate"><span class="pre">--p4</span></code>,
+<code class="docutils literal notranslate"><span class="pre">--p4-program</span></code>, <code class="docutils literal notranslate"><span class="pre">--p4-guest-scope</span></code>) in <a class="reference internal" href="p4.html"><span class="doc">P4 Match-Action Engine</span></a>.</p>
 <p>Whoever connects to the socket drives the device as the
 guest’s QEMU, so the server makes it mode <code class="docutils literal notranslate"><span class="pre">0600</span></code>: only the
 user the server runs as, and root, can connect. Run QEMU as
@@ -488,6 +496,12 @@ front, owned by the user running the server:</p>
 <p>The two paths are independent: <code class="docutils literal notranslate"><span class="pre">--backend</span></code> governs the RDMA
 data path, <code class="docutils literal notranslate"><span class="pre">--tap</span></code> the Ethernet one. See <a class="reference internal" href="ionic.html"><span class="doc">The ionic Device</span></a> for
 the full picture.</p>
+<p><code class="docutils literal notranslate"><span class="pre">--mac</span> <span class="pre">XX:XX:XX:XX:XX:XX</span></code> (short <code class="docutils literal notranslate"><span class="pre">-m</span></code>) sets the MAC
+address the device reports. Without it every server reports
+<code class="docutils literal notranslate"><span class="pre">72:6f:63:6d:2d:6e</span></code>, so give each server on a shared
+segment its own, as the service does (see <a class="reference internal" href="service.html"><span class="doc">systemd Service and ernicctl</span></a>).
+The guest can change it, as on any NIC, until the next
+reset.</p>
 <p><code class="docutils literal notranslate"><span class="pre">--cmb</span></code> gives the device an 8 MB Controller Memory Buffer
 (CMB), BAR 4, which the guest’s RDMA driver may put queues
 in. It is off by default, so every queue is in guest memory.
@@ -501,7 +515,90 @@ memory is written directly.</p>
 <p><code class="docutils literal notranslate"><span class="pre">nvmeof</span></code> is the odd one out: rather than carrying guest
 RDMA traffic somewhere, it answers it, presenting an NVMe
 over Fabrics target the guest connects to with stock
-<code class="docutils literal notranslate"><span class="pre">nvme</span> <span class="pre">connect</span> <span class="pre">-t</span> <span class="pre">rdma</span></code>. See <a class="reference internal" href="nvmeof.html"><span class="doc">NVMe-oF Controller</span></a>.</p>
+<code class="docutils literal notranslate"><span class="pre">nvme</span> <span class="pre">connect</span> <span class="pre">-t</span> <span class="pre">rdma</span></code>. See <a class="reference internal" href="nvmeof.html"><span class="doc">NVMe-oF Controller</span></a>. <code class="docutils literal notranslate"><span class="pre">s3</span></code> is
+similar, with an object store in place of the controller;
+see <a class="reference internal" href="s3.html"><span class="doc">S3 over RDMA Object Store</span></a>.</p>
+</section>
+<section id="connecting-several-vms">
+<h2>Connecting Several VMs<a class="headerlink" href="#connecting-several-vms" title="Link to this heading">#</a></h2>
+<p>One server serves one VM. For guests in different VMs to
+reach each other over RDMA, run each server with the <code class="docutils literal notranslate"><span class="pre">tcp</span></code>
+backend, which joins the servers in a mesh over TCP. One
+server is the manager, and the rest are workers that connect
+to it:</p>
+<div class="highlight-bash notranslate"><div class="highlight"><pre><span></span><span class="c1"># The manager, listening on port 5000</span>
+<span class="nv">ERNIC_TCP_GUEST_GIDS</span><span class="o">=</span>fe80::706f:63ff:fe6d:2d01<span class="w"> </span><span class="se">\</span>
+<span class="w">  </span>./build/rocm-ernic<span class="w"> </span>--socket<span class="w"> </span>/tmp/ernic-1.sock<span class="w"> </span><span class="se">\</span>
+<span class="w">  </span>--backend<span class="w"> </span>tcp:manager:listen:5000<span class="w"> </span><span class="se">\</span>
+<span class="w">  </span>--mac<span class="w"> </span><span class="m">72</span>:6f:63:6d:2d:01<span class="w"> </span>--tap<span class="w"> </span>ernic1
+
+<span class="c1"># A worker, connecting to the manager</span>
+<span class="nv">ERNIC_TCP_GUEST_GIDS</span><span class="o">=</span>fe80::706f:63ff:fe6d:2d02<span class="w"> </span><span class="se">\</span>
+<span class="w">  </span>./build/rocm-ernic<span class="w"> </span>--socket<span class="w"> </span>/tmp/ernic-2.sock<span class="w"> </span><span class="se">\</span>
+<span class="w">  </span>--backend<span class="w"> </span>tcp:worker:192.168.1.100:5000<span class="w"> </span><span class="se">\</span>
+<span class="w">  </span>--mac<span class="w"> </span><span class="m">72</span>:6f:63:6d:2d:02<span class="w"> </span>--tap<span class="w"> </span>ernic2
+</pre></div>
+</div>
+<p>A host is a name, or an IPv4 or IPv6 address; an IPv6
+address goes in brackets, as in
+<code class="docutils literal notranslate"><span class="pre">tcp:worker:[fe80::1%eth0]:5000</span></code>.</p>
+<p>Each server must be told its guest’s RoCE addresses (GIDs)
+in <code class="docutils literal notranslate"><span class="pre">ERNIC_TCP_GUEST_GIDS</span></code>, since nothing else tells it
+which addresses its guest will use. A destination no server
+claims is unreachable: connecting a QP to it fails. The
+systemd service sets all of this up, deriving each
+instance’s link-local GID from its MAC (see <a class="reference internal" href="service.html"><span class="doc">systemd Service and ernicctl</span></a>).
+<a class="reference internal" href="architecture.html"><span class="doc">Architecture</span></a> describes how the mesh works.</p>
+</section>
+<section id="environment-variables">
+<h2>Environment Variables<a class="headerlink" href="#environment-variables" title="Link to this heading">#</a></h2>
+<div class="pst-scrollable-table-container"><table class="table">
+<colgroup>
+<col style="width: 35.0%" />
+<col style="width: 65.0%" />
+</colgroup>
+<thead>
+<tr class="row-odd"><th class="head"><p>Variable</p></th>
+<th class="head"><p>Effect</p></th>
+</tr>
+</thead>
+<tbody>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">ERNIC_LOG_LEVEL</span></code></p></td>
+<td><p>The log level, as <code class="docutils literal notranslate"><span class="pre">--log-level</span></code> (see <a class="reference internal" href="#log-levels">Log Levels</a>),
+which wins over it</p></td>
+</tr>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">ERNIC_TCP_GUEST_GIDS</span></code></p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">tcp</span></code> only: up to eight comma-separated RoCE
+addresses of this server’s guest, each an IPv6 or IPv4
+address. A malformed one is logged and skipped</p></td>
+</tr>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">ERNIC_TCP_HEALTH_INTERVAL</span></code></p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">tcp</span></code> only: seconds between the manager’s
+heartbeats (default 5). A worker that hears nothing
+from the manager for three intervals connects again</p></td>
+</tr>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">ERNIC_TCP_SEND_TIMEOUT_MS</span></code></p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">tcp</span></code> only: how long a send to a node that has
+stopped reading may make no progress before the
+connection is closed (default 10000; the manager uses
+half)</p></td>
+</tr>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">ERNIC_TCP_SOCKBUF</span></code></p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">tcp</span></code> only: a fixed size, in bytes, for each mesh
+socket’s send and receive buffers. Unset, the kernel
+sizes them itself, which is usually faster, since a
+fixed size is capped at <code class="docutils literal notranslate"><span class="pre">net.core.wmem_max</span></code> and
+<code class="docutils literal notranslate"><span class="pre">rmem_max</span></code></p></td>
+</tr>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">ERNIC_TCP_LISTEN_BACKLOG</span></code></p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">tcp</span></code> only: the listening socket’s backlog
+(default 32)</p></td>
+</tr>
+</tbody>
+</table>
+</div>
+<p>A numeric variable whose value isn’t a positive integer is
+ignored, and its default used.</p>
 </section>
 <section id="log-levels">
 <h2>Log Levels<a class="headerlink" href="#log-levels" title="Link to this heading">#</a></h2>
@@ -607,17 +704,23 @@ watch<span class="w"> </span>-n<span class="w"> </span><span class="m">0</span>.
 </div>
 <p>The statistics file includes:</p>
 <ul class="simple">
-<li><p>Device-level statistics (commands, register reads/writes,
-UAR writes, interrupts)</p></li>
+<li><p>The instance: its socket, backend, PCI ID, MAC, client
+connection state, and NIC profile</p></li>
+<li><p>Device-level statistics (commands, BAR 0 and doorbell
+reads and writes, interrupts, resets, and bytes moved by
+RDMA and over the Ethernet side)</p></li>
+<li><p>The Ethernet LIF and port counters (see <a class="reference internal" href="ionic.html"><span class="doc">The ionic Device</span></a>)</p></li>
 <li><p>Per-QP statistics:</p>
 <ul>
-<li><p>Doorbell rings (send, receive, SRQ)</p></li>
+<li><p>Doorbell rings (send and receive)</p></li>
 <li><p>WQEs processed (total and by opcode type)</p></li>
 <li><p>CQEs posted</p></li>
-<li><p>Continuation callbacks scheduled</p></li>
+<li><p>Bytes sent, received, read, and written</p></li>
 </ul>
 </li>
 </ul>
+<p><a class="reference internal" href="monitoring.html"><span class="doc">Prometheus Monitoring and Grafana Dashboard</span></a> describes how <code class="docutils literal notranslate"><span class="pre">ernic-exporter</span></code> publishes
+them.</p>
 <p>Statistics are automatically written on server exit
 (<code class="docutils literal notranslate"><span class="pre">SIGINT</span></code> / <code class="docutils literal notranslate"><span class="pre">SIGTERM</span></code>) in addition to the periodic
 updates.</p>
@@ -736,6 +839,8 @@ kernel module</p></li>
     <ul class="pst-show_toc_level nav section-nav flex-column">
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#basic-usage">Basic Usage</a></li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#the-emulated-device">The Emulated Device</a></li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#connecting-several-vms">Connecting Several VMs</a></li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#environment-variables">Environment Variables</a></li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#log-levels">Log Levels</a></li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#launching-a-vm">Launching a VM</a></li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#statistics-collection">Statistics Collection</a></li>

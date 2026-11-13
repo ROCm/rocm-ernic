@@ -148,7 +148,7 @@ table -- the operation is dropped, not dispatched. A request that *is* the
 compute shape but is otherwise bad -- an unregistered key, an
 operand over the ceiling -- is still failed.
 
-``tests/data/p4/fp8_policy.p4`` is the worked example. A
+``tests/data/p4/src/fp8_policy.p4`` is the worked example. A
 table keyed on the opcode turns an ordinary RDMA write into
 an elementwise fp8 add across three memory regions, and
 changing the one table entry changes the arithmetic with no
@@ -240,7 +240,7 @@ is a NaN. fp16 was also checked against numpy when the codec
 was written -- all 65536 decodings and 2.1 million encodes
 agreed exactly -- but no test repeats that comparison.
 
-``tests/data/p4/fp8_convert.p4`` is the worked example.
+``tests/data/p4/src/fp8_convert.p4`` is the worked example.
 
 What is not built yet: checksums and calculations; negative
 literals in actions; and counters, meters, registers and

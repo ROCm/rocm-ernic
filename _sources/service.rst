@@ -644,16 +644,20 @@ Automated workflow via Ansible
 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
 
 The ``ansible/`` directory contains playbooks that
-automate the entire workflow: build, install, configure
-the env file, create golden VM images, launch VMs,
-provision guests with the driver and custom rdma-core,
-and run iperf3 / perftest sanity tests.  See
-:doc:`testing` for details.
+automate the rest of the workflow: build, install, and
+configure the service and the TAPs, provision guests with
+the driver and rdma-core, and run iperf3 and perftest
+sanity tests.  They don't build guest images or launch
+VMs: launch those with ``ernicctl vm-launch`` between
+the host setup and the rest, which must then leave the
+running VMs alone.  See :doc:`testing` for details.
 
 .. code-block:: bash
 
    cd ansible
-   ansible-playbook site.yml
+   ansible-playbook playbooks/host-setup.yml
+   sudo ernicctl vm-launch 1     # once per instance
+   ansible-playbook site.yml -e ernic_restart_existing=false
 
 Hot-reloading after a code change
 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^

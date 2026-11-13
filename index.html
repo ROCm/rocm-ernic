@@ -413,8 +413,10 @@ RDMA hardware or an in-guest software stack such as
 <li><p>An AMD Pensando ionic NIC, driven in the guest by the
 upstream Linux <code class="docutils literal notranslate"><span class="pre">ionic</span></code> and <code class="docutils literal notranslate"><span class="pre">ionic_rdma</span></code> drivers
 (see <a class="reference internal" href="ionic.html"><span class="doc">The ionic Device</span></a>)</p></li>
-<li><p>Memory-mapped BARs (MSI-X, registers, doorbells)</p></li>
-<li><p>MSI-X interrupt support</p></li>
+<li><p>Memory BARs: registers, the MSI-X table, doorbells, and an
+optional Controller Memory Buffer</p></li>
+<li><p>MSI-X interrupts, PCI Express and Power Management
+capabilities, and function-level reset</p></li>
 <li><p>Multiple RDMA backends (loopback, TCP/IP)</p></li>
 <li><p>An in-process NVMe-oF target, so one VM and one server
 are a complete fabric (see <a class="reference internal" href="nvmeof.html"><span class="doc">NVMe-oF Controller</span></a>)</p></li>
@@ -491,6 +493,8 @@ a host TAP:</p>
 <li class="toctree-l1"><a class="reference internal" href="usage.html">Usage</a><ul>
 <li class="toctree-l2"><a class="reference internal" href="usage.html#basic-usage">Basic Usage</a></li>
 <li class="toctree-l2"><a class="reference internal" href="usage.html#the-emulated-device">The Emulated Device</a></li>
+<li class="toctree-l2"><a class="reference internal" href="usage.html#connecting-several-vms">Connecting Several VMs</a></li>
+<li class="toctree-l2"><a class="reference internal" href="usage.html#environment-variables">Environment Variables</a></li>
 <li class="toctree-l2"><a class="reference internal" href="usage.html#log-levels">Log Levels</a></li>
 <li class="toctree-l2"><a class="reference internal" href="usage.html#launching-a-vm">Launching a VM</a></li>
 <li class="toctree-l2"><a class="reference internal" href="usage.html#statistics-collection">Statistics Collection</a></li>

@@ -717,6 +717,19 @@ project’s version (see <a class="reference internal" href="#packages"><span cl
 <code class="docutils literal notranslate"><span class="pre">+</span></code>, <code class="docutils literal notranslate"><span class="pre">.</span></code>, and <code class="docutils literal notranslate"><span class="pre">~</span></code>, but not a value CMake takes as
 false, such as <code class="docutils literal notranslate"><span class="pre">0</span></code>, which CPack would leave out</p></td>
 </tr>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">ERNIC_BUILD_GUEST_PACKAGES</span></code></p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">OFF</span></code></p></td>
+<td><p>Register the guest-side DEB packages (the ionic DKMS
+modules, the rdma-core SRQ provider, and the P4 DKMS
+module) with CPack. Only their names and metadata so
+far: nothing installs into them yet, so no usable
+package is built</p></td>
+</tr>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">ERNIC_GUEST_PACKAGE_RELEASE</span></code></p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">local</span></code></p></td>
+<td><p>The release part of the guest packages’ version, as
+<code class="docutils literal notranslate"><span class="pre">ERNIC_PACKAGE_RELEASE</span></code> is for the server’s</p></td>
+</tr>
 <tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">CMAKE_INSTALL_PREFIX</span></code></p></td>
 <td><p><code class="docutils literal notranslate"><span class="pre">/usr/local</span></code></p></td>
 <td><p>Installation prefix</p></td>
