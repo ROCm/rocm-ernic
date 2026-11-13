@@ -27,12 +27,14 @@
 
 #include <errno.h>
 #include <fcntl.h>
+#include <inttypes.h>
+#include <limits.h>
 #include <stdbool.h>
-#include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <sys/ioctl.h>
+#include <sys/stat.h>
 #include <time.h>
 #include <unistd.h>
 
@@ -212,18 +214,69 @@ out:
     return rc;
 }
 
+/*
+ * Check that arg names a namespace's generic char device,
+ * /dev/ng<ctrl>n<ns>, and write that name to buf.  This program sends
+ * passthrough commands, Stores and Deletes among them, to whatever it
+ * opens, so it refuses anything else: another path, a block device such
+ * as /dev/nvme0n1, or the right name spelled differently, such as
+ * /dev/ng00n2.  The name in buf is rebuilt from the two numbers rather
+ * than copied, and must match arg exactly.  A block namespace has a
+ * generic char device too, which this can't tell from a Key Value
+ * namespace's; the caller has to name the right one.
+ */
+static bool kv_dev_path(const char *arg, char *buf, size_t size)
+{
+    static const char prefix[] = "/dev/ng";
+    const size_t prefix_len = sizeof(prefix) - 1;
+
+    if (strncmp(arg, prefix, prefix_len) != 0) {
+        return false;
+    }
+    const char *ctrl_str = arg + prefix_len;
+    const char *sep = strchr(ctrl_str, 'n');
+    if (sep == NULL) {
+        return false;
+    }
+
+    /* Linux numbers controllers and namespace heads with an int. */
+    uint64_t ctrl;
+    uint64_t ns;
+    if (!ernic_parse_u64_span(ctrl_str, (size_t)(sep - ctrl_str), &ctrl) ||
+        ctrl > INT_MAX || !ernic_parse_u64(sep + 1, &ns) || ns > INT_MAX) {
+        return false;
+    }
+
+    int len = snprintf(buf, size, "/dev/ng%" PRIu64 "n%" PRIu64, ctrl, ns);
+    if (len < 0 || (size_t)len >= size) {
+        return false;
+    }
+    return strcmp(buf, arg) == 0;
+}
+
 int main(int argc, char **argv)
 {
     if (argc < 5) {
         fprintf(stderr,
                 "usage: %s <device> <nsid> <iters> <size> [size ...]\n"
-                "  device  a generic char device, e.g. /dev/ng0n2\n"
+                "  device  the namespace's generic char device,\n"
+                "          /dev/ng<ctrl>n<ns>, e.g. /dev/ng0n2\n"
                 "prints: size store_GBs retrieve_GBs store_us retrieve_us\n",
                 argv[0]);
         return 2;
     }
 
-    const char *path = argv[1];
+    /* Room for two of any uint64_t, the type kv_dev_path() prints, not
+     * just the INT_MAX it accepts: GCC can lose that bound and then
+     * reports the snprintf() as able to truncate. */
+    char dev[sizeof("/dev/ng18446744073709551615n18446744073709551615")];
+    if (!kv_dev_path(argv[1], dev, sizeof(dev))) {
+        fprintf(stderr,
+                "kv_bench: device must be a generic char device, "
+                "/dev/ng<ctrl>n<ns>, not '%s'\n",
+                argv[1]);
+        return 2;
+    }
 
     uint32_t nsid;
     if (!ernic_parse_u32(argv[2], &nsid) || nsid == 0) {
@@ -238,10 +291,22 @@ int main(int argc, char **argv)
         return 2;
     }
 
-    int fd = open(path, O_RDONLY | O_CLOEXEC); // codeql[cpp/path-injection]
+    /* The name alone doesn't make it a namespace: refuse a symlink, or
+     * anything else that isn't a char device, put in its place. */
+    int fd = open(dev, O_RDONLY | O_CLOEXEC | O_NOFOLLOW);
     if (fd < 0) {
-        fprintf(stderr, "kv_bench: cannot open %s: %s\n", path,
-                strerror(errno));
+        fprintf(stderr, "kv_bench: cannot open %s: %s\n", dev, strerror(errno));
+        return 1;
+    }
+    struct stat sb;
+    if (fstat(fd, &sb) != 0) {
+        fprintf(stderr, "kv_bench: cannot stat %s: %s\n", dev, strerror(errno));
+        close(fd);
+        return 1;
+    }
+    if (!S_ISCHR(sb.st_mode)) {
+        fprintf(stderr, "kv_bench: %s is not a char device\n", dev);
+        close(fd);
         return 1;
     }
 

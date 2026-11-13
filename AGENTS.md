@@ -365,6 +365,14 @@ new general patterns here when a scanner reports one.
   (`--trace-children=yes`), and compile in built programs' paths with
   `$<TARGET_FILE:...>`, like `ERNIC_SERVER_PATH` in
   `test_server_lifecycle.c`.
+- **Opening a path from `argv` or `getenv()`** (`cpp/path-injection`,
+  into `open()` or `fopen()`): CodeQL follows the string through any
+  check of it (`strncmp()`, `strchr()`) and clears only a number with an
+  upper-bound comparison. Where the path has a fixed form, parse its
+  variable parts as numbers, bound each, rebuild the path from them, and
+  require it to match the argument, as `kv_dev_path()` in
+  `tests/kv_bench.c` does. A `// codeql[...]` comment suppresses
+  nothing: no alert-suppression query runs.
 - **A stack address stored where it can outlive its frame**
   (`cpp/stack-address-escape`), even if unused after return: allocate
   the target, as `test_server_lifecycle.c` does for the server's

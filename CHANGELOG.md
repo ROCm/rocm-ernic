@@ -716,6 +716,14 @@
 
 ### Changed
 
+* `tests/kv_bench.c`, the Key Value benchmark the `nvmeof-kv-tests`
+  playbook builds in the guest, opens only a namespace's generic char
+  device, named `/dev/ng<ctrl>n<ns>` as Linux names it, and refuses any
+  other path, a symlink, or anything that isn't a char device, so a
+  mistaken argument can't point its Stores at a file or a block device.
+  A block namespace's generic char device still passes, and runs a Store
+  as a Write, so name the Key Value namespace's. The playbook already
+  passes such a name; run by hand, it needs one too.
 * The playbooks' guest setup fetches and patches the ionic sources on the
   controller, the VM host or a CI runner, and copies the tree into each
   guest, rather than having every guest fetch from git.kernel.org through
