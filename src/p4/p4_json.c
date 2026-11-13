@@ -1021,7 +1021,7 @@ static int p4_walk_transitions(struct p4_walk *w, const struct json_object *st,
             td->is_default = true;
         } else if (has_type && strcmp(type, "hexstr") != 0) {
             /* Only "hexstr" arms are implemented; refuse any other kind
-             * rather than mis-match it */
+             * rather than match packets against it wrongly */
             return p4_fail(w, -ENOSYS,
                            "transition of type '%s' in state '%s' is not "
                            "supported",
