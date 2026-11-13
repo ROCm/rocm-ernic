@@ -211,10 +211,12 @@ static const char *run_input(const uint8_t *data, size_t size, uint8_t *rc_out)
     if (size < IN_HDR) {
         return NULL;
     }
+    /* Decode the two header bytes (see "Input layout" at the top) */
     flags = data[0];
     op = ops[flags & F_OP_MASK];
     body_len = data[1] % (MAX_BODY + 1);
 
+    /* Make the fake device fail, saturate or fault as the flags ask */
     ctx_reset();
     g_dev_rc = (flags & F_DEV_FAIL) ? -1 : 0;
     g_qp_rc = (flags & F_QP_FAIL) ? -1 : 0;
@@ -223,6 +225,9 @@ static const char *run_input(const uint8_t *data, size_t size, uint8_t *rc_out)
         g_ctx.faults = fault_set();
     }
 
+    /* The body, zero-padded if the input ends early, then whatever is left
+     * over as the start of guest memory; snapshot memory to spot stray
+     * writes. */
     memset(body, 0, sizeof(body));
     if (size - IN_HDR < body_len) {
         memcpy(body, data + IN_HDR, size - IN_HDR);
@@ -239,6 +244,8 @@ static const char *run_input(const uint8_t *data, size_t size, uint8_t *rc_out)
     }
     memcpy(g_before, g_mem, sizeof(g_before));
 
+    /* Decode the body as the handler will: dma_addr, length and id_ver,
+     * all little-endian.  A short body leaves them zero, unused. */
     if (body_len >= STATS_BODY_LEN) {
         memcpy(&dma, body, 8);
         dma = le64toh(dma);
@@ -251,6 +258,8 @@ static const char *run_input(const uint8_t *data, size_t size, uint8_t *rc_out)
     rc = ionic_adminq_dispatch_wqe(&g_ctx, op, body, (uint16_t)body_len);
     *rc_out = rc;
 
+    /* Promises that hold whatever the outcome: a stats status, at most one
+     * write, and no byte changed outside it. */
     if (!is_stats_status(rc)) {
         return "status is not a stats completion code";
     }
@@ -264,6 +273,11 @@ static const char *run_input(const uint8_t *data, size_t size, uint8_t *rc_out)
             return "a byte outside the write changed";
         }
     }
+
+    /* Each failure the input set up must produce its own status, checked
+     * in the order handle_stats_op() checks them.  Any other failure (a
+     * snapshot error, a length too short for one entry) must write
+     * nothing. */
     if (body_len < STATS_BODY_LEN) {
         return rc == IONIC_RC_EINVAL ? NULL : "a short body was not EINVAL";
     }
@@ -282,6 +296,7 @@ static const char *run_input(const uint8_t *data, size_t size, uint8_t *rc_out)
         return g_nwrites == 0 ? NULL : "a failed command wrote";
     }
 
+    /* Success: exactly one write, inside the buffer the body named */
     if (g_nwrites != 1) {
         return "success without a DMA write";
     }
@@ -292,6 +307,8 @@ static const char *run_input(const uint8_t *data, size_t size, uint8_t *rc_out)
         return "wrote past length";
     }
 
+    /* And what it wrote is the right table: headers, or values that may
+     * only come from a snapshot that succeeded */
     if (is_hdrs(op)) {
         return is_qp(op) ? check_hdrs(w, length, qp_stats, QP_STATS_COUNT)
                          : check_hdrs(w, length, dev_stats, DEV_STATS_COUNT);

@@ -220,6 +220,7 @@ static int scan_text(struct scan *sc, const char *source, const char *text,
         char name[NAME_MAX_LEN + 1];
         const struct scanned *prev;
 
+        /* [s, e) is this line without its '\n'; pos moves past it */
         line++;
         pos = (size_t)(e - text) + (eol ? 1 : 0);
         if (memchr(s, '\0', (size_t)(e - s))) {
@@ -227,6 +228,7 @@ static int scan_text(struct scan *sc, const char *source, const char *text,
                           line);
             return -1;
         }
+        /* Trim the line, then skip it if it's blank or a comment */
         while (s < e && is_blank(*s)) {
             s++;
         }
@@ -237,6 +239,8 @@ static int scan_text(struct scan *sc, const char *source, const char *text,
             continue;
         }
 
+        /* A "[section]" header: a known name, seen once, which the key
+         * lines after it belong to */
         if (*s == '[') {
             if (e[-1] != ']' || !take_name(s + 1, e - 1, name)) {
                 ernic_set_err(
@@ -269,6 +273,9 @@ static int scan_text(struct scan *sc, const char *source, const char *text,
             continue;
         }
 
+        /* Otherwise "key = value": the key is the name before the first
+         * '=', trimmed.  Only the key is checked here; the value is
+         * parsed once the whole text has passed. */
         const char *eq = memchr(s, '=', (size_t)(e - s));
         const char *ke = eq;
 
@@ -282,6 +289,7 @@ static int scan_text(struct scan *sc, const char *source, const char *text,
                           source, line);
             return -1;
         }
+        /* It must be in a section, known there, and set only once */
         if (group[0] == '\0') {
             ernic_set_err(err, err_len,
                           "%s:%u: key '%s' is outside any [section]", source,

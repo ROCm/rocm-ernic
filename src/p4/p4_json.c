@@ -1006,17 +1006,22 @@ static int p4_walk_transitions(struct p4_walk *w, const struct json_object *st,
                            dst->name, i);
         }
 
+        /* "type" is optional (see the default arm above); "value" is not,
+         * though it may be null */
         has_type = p4_get_str(t, "type", type, sizeof(type));
         if (!json_object_object_get_ex(t, "value", &val)) {
             return p4_fail(w, -EINVAL, "state '%s' transition %zu has no value",
                            dst->name, i);
         }
 
+        /* Either encoding of the default arm, which matches anything */
         if ((has_type && strcmp(type, "default") == 0) ||
             (!has_type && p4_cstr(val) &&
              strcmp(p4_cstr(val), "default") == 0)) {
             td->is_default = true;
         } else if (has_type && strcmp(type, "hexstr") != 0) {
+            /* Only "hexstr" arms are implemented; refuse any other kind
+             * rather than mis-match it */
             return p4_fail(w, -ENOSYS,
                            "transition of type '%s' in state '%s' is not "
                            "supported",
@@ -1026,6 +1031,8 @@ static int p4_walk_transitions(struct p4_walk *w, const struct json_object *st,
             bool neg = false;
             const char *vs;
 
+            /* A "hexstr" arm, explicit or untyped: an unsigned hex value
+             * no wider than the select key it is compared with */
             if (!json_object_is_type(val, json_type_string)) {
                 return p4_fail(w, -EINVAL,
                                "state '%s' transition %zu has a non-string "
@@ -1048,6 +1055,8 @@ static int p4_walk_transitions(struct p4_walk *w, const struct json_object *st,
                                dst->name, i);
             }
 
+            /* An optional mask, held to the same rules; absent or null
+             * means the arm matches the value exactly */
             if (json_object_object_get_ex(t, "mask", &mask) &&
                 !json_object_is_type(mask, json_type_null)) {
                 const char *ms;
