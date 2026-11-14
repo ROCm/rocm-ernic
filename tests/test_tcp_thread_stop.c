@@ -180,6 +180,7 @@
 #include "ernic_alloc.h"
 #include "ernic_gnu.h"
 #include "ernic_time.h"
+#include "ernic_vec.h"
 #include "pvrdma/rdma_backend_defs.h"
 #include "qemu/error-report.h"
 #include "qemu/thread.h"
@@ -750,7 +751,7 @@ static int run_health_case(const struct health_case *c)
     priv->mesh_nodes = g_hash_table_new_full(
         g_direct_hash, g_direct_equal, NULL, tcp_mesh_node_info_destroy_notify);
     /* Each pass reaps the pending connections, of which there are none */
-    priv->pending_conns = g_ptr_array_new();
+    ernic_ptr_vec_init(&priv->pending_conns);
     priv->connections = g_hash_table_new_full(
         g_direct_hash, g_direct_equal, NULL, tcp_connection_destroy_notify);
     ROCM_ERNIC_WARN_THREAD_SAFETY_ON
@@ -816,7 +817,7 @@ out:
     ROCM_ERNIC_WARN_THREAD_SAFETY_OFF
     g_hash_table_destroy(priv->mesh_nodes);
     g_hash_table_destroy(priv->connections);
-    g_ptr_array_free(priv->pending_conns, TRUE);
+    ernic_ptr_vec_free(&priv->pending_conns, NULL);
     ROCM_ERNIC_WARN_THREAD_SAFETY_ON
     if (sv[1] >= 0) {
         close(sv[1]);
@@ -978,7 +979,7 @@ static int run_recv_case(const struct recv_case *c)
     ROCM_ERNIC_WARN_THREAD_SAFETY_OFF
     priv->connections = g_hash_table_new_full(
         g_direct_hash, g_direct_equal, NULL, tcp_connection_destroy_notify);
-    priv->pending_conns = g_ptr_array_new();
+    ernic_ptr_vec_init(&priv->pending_conns);
     ROCM_ERNIC_WARN_THREAD_SAFETY_ON
     qemu_mutex_init(&priv->conn_table_lock);
     /* So a registration gets the manager's refusal */
@@ -1006,7 +1007,7 @@ static int run_recv_case(const struct recv_case *c)
         } else if (c->manager && !atomic_load(&priv->manager_conn)) {
             atomic_store(&priv->manager_conn, conn);
         } else {
-            g_ptr_array_add(priv->pending_conns, conn);
+            ernic_ptr_vec_push(&priv->pending_conns, conn);
         }
         qemu_mutex_unlock(&priv->conn_table_lock);
     }
@@ -1209,7 +1210,7 @@ static int worker_attach(TcpBackendPrivate *priv, TcpConnection **connp)
     /* Or a reap would find it past the registration timeout */
     conn->accepted_ms = ernic_monotonic_ms();
     qemu_mutex_lock(&priv->conn_table_lock);
-    g_ptr_array_add(priv->pending_conns, conn);
+    ernic_ptr_vec_push(&priv->pending_conns, conn);
     atomic_store(&conn->recv_thread_running, true);
     qemu_thread_create(&conn->recv_thread, "tcp-recv", tcp_recv_thread_per_conn,
                        conn);
@@ -1597,7 +1598,7 @@ static int run_create_case(const struct create_case *c)
 
     if (c->when == FAIL_ON_ACCEPT && init_ret == 0) {
         TcpBackendPrivate *priv = dev.backend_private;
-        guint pending;
+        size_t pending;
 
         atomic_store(&g_creates_left, c->creates_left);
         fd = connect_loopback(port);
@@ -1605,7 +1606,7 @@ static int run_create_case(const struct create_case *c)
             why = "the manager didn't close the connection";
         } else {
             qemu_mutex_lock(&priv->conn_table_lock);
-            pending = priv->pending_conns->len;
+            pending = ernic_ptr_vec_len(&priv->pending_conns);
             qemu_mutex_unlock(&priv->conn_table_lock);
             if (pending != 0) {
                 why = "the connection was left pending";
@@ -1941,7 +1942,7 @@ static int run_hs_case(const struct hs_case *c)
     ROCM_ERNIC_WARN_THREAD_SAFETY_OFF
     priv->connections = g_hash_table_new_full(
         g_direct_hash, g_direct_equal, NULL, tcp_connection_destroy_notify);
-    priv->pending_conns = g_ptr_array_new();
+    ernic_ptr_vec_init(&priv->pending_conns);
     ROCM_ERNIC_WARN_THREAD_SAFETY_ON
     qemu_mutex_init(&priv->conn_table_lock);
     priv->listen_fd = listen_loopback();
@@ -2078,7 +2079,7 @@ static const char *mgr_setup(struct mgr_fixture *fx, uint32_t nodes,
         g_direct_hash, g_direct_equal, NULL, tcp_mesh_node_info_destroy_notify);
     priv->connections = g_hash_table_new_full(
         g_direct_hash, g_direct_equal, NULL, tcp_connection_destroy_notify);
-    priv->pending_conns = g_ptr_array_new();
+    ernic_ptr_vec_init(&priv->pending_conns);
     /* The GID claim tables tcp_init() builds, which a registration updates */
     priv->node_gids =
         g_hash_table_new_full(g_direct_hash, g_direct_equal, NULL, free);
@@ -2233,20 +2234,21 @@ static const char *sl_silent(struct mgr_fixture *fx, int *lfd)
  */
 static const char *sl_answers(struct mgr_fixture *fx)
 {
-    GArray *items = g_array_new(FALSE, FALSE, sizeof(TcpHealthCheckItem));
+    ErnicVec items;
     TcpHealthCheckItem item = {1, NULL, false, true};
     const TcpHealthCheckItem *after;
     const char *why = NULL;
 
+    ernic_vec_init(&items, sizeof(TcpHealthCheckItem));
     item.conn = tcp_connection_lookup(fx->priv, 1);
     qemu_mutex_lock(&fx->priv->mesh_table_lock);
     fx->node[0]->is_alive = true;
     fx->node[0]->last_heartbeat_ms = ernic_monotonic_ms();
     qemu_mutex_unlock(&fx->priv->mesh_table_lock);
-    g_array_append_val(items, item);
-    tcp_health_check_retire(fx->priv, items);
+    ernic_vec_append(&items, &item);
+    tcp_health_check_retire(fx->priv, &items);
 
-    after = &g_array_index(items, TcpHealthCheckItem, 0);
+    after = ernic_vec_get(&items, 0);
     if (after->conn != fx->old[0]) {
         why = "the pass let go of the connection";
     } else if (table_get(fx->priv, 1) != fx->old[0]) {
@@ -2255,7 +2257,7 @@ static const char *sl_answers(struct mgr_fixture *fx)
         why = "the connection was closed";
     }
     tcp_connection_unref(after->conn);
-    g_array_free(items, TRUE);
+    ernic_vec_free(&items);
     return why;
 }
 
@@ -2594,7 +2596,7 @@ static int run_reg_case(const struct reg_case *c)
     uint16_t port = free_port();
     guint entries = 0;
     guint table = 0;
-    guint pending = 0;
+    size_t pending = 0;
     guint nodes_before;
     guint nodes = 0;
     int fd;
@@ -2646,7 +2648,7 @@ static int run_reg_case(const struct reg_case *c)
         while (g_hash_table_iter_next(&iter, NULL, &value)) {
             entries += value == conn ? 1U : 0U;
         }
-        pending = priv->pending_conns->len;
+        pending = ernic_ptr_vec_len(&priv->pending_conns);
         qemu_mutex_unlock(&priv->conn_table_lock);
         answers = count_type(fd, TCP_MSG_REGISTER_RESP);
     }
@@ -2658,7 +2660,7 @@ static int run_reg_case(const struct reg_case *c)
            c->category, c->description, c->expected);
     if (!ok) {
         printf("     %s%s%u table entr%s for the connection (want 1), %u in "
-               "the table (want 1), %u pending (want 0), %u new mesh node(s) "
+               "the table (want 1), %zu pending (want 0), %u new mesh node(s) "
                "(want 1), %d answer(s) (want 1)\n",
                why ? why : "", why ? "; " : "", entries,
                entries == 1 ? "y" : "ies", table, pending, nodes, answers);
@@ -2837,8 +2839,8 @@ static const char *tp_setup(struct tp_fixture *fx, uint32_t interval,
     ROCM_ERNIC_WARN_THREAD_SAFETY_OFF
     priv->connections = g_hash_table_new_full(
         g_direct_hash, g_direct_equal, NULL, tcp_connection_destroy_notify);
-    priv->pending_conns = g_ptr_array_new();
-    priv->peer_targets = g_array_new(FALSE, FALSE, sizeof(TcpPeerTarget));
+    ernic_ptr_vec_init(&priv->pending_conns);
+    ernic_vec_init(&priv->peer_targets, sizeof(TcpPeerTarget));
     ROCM_ERNIC_WARN_THREAD_SAFETY_ON
     qemu_mutex_init(&priv->conn_table_lock);
     qemu_mutex_init(&priv->peer_lock);
@@ -2880,7 +2882,7 @@ static double tp_teardown(struct tp_fixture *fx)
     /* Every thread has been stopped */
     ROCM_ERNIC_WARN_THREAD_SAFETY_OFF
     g_hash_table_destroy(priv->connections);
-    g_array_free(priv->peer_targets, TRUE);
+    ernic_vec_free(&priv->peer_targets);
     ROCM_ERNIC_WARN_THREAD_SAFETY_ON
     tcp_free_pending_conns(priv);
     tcp_connection_unref(atomic_load(&priv->manager_conn));
@@ -3073,8 +3075,8 @@ static bool tp_send(struct tp_fixture *fx, const struct tp_topology *topo)
 static void tp_set_target(struct tp_fixture *fx, const TcpPeerTarget *target)
 {
     qemu_mutex_lock(&fx->priv->peer_lock);
-    g_array_set_size(fx->priv->peer_targets, 0);
-    g_array_append_vals(fx->priv->peer_targets, target, 1);
+    ernic_vec_clear(&fx->priv->peer_targets);
+    ernic_vec_append(&fx->priv->peer_targets, target);
     qemu_mutex_unlock(&fx->priv->peer_lock);
 }
 
@@ -3421,7 +3423,7 @@ static const char *tp_dies(struct tp_fixture *fx, struct tp_net *net)
 static const char *tp_from_peer(struct tp_fixture *fx, struct tp_net *net,
                                 const struct tp_topology *topo)
 {
-    guint targets;
+    size_t targets;
     int peer = -1;
     int fd;
 
@@ -3437,7 +3439,7 @@ static const char *tp_from_peer(struct tp_fixture *fx, struct tp_net *net,
     }
 
     qemu_mutex_lock(&fx->priv->peer_lock);
-    targets = fx->priv->peer_targets->len;
+    targets = ernic_vec_len(&fx->priv->peer_targets);
     qemu_mutex_unlock(&fx->priv->peer_lock);
     if (targets != 0 ||
         atomic_load(&fx->priv->tcp_stats.peer_connect_attempts) != 0) {
@@ -3457,7 +3459,7 @@ static const char *tp_from_peer(struct tp_fixture *fx, struct tp_net *net,
  */
 static const char *tp_long_host(struct tp_fixture *fx)
 {
-    GArray *targets;
+    const ErnicVec *targets;
     const TcpPeerTarget *other;
     const TcpPeerTarget *third;
     const char *why = NULL;
@@ -3466,12 +3468,12 @@ static const char *tp_long_host(struct tp_fixture *fx)
         return "the heartbeat after the update wasn't answered";
     }
     qemu_mutex_lock(&fx->priv->peer_lock);
-    targets = fx->priv->peer_targets;
-    if (targets->len != 2) {
+    targets = &fx->priv->peer_targets;
+    if (ernic_vec_len(targets) != 2) {
         why = "the worker didn't keep just two peers";
     } else {
-        other = &g_array_index(targets, TcpPeerTarget, 0);
-        third = &g_array_index(targets, TcpPeerTarget, 1);
+        other = ernic_vec_get(targets, 0);
+        third = ernic_vec_get(targets, 1);
         if (other->node_id != TP_OTHER ||
             strlen(other->host) != TCP_HOSTNAME_LEN - 1 ||
             strspn(other->host, "h") != TCP_HOSTNAME_LEN - 1) {
@@ -4761,12 +4763,12 @@ static bool wait_for_count(const atomic_int *count, int n)
     return atomic_load(count) >= n;
 }
 
-static guint pending_count(TcpBackendPrivate *priv)
+static size_t pending_count(TcpBackendPrivate *priv)
 {
-    guint n;
+    size_t n;
 
     qemu_mutex_lock(&priv->conn_table_lock);
-    n = priv->pending_conns->len;
+    n = ernic_ptr_vec_len(&priv->pending_conns);
     qemu_mutex_unlock(&priv->conn_table_lock);
     return n;
 }
@@ -4917,8 +4919,8 @@ static const char *reap_timeout(TcpBackendPrivate *priv, uint16_t port,
         return "the peer wasn't given a receive thread";
     }
     qemu_mutex_lock(&priv->conn_table_lock);
-    if (priv->pending_conns->len == 1) {
-        TcpConnection *conn = g_ptr_array_index(priv->pending_conns, 0);
+    if (ernic_ptr_vec_len(&priv->pending_conns) == 1) {
+        TcpConnection *conn = ernic_ptr_vec_get(&priv->pending_conns, 0);
 
         if (conn->accepted_ms >= TCP_REGISTER_TIMEOUT_MS) {
             conn->accepted_ms -= TCP_REGISTER_TIMEOUT_MS;
@@ -4985,8 +4987,8 @@ static void reap_renew(TcpBackendPrivate *priv)
     qemu_mutex_lock(&priv->conn_table_lock);
     uint64_t now_ms = ernic_monotonic_ms();
 
-    for (guint i = 0; i < priv->pending_conns->len; i++) {
-        TcpConnection *conn = g_ptr_array_index(priv->pending_conns, i);
+    for (size_t i = 0; i < ernic_ptr_vec_len(&priv->pending_conns); i++) {
+        TcpConnection *conn = ernic_ptr_vec_get(&priv->pending_conns, i);
 
         conn->accepted_ms = now_ms;
     }
@@ -5005,7 +5007,7 @@ static const char *reap_cap(TcpBackendPrivate *priv, uint16_t port,
     int cap = (int)TCP_MAX_PENDING_CONNS;
     uint32_t first = k->n;
     uint64_t start_ms = ernic_monotonic_ms();
-    guint waiting;
+    size_t waiting;
 
     for (int i = 0; i < cap; i++) {
         reap_renew(priv);
@@ -5020,7 +5022,7 @@ static const char *reap_cap(TcpBackendPrivate *priv, uint16_t port,
     waiting = pending_count(priv);
     if (waiting != TCP_MAX_PENDING_CONNS) {
         (void)snprintf(why, sizeof(why),
-                       "only %u of the %d peers under the cap are waiting, %d "
+                       "only %zu of the %d peers under the cap are waiting, %d "
                        "receive thread(s) exited, and they took %" PRIu64
                        " ms to connect",
                        waiting, cap, atomic_load(&g_exits),
@@ -5029,10 +5031,11 @@ static const char *reap_cap(TcpBackendPrivate *priv, uint16_t port,
     }
     reap_renew(priv);
     if (!closed_within(reap_keep(k, connect_loopback(port)), 2000)) {
-        (void)snprintf(why, sizeof(why),
-                       "the peer past the cap was kept, with %u waiting and %d "
-                       "receive thread(s) exited",
-                       pending_count(priv), atomic_load(&g_exits));
+        (void)snprintf(
+            why, sizeof(why),
+            "the peer past the cap was kept, with %zu waiting and %d "
+            "receive thread(s) exited",
+            pending_count(priv), atomic_load(&g_exits));
         return why;
     }
     if (atomic_load(&g_creates) != base + cap) {
@@ -7290,7 +7293,7 @@ static const char *ev_full(struct ev_fixture *fx, enum ev_scenario scenario)
 static const char *ev_health(struct ev_fixture *fx)
 {
     TcpBackendPrivate *priv = fx->priv;
-    GArray *items = g_array_new(FALSE, FALSE, sizeof(TcpHealthCheckItem));
+    ErnicVec items;
     TcpHealthCheckItem ended = {EV_OLDEST, NULL, true, true};
     TcpHealthCheckItem silent = {EV_NEXT, NULL, false, true};
     const TcpHealthCheckItem *after;
@@ -7298,10 +7301,11 @@ static const char *ev_health(struct ev_fixture *fx)
     int32_t result = 1;
     const char *why;
 
+    ernic_vec_init(&items, sizeof(TcpHealthCheckItem));
     ended.conn = tcp_connection_ref(fx->conn[EV_OLDEST]);
     silent.conn = tcp_connection_ref(fx->conn[EV_NEXT]);
-    g_array_append_val(items, ended);
-    g_array_append_val(items, silent);
+    ernic_vec_append(&items, &ended);
+    ernic_vec_append(&items, &silent);
 
     why = ev_register(priv, &fx->fresh[0], UINT32_MAX, &id, &result);
     if (!why && (result != 0 || ev_in_table(priv, EV_OLDEST))) {
@@ -7320,12 +7324,12 @@ static const char *ev_health(struct ev_fixture *fx)
     }
 
     if (!why) {
-        tcp_health_check_retire(priv, items);
-        after = &g_array_index(items, TcpHealthCheckItem, 0);
+        tcp_health_check_retire(priv, &items);
+        after = ernic_vec_get(&items, 0);
         if (after->conn) {
             why = "the pass kept the ended connection";
         }
-        after = &g_array_index(items, TcpHealthCheckItem, 1);
+        after = ernic_vec_get(&items, 1);
         if (!why && after->conn != fx->conn[EV_NEXT]) {
             why = "the pass let go of the silent node's connection";
         }
@@ -7335,10 +7339,12 @@ static const char *ev_health(struct ev_fixture *fx)
         why = "an evicted node's connection wasn't closed";
     }
 
-    for (guint i = 0; i < items->len; i++) {
-        tcp_connection_unref(g_array_index(items, TcpHealthCheckItem, i).conn);
+    for (size_t i = 0; i < ernic_vec_len(&items); i++) {
+        const TcpHealthCheckItem *item = ernic_vec_get(&items, i);
+
+        tcp_connection_unref(item->conn);
     }
-    g_array_free(items, TRUE);
+    ernic_vec_free(&items);
     return why;
 }
 
@@ -7990,7 +7996,7 @@ static const char *lt_register_vs_stop(enum lt_scenario scenario)
     const char *why = NULL;
     pthread_t stopper;
     uint16_t port = free_port();
-    guint pending;
+    size_t pending;
     int fd = -1;
     int w1 = -1;
     int joins;
@@ -8087,7 +8093,7 @@ static const char *lt_register_vs_stop(enum lt_scenario scenario)
 
     qemu_mutex_lock(&priv->conn_table_lock);
     in_table = g_hash_table_lookup(priv->connections, GUINT_TO_POINTER(1));
-    pending = priv->pending_conns->len;
+    pending = ernic_ptr_vec_len(&priv->pending_conns);
     qemu_mutex_unlock(&priv->conn_table_lock);
     if (!why && in_table != (again ? old : conn)) {
         why = again ? "the claimed connection was replaced"

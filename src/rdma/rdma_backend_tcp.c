@@ -25,6 +25,7 @@
 #include "ernic_limits.h"
 #include "ernic_mesh.h"
 #include "ernic_time.h"
+#include "ernic_vec.h"
 #include "parse_int.h"
 #include "pvrdma/rdma_backend_defs.h"
 #include "pvrdma/rdma_utils.h"
@@ -298,7 +299,7 @@ static void tcp_priv_free(TcpBackendPrivate *priv)
 
     /* With the threads stopped, nothing else can reach priv */
     ROCM_ERNIC_WARN_THREAD_SAFETY_OFF
-    g_array_free(priv->peer_targets, TRUE);
+    ernic_vec_free(&priv->peer_targets);
     if (priv->mesh_nodes) {
         g_hash_table_destroy(priv->mesh_nodes);
     }
@@ -363,7 +364,7 @@ int tcp_init_with_interval(RdmaBackendDev *backend_dev, const char *config,
     ROCM_ERNIC_WARN_THREAD_SAFETY_OFF
     priv->connections = g_hash_table_new_full(
         g_direct_hash, g_direct_equal, NULL, tcp_connection_destroy_notify);
-    priv->pending_conns = g_ptr_array_new();
+    ernic_ptr_vec_init(&priv->pending_conns);
     priv->node_gids =
         g_hash_table_new_full(g_direct_hash, g_direct_equal, NULL, free);
     priv->gid_owner = g_hash_table_new_full(g_bytes_hash, g_bytes_equal,
@@ -406,7 +407,7 @@ int tcp_init_with_interval(RdmaBackendDev *backend_dev, const char *config,
     atomic_init(&priv->health_check_running, false);
     qemu_mutex_init(&priv->health_check_lock);
     qemu_cond_init(&priv->health_check_cond);
-    priv->peer_targets = g_array_new(FALSE, FALSE, sizeof(TcpPeerTarget));
+    ernic_vec_init(&priv->peer_targets, sizeof(TcpPeerTarget));
     priv->peer_targets_changed = false;
     qemu_mutex_init(&priv->peer_lock);
     qemu_cond_init(&priv->peer_cond);
@@ -1197,7 +1198,7 @@ static void tcp_mesh_cancel(RdmaBackendDev *backend_dev, uint64_t tag,
 {
     TcpBackendPrivate *priv = get_private(backend_dev);
     TcpConnection *manager;
-    GPtrArray *conns;
+    ErnicPtrVec conns;
 
     if (!priv) {
         return;
@@ -1207,12 +1208,12 @@ static void tcp_mesh_cancel(RdmaBackendDev *backend_dev, uint64_t tag,
     conns = tcp_conns_snapshot(priv);
     manager = tcp_worker_manager_conn(priv);
     if (manager) {
-        g_ptr_array_add(conns, manager);
+        ernic_ptr_vec_push(&conns, manager);
     }
-    for (guint i = 0; i < conns->len; i++) {
-        tcp_sendq_cancel(g_ptr_array_index(conns, i), tag, mask);
+    for (size_t i = 0; i < ernic_ptr_vec_len(&conns); i++) {
+        tcp_sendq_cancel(ernic_ptr_vec_get(&conns, i), tag, mask);
     }
-    g_ptr_array_free(conns, TRUE);
+    ernic_ptr_vec_free(&conns, tcp_connection_destroy_notify);
 }
 
 /*

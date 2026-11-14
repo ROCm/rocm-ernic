@@ -154,8 +154,8 @@ endif()
 # The server's log, which the rest of the sources print through, and its
 # statistics, which the device counts into; the allocators that abort when
 # out of memory; memory shared with the client; SipHash, for values a guest
-# must not predict; the hash maps; and the GNU extensions, which only
-# ernic_gnu.c may call (see ernic_gnu.h)
+# must not predict; the hash maps and growable arrays; and the GNU
+# extensions, which only ernic_gnu.c may call (see ernic_gnu.h)
 set(COMMON_SOURCES
     src/ernic_alloc.c
     src/ernic_gnu.c
@@ -164,6 +164,7 @@ set(COMMON_SOURCES
     src/ernic_shm.c
     src/ernic_siphash.c
     src/ernic_stats.c
+    src/ernic_vec.c
 )
 
 # uthash (third-party/uthash/), which only ernic_map.c may include. It is a

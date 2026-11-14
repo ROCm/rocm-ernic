@@ -29,6 +29,7 @@
 #include <sys/types.h>
 
 #include "ernic_mesh.h"
+#include "ernic_vec.h"
 #include "pvrdma/rdma_backend_defs.h"
 #include "qemu/thread.h"
 #include "rocm-ernic-warnings.h"
@@ -490,7 +491,7 @@ struct TcpBackendPrivate {
      * tcp_reap_pending_conns() releases the ones that are done with, and
      * teardown stops the receive threads of the rest and releases them.
      */
-    GPtrArray *pending_conns TSA_GUARDED_BY(conn_table_lock);
+    ErnicPtrVec pending_conns TSA_GUARDED_BY(conn_table_lock);
 
     /*
      * What each node says it owns: node_id -> TcpNodeGids.  This is the
@@ -651,7 +652,7 @@ struct TcpBackendPrivate {
      * conn_table_lock to compare the connections table with the targets and
      * change it.
      */
-    GArray *peer_targets TSA_GUARDED_BY(peer_lock);
+    ErnicVec peer_targets TSA_GUARDED_BY(peer_lock);
     bool peer_targets_changed TSA_GUARDED_BY(peer_lock);
     QemuCond peer_cond; /* signalled on an update, and to stop the thread */
     QemuThread peer_thread;
@@ -998,7 +999,7 @@ void tcp_connection_destroy_notify(gpointer data);
 bool tcp_conn_dead(const TcpConnection *conn);
 TcpConnection *tcp_connection_lookup(TcpBackendPrivate *priv, uint32_t node_id)
     TSA_EXCLUDES(priv->conn_table_lock);
-GPtrArray *tcp_conns_snapshot(TcpBackendPrivate *priv)
+ErnicPtrVec tcp_conns_snapshot(TcpBackendPrivate *priv)
     TSA_EXCLUDES(priv->conn_table_lock);
 bool tcp_has_live_connection(TcpBackendPrivate *priv, uint32_t node_id)
     TSA_EXCLUDES(priv->conn_table_lock);
@@ -1110,7 +1111,7 @@ void tcp_broadcast_pass(TcpBackendPrivate *priv)
 void *tcp_broadcast_thread(void *opaque);
 void tcp_stop_broadcast_thread(TcpBackendPrivate *priv)
     TSA_EXCLUDES(priv->broadcast_lock);
-void tcp_health_check_retire(TcpBackendPrivate *priv, GArray *items)
+void tcp_health_check_retire(TcpBackendPrivate *priv, ErnicVec *items)
     TSA_EXCLUDES(priv->mesh_table_lock, priv->conn_table_lock);
 void *tcp_manager_health_check_thread(void *opaque);
 void tcp_stop_health_check_thread(TcpBackendPrivate *priv)

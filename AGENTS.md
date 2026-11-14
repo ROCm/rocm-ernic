@@ -194,9 +194,10 @@ workflow for their environment).
   - A fixed-size internal allocation, where running out of memory leaves
     nothing to do but stop, may use
     [`src/ernic_alloc.h`](src/ernic_alloc.h)'s `ernic_xmalloc()`,
-    `ernic_xcalloc()`, `ernic_xstrdup()`, `ernic_xstrndup()`, or
-    `ernic_xasprintf()`, which abort through `ernic_log_fatal()` rather
-    than return `NULL`; a `NULL` check after one is dead code.
+    `ernic_xcalloc()`, `ernic_xreallocarray()`, `ernic_xstrdup()`,
+    `ernic_xstrndup()`, or `ernic_xasprintf()`, which abort through
+    `ernic_log_fatal()` rather than return `NULL`; a `NULL` check after
+    one is dead code.
   - Never for a buffer whose size a guest or peer chooses: `malloc()`
     and check it, so a large request fails alone rather than aborting
     the server (and a test can fail it with `--wrap`). See
