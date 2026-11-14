@@ -39,10 +39,10 @@
 #include <stdlib.h>
 #include <string.h>
 
-#include <glib.h>
 #include <infiniband/verbs.h>
 
 #include "ernic_alloc.h"
+#include "ernic_map.h"
 #include "pvrdma/rdma_backend_defs.h"
 #include "qemu/error-report.h"
 #include "qemu/thread.h"
@@ -104,10 +104,8 @@ static TcpBackendPrivate *priv_new(void)
 
     /* Nothing else can reach priv yet */
     ROCM_ERNIC_WARN_THREAD_SAFETY_OFF
-    priv->node_gids =
-        g_hash_table_new_full(g_direct_hash, g_direct_equal, NULL, free);
-    priv->gid_owner = g_hash_table_new_full(g_bytes_hash, g_bytes_equal,
-                                            tcp_gid_key_free, NULL);
+    priv->node_gids = ernic_u32_map_new(free);
+    priv->gid_owner = ernic_gid_map_new();
     ROCM_ERNIC_WARN_THREAD_SAFETY_ON
     qemu_mutex_init(&priv->gid_table_lock);
     return priv;
@@ -117,8 +115,8 @@ static void priv_free(TcpBackendPrivate *priv)
 {
     /* Nor once the test is done with it */
     ROCM_ERNIC_WARN_THREAD_SAFETY_OFF
-    g_hash_table_destroy(priv->node_gids);
-    g_hash_table_destroy(priv->gid_owner);
+    ernic_u32_map_free(priv->node_gids);
+    ernic_gid_map_free(priv->gid_owner);
     ROCM_ERNIC_WARN_THREAD_SAFETY_ON
     qemu_mutex_destroy(&priv->gid_table_lock);
     free(priv);
@@ -534,12 +532,11 @@ static void test_returning_worker_reclaims_its_gids(void)
 
     qemu_mutex_init(&priv->mesh_table_lock);
     qemu_mutex_lock(&priv->mesh_table_lock);
-    priv->mesh_nodes = g_hash_table_new_full(
-        g_direct_hash, g_direct_equal, NULL, tcp_mesh_node_info_destroy_notify);
+    priv->mesh_nodes = ernic_u32_map_new(tcp_mesh_node_info_destroy_notify);
 
     /* The worker's first registration, and the GIDs it then advertised. */
-    g_hash_table_insert(priv->mesh_nodes, GUINT_TO_POINTER(1U),
-                        tcp_mesh_node_info_new(1, "10.0.0.5", 6320));
+    ernic_u32_map_insert(priv->mesh_nodes, 1U,
+                         tcp_mesh_node_info_new(1, "10.0.0.5", 6320));
     qemu_mutex_unlock(&priv->mesh_table_lock);
 
     gid_v4(g[0], 70);
@@ -552,8 +549,8 @@ static void test_returning_worker_reclaims_its_gids(void)
      * it notices one has died. */
     tcp_gid_claims_set(priv, 1, NULL, 0);
     qemu_mutex_lock(&priv->mesh_table_lock);
-    g_hash_table_insert(priv->mesh_nodes, GUINT_TO_POINTER(2U),
-                        tcp_mesh_node_info_new(2, "10.0.0.5", 6320));
+    ernic_u32_map_insert(priv->mesh_nodes, 2U,
+                         tcp_mesh_node_info_new(2, "10.0.0.5", 6320));
     qemu_mutex_unlock(&priv->mesh_table_lock);
 
     /* It advertises the same GIDs again under the new id. */
@@ -568,7 +565,7 @@ static void test_returning_worker_reclaims_its_gids(void)
           "a stale claim left alongside the new one still resolved");
 
     qemu_mutex_lock(&priv->mesh_table_lock);
-    g_hash_table_destroy(priv->mesh_nodes);
+    ernic_u32_map_free(priv->mesh_nodes);
     priv->mesh_nodes = NULL;
     qemu_mutex_unlock(&priv->mesh_table_lock);
     qemu_mutex_destroy(&priv->mesh_table_lock);
@@ -795,7 +792,7 @@ static void test_hooks_on_tcp(void)
     qemu_mutex_init(&priv->lock);
     qemu_mutex_init(&priv->conn_table_lock);
     qemu_mutex_lock(&priv->conn_table_lock);
-    priv->connections = g_hash_table_new(g_direct_hash, g_direct_equal);
+    priv->connections = ernic_u32_map_new(NULL);
     qemu_mutex_unlock(&priv->conn_table_lock);
     atomic_store(&priv->local_node_id, 1);
     gid_v4(raw, 11);
@@ -836,7 +833,7 @@ static void test_hooks_on_tcp(void)
           "send to an unconnected node returned %d, expected -ENOTCONN", rc);
 
     qemu_mutex_lock(&priv->conn_table_lock);
-    g_hash_table_destroy(priv->connections);
+    ernic_u32_map_free(priv->connections);
     priv->connections = NULL;
     qemu_mutex_unlock(&priv->conn_table_lock);
     qemu_mutex_destroy(&priv->conn_table_lock);

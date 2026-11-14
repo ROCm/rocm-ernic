@@ -21,7 +21,6 @@
 
 #include <endian.h>
 #include <errno.h>
-#include <glib.h>
 #include <infiniband/verbs.h>
 #include <inttypes.h>
 #include <netinet/in.h>
@@ -38,6 +37,7 @@
 #include "byteorder.h"
 #include "ernic_attributes.h"
 #include "ernic_limits.h"
+#include "ernic_map.h"
 #include "ernic_mesh.h"
 #include "ernic_rm.h"
 #include "ernic_stats.h"
@@ -1906,11 +1906,12 @@ static void test_rdma_reset_frees(void)
     check(T,
           res->pd_tbl.used == 0 && res->cq_tbl.used == 0 &&
               res->qp_tbl.used == 0 && res->mr_tbl.used == 0 &&
-              res->srq_tbl.used == 0 && g_hash_table_size(res->qp_hash) == 0,
-          "%u PD(s), %u CQ(s), %u QP(s), %u QPN(s), %u MR(s) and %u SRQ(s) "
+              res->srq_tbl.used == 0 && ernic_u32_map_size(&res->qp_hash) == 0,
+          "%u PD(s), %u CQ(s), %u QP(s), %zu QPN(s), %u MR(s) and %u SRQ(s) "
           "left after RDMA_RESET_LIF",
           res->pd_tbl.used, res->cq_tbl.used, res->qp_tbl.used,
-          g_hash_table_size(res->qp_hash), res->mr_tbl.used, res->srq_tbl.used);
+          ernic_u32_map_size(&res->qp_hash), res->mr_tbl.used,
+          res->srq_tbl.used);
 
     /* It makes the same QPs again, but only A's MR, so B's key names
      * nothing */
@@ -7763,11 +7764,12 @@ static void device_reset_case(const char *T, bool by_devcmd)
     check(T,
           res->pd_tbl.used == 0 && res->cq_tbl.used == 0 &&
               res->qp_tbl.used == 0 && res->mr_tbl.used == 0 &&
-              res->srq_tbl.used == 0 && g_hash_table_size(res->qp_hash) == 0,
-          "%u PD(s), %u CQ(s), %u QP(s), %u QPN(s), %u MR(s) and %u SRQ(s) "
+              res->srq_tbl.used == 0 && ernic_u32_map_size(&res->qp_hash) == 0,
+          "%u PD(s), %u CQ(s), %u QP(s), %zu QPN(s), %u MR(s) and %u SRQ(s) "
           "left after the reset",
           res->pd_tbl.used, res->cq_tbl.used, res->qp_tbl.used,
-          g_hash_table_size(res->qp_hash), res->mr_tbl.used, res->srq_tbl.used);
+          ernic_u32_map_size(&res->qp_hash), res->mr_tbl.used,
+          res->srq_tbl.used);
     const char *left = dp_leftover(h->dp);
     check(T, left == NULL, "the data path still has %s", left ? left : "");
     check(T,
@@ -8632,10 +8634,11 @@ static void test_none(void)
     check(T, ih_cq_destroy(&h, &cq) == 0, "DESTROY_CQ failed");
     check(T,
           res->cq_tbl.used == cqs && res->qp_tbl.used == qps &&
-              res->mr_tbl.used == mrs && g_hash_table_size(res->qp_hash) == qps,
-          "%u CQ(s), %u QP(s), %u QPN(s) and %u MR(s) left in the resource "
+              res->mr_tbl.used == mrs &&
+              ernic_u32_map_size(&res->qp_hash) == qps,
+          "%u CQ(s), %u QP(s), %zu QPN(s) and %u MR(s) left in the resource "
           "manager, expected %u, %u, %u and %u",
-          res->cq_tbl.used, res->qp_tbl.used, g_hash_table_size(res->qp_hash),
+          res->cq_tbl.used, res->qp_tbl.used, ernic_u32_map_size(&res->qp_hash),
           res->mr_tbl.used, cqs, qps, qps, mrs);
     teardown(T, &h);
 }

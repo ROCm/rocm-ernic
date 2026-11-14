@@ -1,5 +1,5 @@
 /*
- * Hash maps keyed by a 32-bit number, over uthash
+ * Hash maps keyed by a 32-bit number or a GID, over uthash
  *
  * This is the only file that includes uthash.h, so its macros, which use
  * the GNU extension __typeof, expand nowhere else (see AGENTS.md).
@@ -45,6 +45,12 @@ struct ErnicU32MapEntry {
     UT_hash_handle hh;
 };
 
+struct ErnicGidMapEntry {
+    uint8_t key[ERNIC_GID_MAP_KEY_LEN];
+    uint32_t value;
+    UT_hash_handle hh;
+};
+
 /* The hash key, drawn once per process by ernic_map_hash_key() */
 static uint8_t hash_key[ERNIC_SIPHASH_KEY_LEN];
 static pthread_once_t hash_key_once = PTHREAD_ONCE_INIT;
@@ -78,6 +84,9 @@ static uint32_t ernic_map_hash(const void *key, size_t len)
     return (uint32_t)(h & UINT32_MAX);
 }
 
+
+/* ---- ErnicU32Map ----------------------------------------------------- */
+
 /* @p map's entry for @p key, or NULL */
 static struct ErnicU32MapEntry *u32_map_find(const ErnicU32Map *map,
                                              uint32_t key)
@@ -88,13 +97,24 @@ static struct ErnicU32MapEntry *u32_map_find(const ErnicU32Map *map,
     return e;
 }
 
-/* Take @p e, which @p map holds, out of it, and free it and its value */
-static void u32_map_drop(ErnicU32Map *map, struct ErnicU32MapEntry *e)
+/*
+ * Take @p e, which @p map holds, out of it and free it, returning its value,
+ * which is now the caller's
+ */
+static void *u32_map_unlink(ErnicU32Map *map, struct ErnicU32MapEntry *e)
 {
     void *value = e->value;
 
     HASH_DEL(map->head, e);
     free(e);
+    return value;
+}
+
+/* Take @p e, which @p map holds, out of it, and free it and its value */
+static void u32_map_drop(ErnicU32Map *map, struct ErnicU32MapEntry *e)
+{
+    void *value = u32_map_unlink(map, e);
+
     if (map->value_destroy) {
         map->value_destroy(value);
     }
@@ -130,6 +150,22 @@ void ernic_u32_map_destroy(ErnicU32Map *map)
     }
 }
 
+ErnicU32Map *ernic_u32_map_new(ErnicMapDestroyFn value_destroy)
+{
+    ErnicU32Map *map = ernic_xmalloc(sizeof(*map));
+
+    ernic_u32_map_init(map, value_destroy);
+    return map;
+}
+
+void ernic_u32_map_free(ErnicU32Map *map)
+{
+    if (map) {
+        ernic_u32_map_destroy(map);
+        free(map);
+    }
+}
+
 void ernic_u32_map_insert(ErnicU32Map *map, uint32_t key, void *value)
 {
     struct ErnicU32MapEntry *e = u32_map_find(map, key);
@@ -148,6 +184,11 @@ void ernic_u32_map_insert(ErnicU32Map *map, uint32_t key, void *value)
     e->key = key;
     e->value = value;
     HASH_ADD(hh, map->head, key, sizeof(e->key), e);
+}
+
+void ernic_u32_map_add(ErnicU32Map *map, uint32_t key)
+{
+    ernic_u32_map_insert(map, key, NULL);
 }
 
 void *ernic_u32_map_lookup(const ErnicU32Map *map, uint32_t key)
@@ -173,13 +214,30 @@ bool ernic_u32_map_remove(ErnicU32Map *map, uint32_t key)
     return true;
 }
 
+bool ernic_u32_map_steal(ErnicU32Map *map, uint32_t key, void **value)
+{
+    struct ErnicU32MapEntry *e = u32_map_find(map, key);
+    void *stolen;
+
+    if (!e) {
+        return false;
+    }
+    stolen = u32_map_unlink(map, e);
+    if (value) {
+        *value = stolen;
+    }
+    return true;
+}
+
 size_t ernic_u32_map_size(const ErnicU32Map *map)
 {
     return HASH_COUNT(map->head);
 }
 
-void ernic_u32_map_iter_init(ErnicU32MapIter *iter, const ErnicU32Map *map)
+void ernic_u32_map_iter_init(ErnicU32MapIter *iter, ErnicU32Map *map)
 {
+    iter->map = map;
+    iter->cur = NULL;
     iter->next = map->head;
 }
 
@@ -187,11 +245,126 @@ bool ernic_u32_map_iter_next(ErnicU32MapIter *iter, uint32_t *key, void **value)
 {
     struct ErnicU32MapEntry *e = iter->next;
 
+    iter->cur = e;
     if (!e) {
         return false;
     }
+    /*
+     * Step past it now, so that removing it through the walk, which frees
+     * it, leaves the walk where it was
+     */
     iter->next = e->hh.next;
-    *key = e->key;
+    if (key) {
+        *key = e->key;
+    }
+    if (value) {
+        *value = e->value;
+    }
+    return true;
+}
+
+/* The entry the walk is at, taken from it, which aborts if there's none */
+static struct ErnicU32MapEntry *u32_map_iter_take(ErnicU32MapIter *iter,
+                                                  const char *caller)
+{
+    struct ErnicU32MapEntry *e = iter->cur;
+
+    if (!e) {
+        ernic_log_fatal("ernic_map: %s with no entry to remove", caller);
+    }
+    iter->cur = NULL;
+    return e;
+}
+
+void ernic_u32_map_iter_remove(ErnicU32MapIter *iter)
+{
+    u32_map_drop(iter->map, u32_map_iter_take(iter, __func__));
+}
+
+void ernic_u32_map_iter_steal(ErnicU32MapIter *iter)
+{
+    (void)u32_map_unlink(iter->map, u32_map_iter_take(iter, __func__));
+}
+
+/* ---- ErnicGidMap ----------------------------------------------------- */
+
+/* @p map's entry for @p key, or NULL */
+static struct ErnicGidMapEntry *gid_map_find(
+    const ErnicGidMap *map, const uint8_t key[ERNIC_GID_MAP_KEY_LEN])
+{
+    struct ErnicGidMapEntry *e;
+
+    HASH_FIND(hh, map->head, key, ERNIC_GID_MAP_KEY_LEN, e);
+    return e;
+}
+
+void ernic_gid_map_init(ErnicGidMap *map)
+{
+    (void)ernic_map_hash_key();
+    map->head = NULL;
+}
+
+void ernic_gid_map_destroy(ErnicGidMap *map)
+{
+    struct ErnicGidMapEntry *e = map->head;
+
+    /* As ernic_u32_map_destroy() does, and for the same reason */
+    HASH_CLEAR(hh, map->head);
+    while (e) {
+        struct ErnicGidMapEntry *next = e->hh.next;
+
+        free(e);
+        e = next;
+    }
+}
+
+ErnicGidMap *ernic_gid_map_new(void)
+{
+    ErnicGidMap *map = ernic_xmalloc(sizeof(*map));
+
+    ernic_gid_map_init(map);
+    return map;
+}
+
+void ernic_gid_map_free(ErnicGidMap *map)
+{
+    if (map) {
+        ernic_gid_map_destroy(map);
+        free(map);
+    }
+}
+
+void ernic_gid_map_insert(ErnicGidMap *map,
+                          const uint8_t key[ERNIC_GID_MAP_KEY_LEN],
+                          uint32_t value)
+{
+    struct ErnicGidMapEntry *e = gid_map_find(map, key);
+
+    if (e) {
+        e->value = value;
+        return;
+    }
+
+    e = ernic_xcalloc(1, sizeof(*e));
+    memcpy(e->key, key, ERNIC_GID_MAP_KEY_LEN);
+    e->value = value;
+    HASH_ADD(hh, map->head, key, ERNIC_GID_MAP_KEY_LEN, e);
+}
+
+bool ernic_gid_map_lookup(const ErnicGidMap *map,
+                          const uint8_t key[ERNIC_GID_MAP_KEY_LEN],
+                          uint32_t *value)
+{
+    const struct ErnicGidMapEntry *e = gid_map_find(map, key);
+
+    if (!e) {
+        return false;
+    }
     *value = e->value;
     return true;
+}
+
+size_t ernic_gid_map_size(const ErnicGidMap *map)
+{
+    return HASH_COUNT(map->head);
 }

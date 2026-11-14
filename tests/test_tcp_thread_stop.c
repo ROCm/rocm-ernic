@@ -173,12 +173,12 @@
 #include <valgrind/valgrind.h>
 #endif
 
-#include <glib.h>
 #include <infiniband/verbs.h>
 
 #include "byteorder.h"
 #include "ernic_alloc.h"
 #include "ernic_gnu.h"
+#include "ernic_map.h"
 #include "ernic_time.h"
 #include "ernic_vec.h"
 #include "pvrdma/rdma_backend_defs.h"
@@ -188,6 +188,8 @@
 #include "rdma/rdma_backend_tcp_priv.h"
 #include "rocm-ernic-warnings.h"
 #include "test_fmt.h"
+
+#define ARRAY_LEN(a) (sizeof(a) / sizeof((a)[0]))
 
 /* ---- Stubs ------------------------------------------------------------- */
 
@@ -469,7 +471,7 @@ static const TcpConnection *table_get(TcpBackendPrivate *priv, uint32_t id)
     const TcpConnection *conn;
 
     qemu_mutex_lock(&priv->conn_table_lock);
-    conn = g_hash_table_lookup(priv->connections, GUINT_TO_POINTER(id));
+    conn = ernic_u32_map_lookup(priv->connections, id);
     qemu_mutex_unlock(&priv->conn_table_lock);
     return conn;
 }
@@ -748,12 +750,10 @@ static int run_health_case(const struct health_case *c)
     qemu_mutex_init(&priv->conn_table_lock);
     /* The health-check thread, which reaches priv, starts after this */
     ROCM_ERNIC_WARN_THREAD_SAFETY_OFF
-    priv->mesh_nodes = g_hash_table_new_full(
-        g_direct_hash, g_direct_equal, NULL, tcp_mesh_node_info_destroy_notify);
+    priv->mesh_nodes = ernic_u32_map_new(tcp_mesh_node_info_destroy_notify);
     /* Each pass reaps the pending connections, of which there are none */
     ernic_ptr_vec_init(&priv->pending_conns);
-    priv->connections = g_hash_table_new_full(
-        g_direct_hash, g_direct_equal, NULL, tcp_connection_destroy_notify);
+    priv->connections = ernic_u32_map_new(tcp_connection_destroy_notify);
     ROCM_ERNIC_WARN_THREAD_SAFETY_ON
 
     if (c->peer) {
@@ -770,8 +770,8 @@ static int run_health_case(const struct health_case *c)
         node->is_alive = true;
         node->last_heartbeat_ms = ernic_monotonic_ms();
         ROCM_ERNIC_WARN_THREAD_SAFETY_OFF
-        g_hash_table_insert(priv->connections, GUINT_TO_POINTER(1), conn);
-        g_hash_table_insert(priv->mesh_nodes, GUINT_TO_POINTER(1), node);
+        ernic_u32_map_insert(priv->connections, 1, conn);
+        ernic_u32_map_insert(priv->mesh_nodes, 1, node);
         ROCM_ERNIC_WARN_THREAD_SAFETY_ON
     }
 
@@ -815,8 +815,8 @@ static int run_health_case(const struct health_case *c)
 out:
     /* The thread has been stopped */
     ROCM_ERNIC_WARN_THREAD_SAFETY_OFF
-    g_hash_table_destroy(priv->mesh_nodes);
-    g_hash_table_destroy(priv->connections);
+    ernic_u32_map_free(priv->mesh_nodes);
+    ernic_u32_map_free(priv->connections);
     ernic_ptr_vec_free(&priv->pending_conns, NULL);
     ROCM_ERNIC_WARN_THREAD_SAFETY_ON
     if (sv[1] >= 0) {
@@ -977,8 +977,7 @@ static int run_recv_case(const struct recv_case *c)
     atomic_store(&g_exits, 0);
     /* Before the first receive thread starts, which can reach priv */
     ROCM_ERNIC_WARN_THREAD_SAFETY_OFF
-    priv->connections = g_hash_table_new_full(
-        g_direct_hash, g_direct_equal, NULL, tcp_connection_destroy_notify);
+    priv->connections = ernic_u32_map_new(tcp_connection_destroy_notify);
     ernic_ptr_vec_init(&priv->pending_conns);
     ROCM_ERNIC_WARN_THREAD_SAFETY_ON
     qemu_mutex_init(&priv->conn_table_lock);
@@ -1002,8 +1001,7 @@ static int run_recv_case(const struct recv_case *c)
         /* The receive threads started so far are running */
         qemu_mutex_lock(&priv->conn_table_lock);
         if (i < in_table) {
-            g_hash_table_insert(priv->connections, GUINT_TO_POINTER(i + 1),
-                                conn);
+            ernic_u32_map_insert(priv->connections, i + 1, conn);
         } else if (c->manager && !atomic_load(&priv->manager_conn)) {
             atomic_store(&priv->manager_conn, conn);
         } else {
@@ -1073,7 +1071,7 @@ static int run_recv_case(const struct recv_case *c)
         tcp_stop_recv_threads(priv);
     }
     ROCM_ERNIC_WARN_THREAD_SAFETY_OFF
-    g_hash_table_destroy(priv->connections);
+    ernic_u32_map_free(priv->connections);
     ROCM_ERNIC_WARN_THREAD_SAFETY_ON
     tcp_free_pending_conns(priv);
     tcp_connection_unref(atomic_load(&priv->manager_conn));
@@ -1281,13 +1279,13 @@ static int worker_register(TcpBackendPrivate *priv)
 }
 
 /* Wait up to 5 s for the manager to have n registered connections. */
-static bool wait_for_registered(TcpBackendPrivate *priv, guint n)
+static bool wait_for_registered(TcpBackendPrivate *priv, size_t n)
 {
     for (int i = 0; i < 500; i++) {
-        guint have;
+        size_t have;
 
         qemu_mutex_lock(&priv->conn_table_lock);
-        have = g_hash_table_size(priv->connections);
+        have = ernic_u32_map_size(priv->connections);
         qemu_mutex_unlock(&priv->conn_table_lock);
         if (have >= n) {
             return true;
@@ -1940,8 +1938,7 @@ static int run_hs_case(const struct hs_case *c)
     atomic_init(&priv->local_node_id, 1);
     /* Before the accept thread starts, which can reach priv */
     ROCM_ERNIC_WARN_THREAD_SAFETY_OFF
-    priv->connections = g_hash_table_new_full(
-        g_direct_hash, g_direct_equal, NULL, tcp_connection_destroy_notify);
+    priv->connections = ernic_u32_map_new(tcp_connection_destroy_notify);
     ernic_ptr_vec_init(&priv->pending_conns);
     ROCM_ERNIC_WARN_THREAD_SAFETY_ON
     qemu_mutex_init(&priv->conn_table_lock);
@@ -1995,7 +1992,7 @@ static int run_hs_case(const struct hs_case *c)
 
     /* Every thread has been stopped */
     ROCM_ERNIC_WARN_THREAD_SAFETY_OFF
-    g_hash_table_destroy(priv->connections);
+    ernic_u32_map_free(priv->connections);
     ROCM_ERNIC_WARN_THREAD_SAFETY_ON
     tcp_free_pending_conns(priv);
     if (bad >= 0) {
@@ -2075,16 +2072,12 @@ static const char *mgr_setup(struct mgr_fixture *fx, uint32_t nodes,
     /* Before the first receive thread starts, which can reach priv */
     ROCM_ERNIC_WARN_THREAD_SAFETY_OFF
     priv->next_available_node_id = 1;
-    priv->mesh_nodes = g_hash_table_new_full(
-        g_direct_hash, g_direct_equal, NULL, tcp_mesh_node_info_destroy_notify);
-    priv->connections = g_hash_table_new_full(
-        g_direct_hash, g_direct_equal, NULL, tcp_connection_destroy_notify);
+    priv->mesh_nodes = ernic_u32_map_new(tcp_mesh_node_info_destroy_notify);
+    priv->connections = ernic_u32_map_new(tcp_connection_destroy_notify);
     ernic_ptr_vec_init(&priv->pending_conns);
     /* The GID claim tables tcp_init() builds, which a registration updates */
-    priv->node_gids =
-        g_hash_table_new_full(g_direct_hash, g_direct_equal, NULL, free);
-    priv->gid_owner = g_hash_table_new_full(g_bytes_hash, g_bytes_equal,
-                                            tcp_gid_key_free, NULL);
+    priv->node_gids = ernic_u32_map_new(free);
+    priv->gid_owner = ernic_gid_map_new();
     ROCM_ERNIC_WARN_THREAD_SAFETY_ON
 
     for (uint32_t i = 0; i < nodes && i < MGR_MAX_NODES; i++) {
@@ -2095,8 +2088,8 @@ static const char *mgr_setup(struct mgr_fixture *fx, uint32_t nodes,
             return "could not set up a node's connection";
         }
         qemu_mutex_lock(&priv->conn_table_lock);
-        g_hash_table_insert(priv->connections, GUINT_TO_POINTER(id),
-                            tcp_connection_ref(fx->old[i]));
+        ernic_u32_map_insert(priv->connections, id,
+                             tcp_connection_ref(fx->old[i]));
         qemu_mutex_unlock(&priv->conn_table_lock);
         fx->node[i] = tcp_mesh_node_info_new(id, "127.0.0.1", WORKER_PORT);
         if (!fx->node[i]) {
@@ -2104,8 +2097,7 @@ static const char *mgr_setup(struct mgr_fixture *fx, uint32_t nodes,
         }
         fx->node[i]->is_alive = false;
         qemu_mutex_lock(&priv->mesh_table_lock);
-        g_hash_table_insert(priv->mesh_nodes, GUINT_TO_POINTER(id),
-                            fx->node[i]);
+        ernic_u32_map_insert(priv->mesh_nodes, id, fx->node[i]);
         qemu_mutex_unlock(&priv->mesh_table_lock);
         fx->nodes++;
     }
@@ -2139,10 +2131,10 @@ static void mgr_teardown(struct mgr_fixture *fx)
     tcp_stop_recv_threads(priv);
     /* Every thread has been stopped */
     ROCM_ERNIC_WARN_THREAD_SAFETY_OFF
-    g_hash_table_destroy(priv->mesh_nodes);
-    g_hash_table_destroy(priv->connections);
-    g_hash_table_destroy(priv->gid_owner);
-    g_hash_table_destroy(priv->node_gids);
+    ernic_u32_map_free(priv->mesh_nodes);
+    ernic_u32_map_free(priv->connections);
+    ernic_gid_map_free(priv->gid_owner);
+    ernic_u32_map_free(priv->node_gids);
     ROCM_ERNIC_WARN_THREAD_SAFETY_ON
     tcp_free_pending_conns(priv);
     for (uint32_t i = 0; i < MGR_MAX_NODES; i++) {
@@ -2576,12 +2568,12 @@ static int count_type(int fd, TcpMsgType type)
     return n;
 }
 
-static guint mesh_node_count(TcpBackendPrivate *priv)
+static size_t mesh_node_count(TcpBackendPrivate *priv)
 {
-    guint n;
+    size_t n;
 
     qemu_mutex_lock(&priv->mesh_table_lock);
-    n = g_hash_table_size(priv->mesh_nodes);
+    n = ernic_u32_map_size(priv->mesh_nodes);
     qemu_mutex_unlock(&priv->mesh_table_lock);
     return n;
 }
@@ -2594,11 +2586,11 @@ static int run_reg_case(const struct reg_case *c)
     char config[64];
     const char *why = NULL;
     uint16_t port = free_port();
-    guint entries = 0;
-    guint table = 0;
+    unsigned entries = 0;
+    size_t table = 0;
     size_t pending = 0;
-    guint nodes_before;
-    guint nodes = 0;
+    size_t nodes_before;
+    size_t nodes = 0;
     int fd;
     int answers = 0;
     bool ok;
@@ -2638,14 +2630,14 @@ static int run_reg_case(const struct reg_case *c)
     } else if (!wait_for_exits(1)) {
         why = "the receive thread never read to the end of the stream";
     } else {
-        GHashTableIter iter;
-        gpointer value;
+        ErnicU32MapIter iter;
+        void *value;
 
         nodes = mesh_node_count(priv) - nodes_before;
         qemu_mutex_lock(&priv->conn_table_lock);
-        table = g_hash_table_size(priv->connections);
-        g_hash_table_iter_init(&iter, priv->connections);
-        while (g_hash_table_iter_next(&iter, NULL, &value)) {
+        table = ernic_u32_map_size(priv->connections);
+        ernic_u32_map_iter_init(&iter, priv->connections);
+        while (ernic_u32_map_iter_next(&iter, NULL, &value)) {
             entries += value == conn ? 1U : 0U;
         }
         pending = ernic_ptr_vec_len(&priv->pending_conns);
@@ -2659,8 +2651,8 @@ static int run_reg_case(const struct reg_case *c)
     printf("%s registration %s: %s; expected: %s\n", ok ? "ok  " : "FAIL",
            c->category, c->description, c->expected);
     if (!ok) {
-        printf("     %s%s%u table entr%s for the connection (want 1), %u in "
-               "the table (want 1), %zu pending (want 0), %u new mesh node(s) "
+        printf("     %s%s%u table entr%s for the connection (want 1), %zu in "
+               "the table (want 1), %zu pending (want 0), %zu new mesh node(s) "
                "(want 1), %d answer(s) (want 1)\n",
                why ? why : "", why ? "; " : "", entries,
                entries == 1 ? "y" : "ies", table, pending, nodes, answers);
@@ -2837,8 +2829,7 @@ static const char *tp_setup(struct tp_fixture *fx, uint32_t interval,
     priv->health_check_interval_sec = interval;
     /* Before the first thread starts, which can reach priv */
     ROCM_ERNIC_WARN_THREAD_SAFETY_OFF
-    priv->connections = g_hash_table_new_full(
-        g_direct_hash, g_direct_equal, NULL, tcp_connection_destroy_notify);
+    priv->connections = ernic_u32_map_new(tcp_connection_destroy_notify);
     ernic_ptr_vec_init(&priv->pending_conns);
     ernic_vec_init(&priv->peer_targets, sizeof(TcpPeerTarget));
     ROCM_ERNIC_WARN_THREAD_SAFETY_ON
@@ -2881,7 +2872,7 @@ static double tp_teardown(struct tp_fixture *fx)
     took = now_s() - start;
     /* Every thread has been stopped */
     ROCM_ERNIC_WARN_THREAD_SAFETY_OFF
-    g_hash_table_destroy(priv->connections);
+    ernic_u32_map_free(priv->connections);
     ernic_vec_free(&priv->peer_targets);
     ROCM_ERNIC_WARN_THREAD_SAFETY_ON
     tcp_free_pending_conns(priv);
@@ -3107,17 +3098,17 @@ static TcpConnection *tp_lookup(struct tp_fixture *fx, uint32_t id)
     TcpConnection *conn;
 
     qemu_mutex_lock(&fx->priv->conn_table_lock);
-    conn = g_hash_table_lookup(fx->priv->connections, GUINT_TO_POINTER(id));
+    conn = ernic_u32_map_lookup(fx->priv->connections, id);
     qemu_mutex_unlock(&fx->priv->conn_table_lock);
     return conn;
 }
 
-static guint tp_count(const struct tp_fixture *fx)
+static size_t tp_count(const struct tp_fixture *fx)
 {
-    guint n;
+    size_t n;
 
     qemu_mutex_lock(&fx->priv->conn_table_lock);
-    n = g_hash_table_size(fx->priv->connections);
+    n = ernic_u32_map_size(fx->priv->connections);
     qemu_mutex_unlock(&fx->priv->conn_table_lock);
     return n;
 }
@@ -3186,7 +3177,7 @@ static TcpConnection *tp_publish(struct tp_fixture *fx, struct tp_net *net,
                            tcp_recv_thread_per_conn, conn);
     }
     qemu_mutex_lock(&fx->priv->conn_table_lock);
-    g_hash_table_insert(fx->priv->connections, GUINT_TO_POINTER(id), conn);
+    ernic_u32_map_insert(fx->priv->connections, id, conn);
     qemu_mutex_unlock(&fx->priv->conn_table_lock);
     return conn;
 }
@@ -4556,8 +4547,7 @@ static int run_sp_case(const struct sp_case *c)
     alarm(row_timeout_s());
     if (c->first + c->later > SP_ALL) {
         why = "the row sends more than the stream";
-    } else if (c->want_msgs < 0 ||
-               (size_t)c->want_msgs > G_N_ELEMENTS(sp_msgs)) {
+    } else if (c->want_msgs < 0 || (size_t)c->want_msgs > ARRAY_LEN(sp_msgs)) {
         why = "the row wants more messages than the stream holds";
     } else if (socketpair(AF_UNIX, SOCK_STREAM, 0, sv) < 0) {
         why = "could not open a socketpair";
@@ -5206,7 +5196,7 @@ static const char *reap_hangup(TcpBackendPrivate *priv, struct reap_fds *k)
     }
 
     qemu_mutex_lock(&priv->mesh_table_lock);
-    node = g_hash_table_lookup(priv->mesh_nodes, GUINT_TO_POINTER(2));
+    node = ernic_u32_map_lookup(priv->mesh_nodes, 2);
     alive = node && node->is_alive;
     qemu_mutex_unlock(&priv->mesh_table_lock);
     qemu_mutex_lock(&conn->lock);
@@ -5444,7 +5434,7 @@ static void node_set(TcpBackendPrivate *priv, uint32_t id, bool alive,
     MeshNodeInfo *node;
 
     qemu_mutex_lock(&priv->mesh_table_lock);
-    node = g_hash_table_lookup(priv->mesh_nodes, GUINT_TO_POINTER(id));
+    node = ernic_u32_map_lookup(priv->mesh_nodes, id);
     if (node) {
         tcp_node_set_alive(priv, node, alive, NULL);
         node->last_heartbeat_ms = last_ms;
@@ -5459,7 +5449,7 @@ static bool node_get(TcpBackendPrivate *priv, uint32_t id, bool *alive,
     MeshNodeInfo *node;
 
     qemu_mutex_lock(&priv->mesh_table_lock);
-    node = g_hash_table_lookup(priv->mesh_nodes, GUINT_TO_POINTER(id));
+    node = ernic_u32_map_lookup(priv->mesh_nodes, id);
     if (node) {
         *alive = node->is_alive;
         *last_ms = node->last_heartbeat_ms;
@@ -6110,7 +6100,7 @@ static bool retire_node_conn(TcpBackendPrivate *priv, uint32_t id)
     bool taken = false;
 
     qemu_mutex_lock(&priv->conn_table_lock);
-    conn = g_hash_table_lookup(priv->connections, GUINT_TO_POINTER(id));
+    conn = ernic_u32_map_lookup(priv->connections, id);
     if (conn) {
         taken = tcp_conn_table_take(priv, id, conn);
     }
@@ -6400,7 +6390,7 @@ static int32_t ra_refusal(enum ra_scenario scenario)
  */
 static const char *ra_check(TcpBackendPrivate *priv, enum ra_scenario scenario,
                             int w1, int w2, TcpConnection *old,
-                            const TcpConnection *fresh, guint nodes,
+                            const TcpConnection *fresh, size_t nodes,
                             uint32_t id, int32_t result)
 {
     bool alive = false;
@@ -6470,7 +6460,7 @@ static const char *ra_run(TcpBackendPrivate *priv, int w1,
     uint32_t id = UINT32_MAX;
     uint16_t port = WORKER_PORT;
     int32_t result = 1;
-    guint nodes;
+    size_t nodes;
     const char *why = NULL;
 
     if (!old) {
@@ -6619,7 +6609,7 @@ static bool hn_registered_as(TcpBackendPrivate *priv, uint32_t id, size_t len)
     bool as;
 
     qemu_mutex_lock(&priv->mesh_table_lock);
-    node = g_hash_table_lookup(priv->mesh_nodes, GUINT_TO_POINTER(id));
+    node = ernic_u32_map_lookup(priv->mesh_nodes, id);
     as = node && strlen(node->hostname) == len &&
          strspn(node->hostname, "h") == len;
     qemu_mutex_unlock(&priv->mesh_table_lock);
@@ -6631,7 +6621,7 @@ static const char *hn_run(TcpBackendPrivate *priv, size_t len, int *fd)
 {
     TcpConnection *conn = NULL;
     uint8_t host[TCP_HOSTNAME_LEN];
-    guint nodes = mesh_node_count(priv);
+    size_t nodes = mesh_node_count(priv);
     uint32_t id = UINT32_MAX;
     int32_t result = 1;
 
@@ -6863,7 +6853,7 @@ static bool ev_has_claims(TcpBackendPrivate *priv, uint32_t id)
     bool has;
 
     qemu_mutex_lock(&priv->gid_table_lock);
-    has = g_hash_table_contains(priv->node_gids, GUINT_TO_POINTER(id)) != FALSE;
+    has = ernic_u32_map_contains(priv->node_gids, id);
     qemu_mutex_unlock(&priv->gid_table_lock);
     return has;
 }
@@ -6880,7 +6870,7 @@ static bool ev_plant(TcpBackendPrivate *priv, uint32_t id, bool alive,
     node->is_alive = alive;
     node->last_heartbeat_ms = ernic_monotonic_ms() - (dead_s * 1000U);
     qemu_mutex_lock(&priv->mesh_table_lock);
-    g_hash_table_insert(priv->mesh_nodes, GUINT_TO_POINTER(id), node);
+    ernic_u32_map_insert(priv->mesh_nodes, id, node);
     qemu_mutex_unlock(&priv->mesh_table_lock);
     return true;
 }
@@ -6895,8 +6885,7 @@ static bool ev_connect(struct ev_fixture *fx, uint32_t id, bool ended)
     }
     fx->conn[id] = conn;
     qemu_mutex_lock(&fx->priv->conn_table_lock);
-    g_hash_table_insert(fx->priv->connections, GUINT_TO_POINTER(id),
-                        tcp_connection_ref(conn));
+    ernic_u32_map_insert(fx->priv->connections, id, tcp_connection_ref(conn));
     qemu_mutex_unlock(&fx->priv->conn_table_lock);
     if (!ended) {
         return true;
@@ -6989,7 +6978,7 @@ static bool ev_in_table(TcpBackendPrivate *priv, uint32_t id)
     bool in;
 
     qemu_mutex_lock(&priv->mesh_table_lock);
-    in = g_hash_table_contains(priv->mesh_nodes, GUINT_TO_POINTER(id)) != FALSE;
+    in = ernic_u32_map_contains(priv->mesh_nodes, id);
     qemu_mutex_unlock(&priv->mesh_table_lock);
     return in;
 }
@@ -7027,7 +7016,7 @@ static const char *ev_broadcasts(int fd, uint32_t fresh, uint32_t evicted)
     const char *why = NULL;
     uint32_t n;
 
-    if (fresh >= G_N_ELEMENTS(seen)) {
+    if (fresh >= ARRAY_LEN(seen)) {
         return "the new node's id is out of range";
     }
     if (!wr_until(fd, TCP_MSG_MESH_TOPOLOGY, 2000, &hdr, &payload, NULL)) {
@@ -7426,7 +7415,7 @@ static int run_ev_case(const struct ev_case *c)
     for (uint32_t i = 0; i < TCP_MAX_MESH_NODES; i++) {
         fx.peer[i] = -1;
     }
-    for (size_t i = 0; i < G_N_ELEMENTS(fx.fresh); i++) {
+    for (size_t i = 0; i < ARRAY_LEN(fx.fresh); i++) {
         fx.fresh[i] = -1;
     }
     test_fmt(config, sizeof(config), "tcp:manager:listen:%u", (unsigned)port);
@@ -7471,7 +7460,7 @@ static int run_ev_case(const struct ev_case *c)
             close(fx.peer[i]);
         }
     }
-    for (size_t i = 0; i < G_N_ELEMENTS(fx.fresh); i++) {
+    for (size_t i = 0; i < ARRAY_LEN(fx.fresh); i++) {
         if (fx.fresh[i] >= 0) {
             close(fx.fresh[i]);
         }
@@ -8092,7 +8081,7 @@ static const char *lt_register_vs_stop(enum lt_scenario scenario)
     }
 
     qemu_mutex_lock(&priv->conn_table_lock);
-    in_table = g_hash_table_lookup(priv->connections, GUINT_TO_POINTER(1));
+    in_table = ernic_u32_map_lookup(priv->connections, 1);
     pending = ernic_ptr_vec_len(&priv->pending_conns);
     qemu_mutex_unlock(&priv->conn_table_lock);
     if (!why && in_table != (again ? old : conn)) {
@@ -9401,8 +9390,8 @@ static int run_wl_case(const struct wl_case *c)
 /*
  * The test is linked with --wrap=malloc (tests/CMakeLists.txt), so the
  * malloc() calls in its own objects, the backend's included, come here;
- * those inside libc and GLib don't.  While g_fail_malloc is set on a thread,
- * that thread's next call fails and clears it.  It's per thread so that the
+ * those inside libc don't.  While g_fail_malloc is set on a thread, that
+ * thread's next call fails and clears it.  It's per thread so that the
  * backend's other threads never take the failure.
  */
 static _Thread_local bool g_fail_malloc;

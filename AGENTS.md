@@ -274,7 +274,8 @@ The analysis can't follow everything:
   (`conn->priv->lock`, not a separate `priv`).
 - It can't follow a conditional lock (`if (sr) lock` ... `if (sr)
   unlock`); pair them, as `ionic_dp_deliver_recv()` does.
-- A GLib table's contents are opaque to it, so annotate the pointer.
+- A hash map's contents (`ernic_map.h`) are opaque to it, so annotate
+  the map, or the pointer to it.
 - Where it can't follow correct code (setup before an object is shared,
   teardown after its threads are joined, an unlocked read the field's
   comment justifies), wrap the smallest region in
@@ -380,7 +381,8 @@ new general patterns here when a scanner reports one.
 - **A stack address stored where it can outlive its frame**
   (`cpp/stack-address-escape`), even if unused after return: allocate
   the target, as `test_server_lifecycle.c` does for the server's
-  `environ`.
+  `environ`. CodeQL follows a pointer into our own maps and vectors, so
+  a test fixture on the stack whose address goes into one reports too.
 - **A peer-sized allocation bounded only through a pointer**
   (`cpp/uncontrolled-allocation-size`): `if (hdr->len > MAX)` before
   `malloc(hdr->len)` still reports. Copy the length to a local, check
@@ -396,6 +398,10 @@ new general patterns here when a scanner reports one.
   (`ionic_eth_emu_queue_rx_frame()` in `tests/test_ionic_cq_arm.c`) makes
   a bare call in `src/` "have no effect". Check the result, or cast the
   call to `(void)` with a comment saying why, as `dp_s3_tx_frame()` does.
+- **Using a lookup's result unchecked where most callers check it**
+  (`cpp/inconsistent-null-check`), even where the entry must be there:
+  make the lookup part of the condition that uses its result, so a
+  missing entry skips the work rather than dereferencing NULL.
 - **Changing a `for` loop's counter in its body**
   (`cpp/loop-variable-changed`), e.g. an `i++` to step over an escape's
   second character: when the body decides how far to advance, write a

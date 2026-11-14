@@ -19,6 +19,7 @@
 #include "rdma/rdma_backend_tcp_priv.h"
 #include "ernic_alloc.h"
 #include "ernic_gnu.h"
+#include "ernic_map.h"
 #include "ernic_time.h"
 #include "ernic_vec.h"
 #include "pvrdma/rdma_utils.h"
@@ -31,7 +32,6 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#include <glib.h>
 #include <sys/socket.h>
 #include <netinet/in.h>
 #include <netinet/tcp.h>
@@ -122,8 +122,8 @@ void tcp_connection_unref(TcpConnection *conn)
     }
 }
 
-/* GDestroyNotify adapter for tcp_connection_unref() */
-void tcp_connection_destroy_notify(gpointer data)
+/* tcp_connection_unref(), typed as a map's or vector's free function */
+void tcp_connection_destroy_notify(void *data)
 {
     tcp_connection_unref(data);
 }
@@ -175,7 +175,7 @@ TcpConnection *tcp_connection_lookup(TcpBackendPrivate *priv, uint32_t node_id)
     TcpConnection *conn;
 
     qemu_mutex_lock(&priv->conn_table_lock);
-    conn = g_hash_table_lookup(priv->connections, GUINT_TO_POINTER(node_id));
+    conn = ernic_u32_map_lookup(priv->connections, node_id);
     if (conn) {
         tcp_connection_ref(conn);
     }
@@ -193,13 +193,13 @@ TcpConnection *tcp_connection_lookup(TcpBackendPrivate *priv, uint32_t node_id)
 ErnicPtrVec tcp_conns_snapshot(TcpBackendPrivate *priv)
 {
     ErnicPtrVec conns;
-    GHashTableIter iter;
-    gpointer value;
+    ErnicU32MapIter iter;
+    void *value;
 
     ernic_ptr_vec_init(&conns);
     qemu_mutex_lock(&priv->conn_table_lock);
-    g_hash_table_iter_init(&iter, priv->connections);
-    while (g_hash_table_iter_next(&iter, NULL, &value)) {
+    ernic_u32_map_iter_init(&iter, priv->connections);
+    while (ernic_u32_map_iter_next(&iter, NULL, &value)) {
         ernic_ptr_vec_push(&conns, tcp_connection_ref(value));
     }
     qemu_mutex_unlock(&priv->conn_table_lock);
@@ -216,7 +216,7 @@ bool tcp_has_live_connection(TcpBackendPrivate *priv, uint32_t node_id)
     bool live;
 
     qemu_mutex_lock(&priv->conn_table_lock);
-    conn = g_hash_table_lookup(priv->connections, GUINT_TO_POINTER(node_id));
+    conn = ernic_u32_map_lookup(priv->connections, node_id);
     live = conn && !tcp_conn_dead(conn);
     qemu_mutex_unlock(&priv->conn_table_lock);
 
@@ -255,11 +255,11 @@ TcpConnection *tcp_route_to_node(TcpBackendPrivate *priv, uint32_t node_id)
 bool tcp_conn_table_add(TcpBackendPrivate *priv, uint32_t node_id,
                         TcpConnection *conn)
 {
-    if (g_hash_table_contains(priv->connections, GUINT_TO_POINTER(node_id))) {
+    if (ernic_u32_map_contains(priv->connections, node_id)) {
         rdma_error_report("TCP: node %u already has a connection", node_id);
         return false;
     }
-    g_hash_table_insert(priv->connections, GUINT_TO_POINTER(node_id), conn);
+    ernic_u32_map_insert(priv->connections, node_id, conn);
     return true;
 }
 
@@ -289,11 +289,10 @@ void tcp_conn_unpublished(TcpConnection *conn)
 bool tcp_conn_table_take(TcpBackendPrivate *priv, uint32_t node_id,
                          TcpConnection *conn)
 {
-    if (g_hash_table_lookup(priv->connections, GUINT_TO_POINTER(node_id)) !=
-        conn) {
+    if (ernic_u32_map_lookup(priv->connections, node_id) != conn) {
         return false;
     }
-    g_hash_table_steal(priv->connections, GUINT_TO_POINTER(node_id));
+    ernic_u32_map_steal(priv->connections, node_id, NULL);
     tcp_conn_unpublished(conn);
     return true;
 }
@@ -1068,14 +1067,14 @@ void tcp_stop_recv_threads(TcpBackendPrivate *priv)
     for (;;) {
         ErnicPtrVec recv_batch;
         ErnicPtrVec send_batch;
-        GHashTableIter iter;
-        gpointer value;
+        ErnicU32MapIter iter;
+        void *value;
 
         ernic_ptr_vec_init(&recv_batch);
         ernic_ptr_vec_init(&send_batch);
         qemu_mutex_lock(&priv->conn_table_lock);
-        g_hash_table_iter_init(&iter, priv->connections);
-        while (g_hash_table_iter_next(&iter, NULL, &value)) {
+        ernic_u32_map_iter_init(&iter, priv->connections);
+        while (ernic_u32_map_iter_next(&iter, NULL, &value)) {
             tcp_claim_conn_threads(&recv_batch, &send_batch, value);
         }
         for (size_t i = 0; i < ernic_ptr_vec_len(&priv->pending_conns); i++) {

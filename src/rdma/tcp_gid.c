@@ -18,6 +18,7 @@
 #include "byteorder.h"
 #include "ernic_alloc.h"
 #include "ernic_gid.h"
+#include "ernic_map.h"
 #include "pvrdma/rdma_utils.h"
 #include "qemu/thread.h"
 #include "rocm_ernic_compat.h"
@@ -28,7 +29,6 @@
 #include <stdint.h>
 #include <stdlib.h>
 #include <string.h>
-#include <glib.h>
 #include <sys/socket.h>
 #include <netinet/in.h>
 #include <arpa/inet.h>
@@ -133,13 +133,6 @@ uint32_t tcp_parse_guest_gids(const char *val,
     return n;
 }
 
-/* g_bytes_unref() takes GBytes*, not gpointer; casting the pointer type
- * instead trips -Wcast-function-type-strict under clang. */
-void tcp_gid_key_free(gpointer key)
-{
-    g_bytes_unref((GBytes *)key);
-}
-
 /*
  * Rebuild the GID -> owner index from the per-node claims.
  *
@@ -156,15 +149,15 @@ void tcp_gid_key_free(gpointer key)
 static void tcp_gid_index_rebuild(TcpBackendPrivate *priv)
     TSA_REQUIRES(priv->gid_table_lock)
 {
-    GHashTableIter iter;
-    gpointer key;
-    gpointer value;
+    ErnicU32MapIter iter;
+    uint32_t node_id;
+    void *value;
 
-    g_hash_table_remove_all(priv->gid_owner);
+    /* Emptied, to be filled again */
+    ernic_gid_map_destroy(priv->gid_owner);
 
-    g_hash_table_iter_init(&iter, priv->node_gids);
-    while (g_hash_table_iter_next(&iter, &key, &value)) {
-        uint32_t node_id = GPOINTER_TO_UINT(key);
+    ernic_u32_map_iter_init(&iter, priv->node_gids);
+    while (ernic_u32_map_iter_next(&iter, &node_id, &value)) {
         const TcpNodeGids *claims = value;
 
         /*
@@ -181,18 +174,15 @@ static void tcp_gid_index_rebuild(TcpBackendPrivate *priv)
         }
 
         for (uint32_t i = 0; i < claims->num_gids; i++) {
-            GBytes *gid = g_bytes_new(claims->gids[i], ERNIC_GID_LEN);
-            gpointer held;
+            uint32_t held;
 
-            if (g_hash_table_lookup_extended(priv->gid_owner, gid, NULL,
-                                             &held) &&
-                GPOINTER_TO_UINT(held) != node_id) {
-                /* Contested: replace the value, keep the existing key. */
-                g_hash_table_insert(priv->gid_owner, gid,
-                                    GUINT_TO_POINTER(UINT32_MAX));
+            if (ernic_gid_map_lookup(priv->gid_owner, claims->gids[i], &held) &&
+                held != node_id) {
+                /* Contested */
+                ernic_gid_map_insert(priv->gid_owner, claims->gids[i],
+                                     UINT32_MAX);
             } else {
-                g_hash_table_insert(priv->gid_owner, gid,
-                                    GUINT_TO_POINTER(node_id));
+                ernic_gid_map_insert(priv->gid_owner, claims->gids[i], node_id);
             }
         }
     }
@@ -216,12 +206,10 @@ static bool tcp_gid_claims_record(TcpBackendPrivate *priv, uint32_t node_id,
 
     qemu_mutex_lock(&priv->gid_table_lock);
 
-    const TcpNodeGids *old =
-        g_hash_table_lookup(priv->node_gids, GUINT_TO_POINTER(node_id));
+    const TcpNodeGids *old = ernic_u32_map_lookup(priv->node_gids, node_id);
 
     if (num_gids == 0) {
-        changed = g_hash_table_remove(priv->node_gids,
-                                      GUINT_TO_POINTER(node_id)) != FALSE;
+        changed = ernic_u32_map_remove(priv->node_gids, node_id);
     } else if (old && old->alive == alive && old->num_gids == num_gids &&
                memcmp(old->gids, gids, (size_t)num_gids * ERNIC_GID_LEN) == 0) {
         changed = false;
@@ -233,7 +221,7 @@ static bool tcp_gid_claims_record(TcpBackendPrivate *priv, uint32_t node_id,
         for (uint32_t i = 0; i < num_gids; i++) {
             memcpy(claims->gids[i], gids[i], ERNIC_GID_LEN);
         }
-        g_hash_table_insert(priv->node_gids, GUINT_TO_POINTER(node_id), claims);
+        ernic_u32_map_insert(priv->node_gids, node_id, claims);
         changed = true;
     }
 
@@ -272,12 +260,9 @@ static void tcp_gid_claims_report(TcpBackendPrivate *priv, uint32_t node_id,
         uint32_t owner;
 
         qemu_mutex_lock(&priv->gid_table_lock);
-        GBytes *gid = g_bytes_new_static(gids[i], ERNIC_GID_LEN);
-        gpointer held;
-        owner = g_hash_table_lookup_extended(priv->gid_owner, gid, NULL, &held)
-                    ? GPOINTER_TO_UINT(held)
-                    : UINT32_MAX;
-        g_bytes_unref(gid);
+        if (!ernic_gid_map_lookup(priv->gid_owner, gids[i], &owner)) {
+            owner = UINT32_MAX;
+        }
         qemu_mutex_unlock(&priv->gid_table_lock);
 
         if (owner == node_id) {
@@ -352,7 +337,7 @@ static bool tcp_gid_claims_set_if_member(TcpBackendPrivate *priv,
     }
 
     qemu_mutex_lock(&priv->mesh_table_lock);
-    node = g_hash_table_lookup(priv->mesh_nodes, GUINT_TO_POINTER(node_id));
+    node = ernic_u32_map_lookup(priv->mesh_nodes, node_id);
     member = node != NULL;
     if (member) {
         alive = node->is_alive;
@@ -374,7 +359,7 @@ static bool tcp_gid_claims_set_if_member(TcpBackendPrivate *priv,
 void tcp_gid_claims_forget(TcpBackendPrivate *priv, uint32_t node_id)
 {
     qemu_mutex_lock(&priv->gid_table_lock);
-    if (g_hash_table_remove(priv->node_gids, GUINT_TO_POINTER(node_id))) {
+    if (ernic_u32_map_remove(priv->node_gids, node_id)) {
         tcp_gid_index_rebuild(priv);
     }
     qemu_mutex_unlock(&priv->gid_table_lock);
@@ -401,9 +386,9 @@ void tcp_gid_claims_prune(TcpBackendPrivate *priv, const uint8_t *topo,
                           uint32_t num_nodes)
 {
     uint32_t local = tcp_local_node(priv);
-    GHashTableIter iter;
-    gpointer key;
-    guint dropped = 0;
+    ErnicU32MapIter iter;
+    uint32_t node_id;
+    unsigned dropped = 0;
 
     if (!tcp_has_gid_tables(priv)) {
         return;
@@ -413,9 +398,8 @@ void tcp_gid_claims_prune(TcpBackendPrivate *priv, const uint8_t *topo,
     }
 
     qemu_mutex_lock(&priv->gid_table_lock);
-    g_hash_table_iter_init(&iter, priv->node_gids);
-    while (g_hash_table_iter_next(&iter, &key, NULL)) {
-        uint32_t node_id = GPOINTER_TO_UINT(key);
+    ernic_u32_map_iter_init(&iter, priv->node_gids);
+    while (ernic_u32_map_iter_next(&iter, &node_id, NULL)) {
         bool listed = node_id == local;
 
         for (uint32_t i = 0; !listed && i < num_nodes; i++) {
@@ -423,7 +407,7 @@ void tcp_gid_claims_prune(TcpBackendPrivate *priv, const uint8_t *topo,
                                     TCP_MESH_NODE_ID_OFF) == node_id;
         }
         if (!listed) {
-            g_hash_table_iter_remove(&iter);
+            ernic_u32_map_iter_remove(&iter);
             dropped++;
         }
     }
@@ -456,8 +440,7 @@ bool tcp_gid_claims_set_alive(TcpBackendPrivate *priv, uint32_t node_id,
 
     qemu_mutex_lock(&priv->gid_table_lock);
 
-    TcpNodeGids *claims =
-        g_hash_table_lookup(priv->node_gids, GUINT_TO_POINTER(node_id));
+    TcpNodeGids *claims = ernic_u32_map_lookup(priv->node_gids, node_id);
     if (claims && claims->alive != alive) {
         claims->alive = alive;
         tcp_gid_index_rebuild(priv);
@@ -494,18 +477,16 @@ uint32_t tcp_resolve_node_from_gid(TcpBackendPrivate *priv,
         return UINT32_MAX;
     }
 
-    GBytes *key = g_bytes_new_static(dgid->raw, ERNIC_GID_LEN);
-    gpointer value;
-    gboolean found;
+    uint32_t owner;
+    bool found;
 
     qemu_mutex_lock(&priv->gid_table_lock);
-    found = g_hash_table_lookup_extended(priv->gid_owner, key, NULL, &value);
+    found = ernic_gid_map_lookup(priv->gid_owner, dgid->raw, &owner);
     qemu_mutex_unlock(&priv->gid_table_lock);
-    g_bytes_unref(key);
 
     /* A contested GID is stored as UINT32_MAX, so it falls out here as
      * unresolved without a separate case. */
-    return found ? GPOINTER_TO_UINT(value) : UINT32_MAX;
+    return found ? owner : UINT32_MAX;
 }
 
 /*

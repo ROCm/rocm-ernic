@@ -22,9 +22,8 @@
 #include <inttypes.h> /* For PRIu32 */
 #include <stdlib.h>
 
-#include <glib.h> /* For GBytes and GHashTable */
-
 #include "ernic_ib.h"
+#include "ernic_map.h"
 #include "pvrdma/rdma_backend.h"
 #include "pvrdma/rdma_rm.h"
 #include "pvrdma/rdma_utils.h"
@@ -413,11 +412,7 @@ void rdma_rm_dealloc_cq(RdmaDeviceResources *dev_res, uint32_t cq_handle)
 
 RdmaRmQP *rdma_rm_get_qp(RdmaDeviceResources *dev_res, uint32_t qpn)
 {
-    GBytes *key = g_bytes_new(&qpn, sizeof(qpn));
-
-    RdmaRmQP *qp = g_hash_table_lookup(dev_res->qp_hash, key);
-
-    g_bytes_unref(key);
+    RdmaRmQP *qp = ernic_u32_map_lookup(&dev_res->qp_hash, qpn);
 
     if (!qp) {
         rdma_error_report("Invalid QP handle %" PRIu32, qpn);
@@ -438,7 +433,6 @@ int rdma_rm_alloc_qp(RdmaDeviceResources *dev_res, uint32_t pd_handle,
     RdmaRmPD *pd;
     RdmaRmSRQ *srq = NULL;
     uint32_t rm_qpn;
-    GBytes *key;
 
     pd = rdma_rm_get_pd(dev_res, pd_handle);
     if (!pd) {
@@ -509,11 +503,9 @@ int rdma_rm_alloc_qp(RdmaDeviceResources *dev_res, uint32_t pd_handle,
      * neither found nor freed. A handle is unique among live QPs; a
      * backend's number has to be checked.
      */
-    key = g_bytes_new(qpn, sizeof(*qpn));
-    if (g_hash_table_contains(dev_res->qp_hash, key)) {
+    if (ernic_u32_map_contains(&dev_res->qp_hash, *qpn)) {
         rdma_error_report("rdma_rm_alloc_qp: QPN %" PRIu32 " is already in use",
                           *qpn);
-        g_bytes_unref(key);
         if (qp->backend_qp.backend_ops &&
             qp->backend_qp.backend_ops->destroy_qp) {
             qp->backend_qp.backend_ops->destroy_qp(&qp->backend_qp, dev_res);
@@ -521,7 +513,7 @@ int rdma_rm_alloc_qp(RdmaDeviceResources *dev_res, uint32_t pd_handle,
         rc = -EIO;
         goto out_dealloc_qp;
     }
-    g_hash_table_insert(dev_res->qp_hash, key, qp);
+    ernic_u32_map_insert(&dev_res->qp_hash, *qpn, qp);
 
     if (out_qp) {
         *out_qp = qp;
@@ -699,13 +691,9 @@ int rdma_rm_query_qp(RdmaDeviceResources *dev_res, uint32_t qp_handle,
 
 void rdma_rm_dealloc_qp(RdmaDeviceResources *dev_res, uint32_t qp_handle)
 {
-    RdmaRmQP *qp;
-    GBytes *key;
+    RdmaRmQP *qp = ernic_u32_map_lookup(&dev_res->qp_hash, qp_handle);
 
-    key = g_bytes_new(&qp_handle, sizeof(qp_handle));
-    qp = g_hash_table_lookup(dev_res->qp_hash, key);
-    g_hash_table_remove(dev_res->qp_hash, key);
-    g_bytes_unref(key);
+    ernic_u32_map_remove(&dev_res->qp_hash, qp_handle);
 
     if (!qp) {
         return;
@@ -811,11 +799,6 @@ void rdma_rm_dealloc_srq(RdmaDeviceResources *dev_res, uint32_t srq_handle)
     rdma_res_tbl_dealloc(&dev_res->srq_tbl, srq_handle);
 }
 
-static void destroy_qp_hash_key(gpointer data)
-{
-    g_bytes_unref(data);
-}
-
 /*
  * On failure everything rdma_rm_init() set up is released and its pointers
  * cleared, so a later rdma_rm_fini() on the same dev_res is still safe.
@@ -841,8 +824,8 @@ int rdma_rm_init(RdmaDeviceResources *dev_res,
         return -EINVAL;
     }
 
-    dev_res->qp_hash = g_hash_table_new_full(g_bytes_hash, g_bytes_equal,
-                                             destroy_qp_hash_key, NULL);
+    /* The QPs live in qp_tbl, so the map frees none of them */
+    ernic_u32_map_init(&dev_res->qp_hash, NULL);
 
     ret = res_tbl_init("PD", &dev_res->pd_tbl, (uint32_t)dev_attr->max_pd,
                        sizeof(RdmaRmPD));
@@ -881,8 +864,7 @@ err_mr:
 err_cq:
     res_tbl_free(&dev_res->pd_tbl);
 err_pd:
-    g_hash_table_destroy(dev_res->qp_hash);
-    dev_res->qp_hash = NULL;
+    ernic_u32_map_destroy(&dev_res->qp_hash);
     return ret;
 }
 
@@ -894,7 +876,5 @@ void rdma_rm_fini(RdmaDeviceResources *dev_res)
     res_tbl_free(&dev_res->cq_tbl);
     res_tbl_free(&dev_res->pd_tbl);
 
-    if (dev_res->qp_hash) {
-        g_hash_table_destroy(dev_res->qp_hash);
-    }
+    ernic_u32_map_destroy(&dev_res->qp_hash);
 }

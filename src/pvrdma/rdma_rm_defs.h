@@ -21,8 +21,8 @@
 
 #include <stddef.h>
 #include <stdint.h>
-#include <glib.h> /* For GHashTable */
 #include <infiniband/verbs.h>
+#include "ernic_map.h"
 #include "pvrdma/rdma_backend_defs.h"
 #include "qemu/thread.h" /* For QemuMutex */
 
@@ -101,7 +101,7 @@ struct RdmaDeviceResources {
     RdmaRmResTbl qp_tbl;
     RdmaRmResTbl cq_tbl;
     RdmaRmResTbl srq_tbl;
-    GHashTable *qp_hash; /* Keeps mapping between real and emulated */
+    ErnicU32Map qp_hash; /* Keeps mapping between real and emulated */
 };
 
 #endif
