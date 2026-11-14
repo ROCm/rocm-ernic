@@ -2197,39 +2197,43 @@ out of memory</p></td>
 <tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">src/ernic_vec.c</span></code>, <code class="docutils literal notranslate"><span class="pre">.h</span></code></p></td>
 <td><p>Growable arrays, for lists whose length the server bounds</p></td>
 </tr>
-<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">src/ernic_shm.c</span></code>, <code class="docutils literal notranslate"><span class="pre">.h</span></code></p></td>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">src/ernic_map.c</span></code>, <code class="docutils literal notranslate"><span class="pre">.h</span></code></p></td>
+<td><p>Hash maps keyed by a number or a GID, over the vendored
+uthash, hashed with a per-process SipHash key</p></td>
+</tr>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">src/ernic_shm.c</span></code>, <code class="docutils literal notranslate"><span class="pre">.h</span></code></p></td>
 <td><p>Memory shared with QEMU by a file descriptor, behind the
 CMB</p></td>
 </tr>
-<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">src/rocm_ernic_compat.c</span></code>, <code class="docutils literal notranslate"><span class="pre">.h</span></code>,
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">src/rocm_ernic_compat.c</span></code>, <code class="docutils literal notranslate"><span class="pre">.h</span></code>,
 <code class="docutils literal notranslate"><span class="pre">src/ernic_rm.h</span></code>, <code class="docutils literal notranslate"><span class="pre">src/ernic_mesh.h</span></code></p></td>
 <td><p>Bridge to the QEMU-derived core: the device’s lifecycle,
 and wrappers for the resource manager and the mesh</p></td>
 </tr>
-<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">src/pvrdma/</span></code></p></td>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">src/pvrdma/</span></code></p></td>
 <td><p>Resource manager and backend dispatch, forked from QEMU</p></td>
 </tr>
-<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">src/rdma/rdma_backend_*.c</span></code></p></td>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">src/rdma/rdma_backend_*.c</span></code></p></td>
 <td><p>Backend registry; none, loopback, and TCP mesh backends</p></td>
 </tr>
-<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">src/rdma/tcp_*.c</span></code></p></td>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">src/rdma/tcp_*.c</span></code></p></td>
 <td><p>The TCP mesh: connections, the wire format, GID
 ownership, and the manager’s and workers’ halves</p></td>
 </tr>
-<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">src/qemu-compat/</span></code></p></td>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">src/qemu-compat/</span></code></p></td>
 <td><p>Stand-ins for the QEMU APIs the QEMU-derived code calls</p></td>
 </tr>
-<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">src/nvmeof/nvmeof_cm.c</span></code>,
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">src/nvmeof/nvmeof_cm.c</span></code>,
 <code class="docutils literal notranslate"><span class="pre">src/nvmeof/nvmeof_target.c</span></code>,
 <code class="docutils literal notranslate"><span class="pre">src/nvmeof/nvmeof_kv.c</span></code></p></td>
 <td><p>In-process NVMe-oF CM responder, controller, and Key
 Value store</p></td>
 </tr>
-<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">src/s3/s3_tcp.c</span></code>, <code class="docutils literal notranslate"><span class="pre">src/s3/s3_http.c</span></code>,
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">src/s3/s3_tcp.c</span></code>, <code class="docutils literal notranslate"><span class="pre">src/s3/s3_http.c</span></code>,
 <code class="docutils literal notranslate"><span class="pre">src/s3/s3_token.c</span></code>, <code class="docutils literal notranslate"><span class="pre">src/s3/s3_target.c</span></code></p></td>
 <td><p>In-process S3 store</p></td>
 </tr>
-<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">src/p4/</span></code></p></td>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">src/p4/</span></code></p></td>
 <td><p>P4 engine: program loader, tables, the pipeline, its
 device commands, and the fp8 and format conversion
 externs</p></td>
