@@ -69,15 +69,18 @@ set(ERNIC_TEST_P4_FIXTURE_DIR ${CMAKE_CURRENT_SOURCE_DIR}/data/p4)
 
 # The TCP backend's sources. The list comes from the top-level
 # CMakeLists.txt, so the tests keep linking what the server links, plus
-# the allocators, growable arrays, and GNU extensions it calls and the
-# log, which the allocators and the thread wrappers (qemu/thread.h) abort
-# through. The tests stub QEMU's reporters.
+# the allocators, hash maps (with the SipHash they hash with), growable
+# arrays, and GNU extensions it calls and the log, which the allocators and
+# the thread wrappers (qemu/thread.h) abort through. The tests stub QEMU's
+# reporters.
 set(ERNIC_TCP_TEST_SOURCES ${TCP_BACKEND_SOURCES})
 list(TRANSFORM ERNIC_TCP_TEST_SOURCES PREPEND "${PROJECT_SOURCE_DIR}/")
 list(APPEND ERNIC_TCP_TEST_SOURCES
     ${PROJECT_SOURCE_DIR}/src/ernic_alloc.c
     ${PROJECT_SOURCE_DIR}/src/ernic_gnu.c
     ${PROJECT_SOURCE_DIR}/src/ernic_log.c
+    ${PROJECT_SOURCE_DIR}/src/ernic_map.c
+    ${PROJECT_SOURCE_DIR}/src/ernic_siphash.c
     ${PROJECT_SOURCE_DIR}/src/ernic_vec.c
 )
 
@@ -244,16 +247,22 @@ target_link_options(ernic-test-ernic-shm PRIVATE
     "LINKER:--wrap=ftruncate,--wrap=mmap,--wrap=dup2")
 
 # The hash maps (ernic_map.h). It links the allocators and the log, which
-# the map aborts through when out of memory.
+# the maps abort through when out of memory, and the GNU extensions, for
+# the pipe it reads an abort's message through. It fails malloc() and
+# calloc() on demand: the linker routes the calls in its own objects
+# through wrappers in the test.
 ernic_add_test_program(ernic-test-ernic-map
     SOURCES
         test_ernic_map.c
         ${PROJECT_SOURCE_DIR}/src/ernic_alloc.c
+        ${PROJECT_SOURCE_DIR}/src/ernic_gnu.c
         ${PROJECT_SOURCE_DIR}/src/ernic_log.c
         ${PROJECT_SOURCE_DIR}/src/ernic_map.c
         ${PROJECT_SOURCE_DIR}/src/ernic_siphash.c
     DEPS pthread
 )
+target_link_options(ernic-test-ernic-map PRIVATE
+    "LINKER:--wrap=malloc,--wrap=calloc")
 
 # The growable arrays (ernic_vec.h). It links the allocators and the log,
 # which the arrays abort through, and fails realloc() on demand: the linker
@@ -553,7 +562,7 @@ ernic_add_test_program(test_ionic_query_qp
     SOURCES
         test_ionic_query_qp.c
         ${ERNIC_TEST_ADMINQ_SOURCES}
-    HEADER_DEPS vfio-user glib ibverbs
+    HEADER_DEPS vfio-user ibverbs
 )
 
 # ionic hardware statistics test. It links the admin queue, calls
@@ -564,7 +573,7 @@ ernic_add_test_program(ernic-test-ionic-stats
     SOURCES
         test_ionic_stats.c
         ${ERNIC_TEST_ADMINQ_SOURCES}
-    HEADER_DEPS vfio-user glib ibverbs
+    HEADER_DEPS vfio-user ibverbs
 )
 
 # ionic admin queue poll test. It links the admin queue, stubs the rest with
@@ -574,7 +583,7 @@ ernic_add_test_program(ernic-test-ionic-adminq-poll
     SOURCES
         test_ionic_adminq_poll.c
         ${ERNIC_TEST_ADMINQ_SOURCES}
-    HEADER_DEPS vfio-user glib ibverbs
+    HEADER_DEPS vfio-user ibverbs
 )
 
 # ionic admin queue id map test. It links the admin queue and stubs the rest
@@ -586,7 +595,7 @@ ernic_add_test_program(ernic-test-ionic-adminq-maps
     SOURCES
         test_ionic_adminq_maps.c
         ${ERNIC_TEST_ADMINQ_SOURCES}
-    HEADER_DEPS vfio-user glib ibverbs
+    HEADER_DEPS vfio-user ibverbs
 )
 
 # ionic admin queue CMB test. It links the admin queue and stubs the rest
@@ -596,7 +605,7 @@ ernic_add_test_program(ernic-test-ionic-adminq-cmb
     SOURCES
         test_ionic_adminq_cmb.c
         ${ERNIC_TEST_ADMINQ_SOURCES}
-    HEADER_DEPS vfio-user glib ibverbs
+    HEADER_DEPS vfio-user ibverbs
 )
 
 # ionic SRQ adminq unit test: drives CREATE/MODIFY/QUERY/DESTROY_SRQ through
@@ -608,7 +617,7 @@ ernic_add_test_program(test_ionic_srq_adminq
     SOURCES
         test_ionic_srq_adminq.c
         ${ERNIC_TEST_ADMINQ_SOURCES}
-    HEADER_DEPS vfio-user glib ibverbs
+    HEADER_DEPS vfio-user ibverbs
 )
 
 # ionic fault-injection core test: the --inject parser, the deterministic
@@ -636,7 +645,7 @@ ernic_add_test_program(test_ionic_dp_errors
         test_ionic_dp_errors.c
         ${ERNIC_TEST_DATAPATH_SOURCES}
     DEPS pthread
-    HEADER_DEPS vfio-user glib ibverbs
+    HEADER_DEPS vfio-user ibverbs
 )
 # ERNIC_HAVE_P4 as the server has it, here and in the two tests below, so
 # they test the data path that ships; each stubs the one P4 hook it calls.
@@ -657,7 +666,7 @@ ernic_add_test_program(test_ionic_cq_arm
     SOURCES
         test_ionic_cq_arm.c
         ${ERNIC_TEST_DATAPATH_SOURCES}
-    DEPS vfio-user glib pthread
+    DEPS vfio-user pthread
     HEADER_DEPS ibverbs
 )
 if(ERNIC_BUILD_P4)
@@ -671,7 +680,7 @@ ernic_add_test_program(test_ionic_rq_wrap
     SOURCES
         test_ionic_rq_wrap.c
         ${ERNIC_TEST_DATAPATH_SOURCES}
-    DEPS vfio-user glib pthread
+    DEPS vfio-user pthread
     HEADER_DEPS ibverbs
 )
 if(ERNIC_BUILD_P4)
@@ -686,7 +695,7 @@ ernic_add_test_program(test_tcp_mesh_topology
         test_tcp_mesh_topology.c
         test_fmt.c
         ${ERNIC_TCP_TEST_SOURCES}
-    DEPS glib ibverbs pthread
+    DEPS ibverbs pthread
     HEADER_DEPS vfio-user
 )
 # ASan's use-after-return detection would move the broadcast's frame off
@@ -701,7 +710,7 @@ ernic_add_test_program(test_tcp_gid_resolve
     SOURCES
         test_tcp_gid_resolve.c
         ${ERNIC_TCP_TEST_SOURCES}
-    DEPS glib ibverbs pthread
+    DEPS ibverbs pthread
     HEADER_DEPS vfio-user
 )
 
@@ -712,11 +721,9 @@ ernic_add_test_program(test_tcp_gid_resolve
 ernic_add_test_program(ernic-test-backend-handles
     SOURCES
         test_rdma_backend_handles.c
-        ${PROJECT_SOURCE_DIR}/src/ernic_map.c
-        ${PROJECT_SOURCE_DIR}/src/ernic_siphash.c
         ${PROJECT_SOURCE_DIR}/src/rdma/rdma_backend_loopback.c
         ${ERNIC_TCP_TEST_SOURCES}
-    DEPS glib ibverbs pthread
+    DEPS ibverbs pthread
     HEADER_DEPS vfio-user
 )
 
@@ -728,7 +735,7 @@ ernic_add_test_program(ernic-test-tcp-config
         test_tcp_config.c
         test_fmt.c
         ${ERNIC_TCP_TEST_SOURCES}
-    DEPS glib ibverbs pthread
+    DEPS ibverbs pthread
     HEADER_DEPS vfio-user
 )
 
@@ -741,7 +748,7 @@ ernic_add_test_program(ernic-test-tcp-thread-stop
         test_tcp_thread_stop.c
         test_fmt.c
         ${ERNIC_TCP_TEST_SOURCES}
-    DEPS glib ibverbs pthread
+    DEPS ibverbs pthread
     HEADER_DEPS vfio-user
 )
 # The test skips a row that can't work under valgrind, which it detects
@@ -752,8 +759,8 @@ if(ERNIC_HAVE_VALGRIND_H)
         ERNIC_HAVE_VALGRIND_H)
 endif()
 # The test fails the backend's malloc() calls on demand. The linker routes
-# the calls in its own objects through a wrapper in the test; libc's and
-# GLib's own calls are untouched.
+# the calls in its own objects through a wrapper in the test; libc's own
+# calls are untouched.
 target_link_options(ernic-test-tcp-thread-stop PRIVATE
     "LINKER:--wrap=malloc")
 
@@ -770,12 +777,14 @@ ernic_add_test_program(test_rdma_res_tbl
         ${PROJECT_SOURCE_DIR}/src/ernic_alloc.c
         ${PROJECT_SOURCE_DIR}/src/ernic_gnu.c
         ${PROJECT_SOURCE_DIR}/src/ernic_log.c
+        ${PROJECT_SOURCE_DIR}/src/ernic_map.c
+        ${PROJECT_SOURCE_DIR}/src/ernic_siphash.c
         ${PROJECT_SOURCE_DIR}/src/qemu-compat/qemu_stubs.c
-    DEPS glib ibverbs pthread
+    DEPS ibverbs pthread
 )
 # The test fails a table's entry or bitmap allocation on demand. The linker
 # routes the malloc() and calloc() calls in its own objects through
-# wrappers in the test; libc's and GLib's own calls are untouched.
+# wrappers in the test; libc's own calls are untouched.
 target_link_options(test_rdma_res_tbl PRIVATE
     "LINKER:--wrap=malloc,--wrap=calloc")
 
@@ -855,7 +864,7 @@ set(ERNIC_HARNESS_DEVICE_SOURCES
     ${PVRDMA_SOURCES}
 )
 # No libvfio-user: fake_vfu.c defines the entry points the device calls.
-set(ERNIC_HARNESS_DEPS glib ibverbs pthread)
+set(ERNIC_HARNESS_DEPS ibverbs pthread)
 if(ERNIC_BUILD_P4)
     list(APPEND ERNIC_HARNESS_DEVICE_SOURCES ${P4_SOURCES})
     list(APPEND ERNIC_HARNESS_DEPS json-c)

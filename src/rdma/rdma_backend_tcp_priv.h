@@ -18,7 +18,6 @@
 #ifndef RDMA_BACKEND_TCP_PRIV_H
 #define RDMA_BACKEND_TCP_PRIV_H
 
-#include <glib.h>
 #include <infiniband/verbs.h>
 #include <netdb.h>
 #include <stdatomic.h>
@@ -28,6 +27,7 @@
 #include <sys/socket.h>
 #include <sys/types.h>
 
+#include "ernic_map.h"
 #include "ernic_mesh.h"
 #include "ernic_vec.h"
 #include "pvrdma/rdma_backend_defs.h"
@@ -406,6 +406,10 @@ typedef struct {
     bool alive;
 } TcpNodeGids;
 
+/* gid_owner is keyed on a whole GID */
+_Static_assert(ERNIC_GID_MAP_KEY_LEN == ERNIC_GID_LEN,
+               "a GID map's key must be a GID");
+
 typedef struct TcpBackendPrivate TcpBackendPrivate;
 typedef struct TcpConnection TcpConnection;
 
@@ -482,7 +486,7 @@ struct TcpBackendPrivate {
      * Multi-connection support: node_id -> TcpConnection*, each entry
      * holding a reference (see TcpConnection for how entries are removed).
      */
-    GHashTable *connections TSA_GUARDED_BY(conn_table_lock);
+    ErnicU32Map *connections TSA_GUARDED_BY(conn_table_lock);
     /*
      * Connections the manager has accepted that haven't registered, or were
      * refused, at most TCP_MAX_PENDING_CONNS of them, each holding a
@@ -498,7 +502,7 @@ struct TcpBackendPrivate {
      * authoritative record, kept per node rather than per GID so that a
      * claim is never lost by another node making the same one.
      */
-    GHashTable *node_gids TSA_GUARDED_BY(gid_table_lock);
+    ErnicU32Map *node_gids TSA_GUARDED_BY(gid_table_lock);
 
     /*
      * Derived from node_gids, rebuilt on every change: the full 16 bytes of
@@ -511,7 +515,7 @@ struct TcpBackendPrivate {
      * both modes, so the lock is its own -- mesh_table_lock is only
      * initialised on the manager.
      */
-    GHashTable *gid_owner TSA_GUARDED_BY(gid_table_lock);
+    ErnicGidMap *gid_owner TSA_GUARDED_BY(gid_table_lock);
 
     /*
      * This node's own GIDs, seeded from ERNIC_TCP_GUEST_GIDS and then changed
@@ -546,7 +550,7 @@ struct TcpBackendPrivate {
     /* Manager-specific fields */
     bool is_manager;
     /* node_id -> MeshNodeInfo*; at most TCP_MAX_MESH_NODES of them */
-    GHashTable *mesh_nodes TSA_GUARDED_BY(mesh_table_lock);
+    ErnicU32Map *mesh_nodes TSA_GUARDED_BY(mesh_table_lock);
     /*
      * The manager's broadcaster thread, which tells the workers what has
      * changed: the topology, and a node's GID set, to every connection, and
@@ -580,9 +584,9 @@ struct TcpBackendPrivate {
     QemuCond broadcast_cond;
     bool broadcast_topology TSA_GUARDED_BY(broadcast_lock);
     /* a set of node ids */
-    GHashTable *broadcast_gids TSA_GUARDED_BY(broadcast_lock);
+    ErnicU32Map *broadcast_gids TSA_GUARDED_BY(broadcast_lock);
     /* a set of node ids */
-    GHashTable *broadcast_tables TSA_GUARDED_BY(broadcast_lock);
+    ErnicU32Map *broadcast_tables TSA_GUARDED_BY(broadcast_lock);
     uint64_t broadcasts_asked TSA_GUARDED_BY(broadcast_lock);
     uint64_t broadcasts_sent TSA_GUARDED_BY(broadcast_lock);
     QemuThread health_check_thread;
@@ -667,8 +671,8 @@ struct TcpBackendPrivate {
     uint32_t next_pd_handle TSA_GUARDED_BY(lock);
     uint32_t next_cq_handle TSA_GUARDED_BY(lock);
     uint32_t next_qpn TSA_GUARDED_BY(lock);
-    /* The live QPs' numbers, a set (GUINT_TO_POINTER), protected by lock */
-    GHashTable *qpns TSA_GUARDED_BY(lock);
+    /* The live QPs' numbers, a set, protected by lock */
+    ErnicU32Map *qpns TSA_GUARDED_BY(lock);
 
     /* Sequence number for protocol */
     _Atomic uint32_t next_seq;
@@ -995,7 +999,7 @@ TcpConnection *tcp_connection_new(TcpBackendPrivate *priv, uint32_t node_id,
                                   const char *host, uint16_t port, int sockfd);
 TcpConnection *tcp_connection_ref(TcpConnection *conn);
 void tcp_connection_unref(TcpConnection *conn);
-void tcp_connection_destroy_notify(gpointer data);
+void tcp_connection_destroy_notify(void *data);
 bool tcp_conn_dead(const TcpConnection *conn);
 TcpConnection *tcp_connection_lookup(TcpBackendPrivate *priv, uint32_t node_id)
     TSA_EXCLUDES(priv->conn_table_lock);
@@ -1037,7 +1041,6 @@ void tcp_free_pending_conns(TcpBackendPrivate *priv);
 char *tcp_gid_str(const uint8_t gid[ERNIC_GID_LEN], char buf[TCP_GID_STR_LEN]);
 uint32_t tcp_parse_guest_gids(const char *val,
                               uint8_t out[TCP_MAX_NODE_GIDS][ERNIC_GID_LEN]);
-void tcp_gid_key_free(gpointer key);
 bool tcp_gid_claims_set(TcpBackendPrivate *priv, uint32_t node_id,
                         const uint8_t (*gids)[ERNIC_GID_LEN], uint32_t num_gids)
     TSA_EXCLUDES(priv->gid_table_lock);
@@ -1078,7 +1081,7 @@ void tcp_recv_node_gids(const TcpConnection *conn, const TcpRecvMsg *msg);
 MeshNodeInfo *tcp_mesh_node_info_new(uint32_t node_id, const char *hostname,
                                      uint16_t port);
 void tcp_mesh_node_info_free(MeshNodeInfo *node);
-void tcp_mesh_node_info_destroy_notify(gpointer data);
+void tcp_mesh_node_info_destroy_notify(void *data);
 bool tcp_node_set_alive(TcpBackendPrivate *priv, MeshNodeInfo *node, bool alive,
                         bool *gids_changed) TSA_REQUIRES(priv->mesh_table_lock);
 /*

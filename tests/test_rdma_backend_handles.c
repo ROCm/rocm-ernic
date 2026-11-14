@@ -36,10 +36,10 @@
 #include <stdlib.h>
 #include <string.h>
 
-#include <glib.h>
 #include <infiniband/verbs.h>
 
 #include "ernic_alloc.h"
+#include "ernic_map.h"
 #include "pvrdma/rdma_backend_defs.h"
 #include "qemu/error-report.h"
 #include "qemu/thread.h"
@@ -145,7 +145,7 @@ static TcpBackendPrivate *tcp_priv_new(void)
     qemu_mutex_init(&priv->lock);
     qemu_mutex_lock(&priv->lock);
     priv->next_qpn = TCP_FIRST_QPN;
-    priv->qpns = g_hash_table_new(g_direct_hash, g_direct_equal);
+    priv->qpns = ernic_u32_map_new(NULL);
     qemu_mutex_unlock(&priv->lock);
     return priv;
 }
@@ -153,7 +153,7 @@ static TcpBackendPrivate *tcp_priv_new(void)
 static void tcp_priv_free_qps(TcpBackendPrivate *priv)
 {
     qemu_mutex_lock(&priv->lock);
-    g_hash_table_destroy(priv->qpns);
+    ernic_u32_map_free(priv->qpns);
     qemu_mutex_unlock(&priv->lock);
     qemu_mutex_destroy(&priv->lock);
     free(priv);
@@ -166,12 +166,12 @@ static void tcp_set_next_qpn(TcpBackendPrivate *priv, uint32_t qpn)
     qemu_mutex_unlock(&priv->lock);
 }
 
-static guint tcp_live_qpns(TcpBackendPrivate *priv)
+static size_t tcp_live_qpns(TcpBackendPrivate *priv)
 {
-    guint n;
+    size_t n;
 
     qemu_mutex_lock(&priv->lock);
-    n = g_hash_table_size(priv->qpns);
+    n = ernic_u32_map_size(priv->qpns);
     qemu_mutex_unlock(&priv->lock);
     return n;
 }
@@ -300,7 +300,7 @@ static void test_tcp_qpn_wrap(void)
     CHECK(n == TCP_FIRST_QPN + 1,
           "QPN after wrapping %" PRIu32 ", expected %u (%u is live)", n,
           TCP_FIRST_QPN + 1, TCP_FIRST_QPN);
-    CHECK(tcp_live_qpns(priv) == 3, "%u live QPNs, expected 3",
+    CHECK(tcp_live_qpns(priv) == 3, "%zu live QPNs, expected 3",
           tcp_live_qpns(priv));
 
     tcp->destroy_qp(&first, NULL);
@@ -312,7 +312,7 @@ static void test_tcp_qpn_wrap(void)
     tcp->destroy_qp(&again, NULL);
     tcp->destroy_qp(&wrapped, NULL);
     tcp->destroy_qp(&top, NULL);
-    CHECK(tcp_live_qpns(priv) == 0, "%u QPNs left after destroying every QP",
+    CHECK(tcp_live_qpns(priv) == 0, "%zu QPNs left after destroying every QP",
           tcp_live_qpns(priv));
 
     tcp->destroy_cq(&cq);

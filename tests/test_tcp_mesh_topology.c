@@ -51,11 +51,12 @@
 #include <pthread.h>
 #include <string.h>
 #include <sys/socket.h>
+#include <time.h>
 #include <unistd.h>
 
-#include <glib.h>
-
 #include "byteorder.h"
+#include "ernic_alloc.h"
+#include "ernic_map.h"
 #include "qemu/error-report.h"
 #include "qemu/thread.h"
 #include "rdma/rdma_backend_tcp_priv.h"
@@ -260,62 +261,54 @@ static int broadcast_on_poisoned_stack(TcpBackendPrivate *priv)
 }
 
 /* Populate the mesh table with `n` nodes whose fields encode their index */
-static void fill_mesh(GHashTable *mesh_nodes, uint32_t n)
+static void fill_mesh(ErnicU32Map *mesh_nodes, uint32_t n)
 {
     for (uint32_t i = 0; i < n; i++) {
         char hostname[64];
         test_fmt(hostname, sizeof(hostname), "node-%u.example", i);
         MeshNodeInfo *node =
             tcp_mesh_node_info_new(i + 100, hostname, (uint16_t)(9000 + i));
-        g_hash_table_insert(mesh_nodes, GUINT_TO_POINTER(i + 100), node);
+        ernic_u32_map_insert(mesh_nodes, i + 100, node);
     }
 }
 
-static void empty_mesh(GHashTable *mesh_nodes)
-{
-    GHashTableIter iter;
-    gpointer key;
-    gpointer value;
-
-    g_hash_table_iter_init(&iter, mesh_nodes);
-    while (g_hash_table_iter_next(&iter, &key, &value)) {
-        tcp_mesh_node_info_free((MeshNodeInfo *)value);
-    }
-    g_hash_table_remove_all(mesh_nodes);
-}
-
-/* A manager with one "worker", node 42, on the near end of a socketpair */
+/*
+ * A manager with one "worker", node 42, on the near end of a socketpair.
+ * Allocated rather than on a case's stack: the connections table, which is
+ * allocated, holds a pointer to the connection, and the connection one to
+ * the manager's state.
+ */
 struct fixture {
     TcpBackendPrivate priv;
     TcpConnection conn;
     int sv[2];
 };
 
-static int fixture_init(struct fixture *f, uint32_t num_nodes)
+/* A new fixture with @p num_nodes nodes, or NULL if it couldn't be set up */
+static struct fixture *fixture_new(uint32_t num_nodes)
 {
+    struct fixture *f = ernic_xcalloc(1, sizeof(*f));
+
     if (socketpair(AF_UNIX, SOCK_STREAM, 0, f->sv) != 0) {
-        return -1;
+        free(f);
+        return NULL;
     }
 
-    memset(&f->priv, 0, sizeof(f->priv));
     f->priv.is_manager = true;
     atomic_store(&f->priv.local_node_id, 1);
     /* The fixture runs no threads, and sets up before anything runs */
     ROCM_ERNIC_WARN_THREAD_SAFETY_OFF
-    f->priv.mesh_nodes = g_hash_table_new(g_direct_hash, g_direct_equal);
-    f->priv.connections = g_hash_table_new(g_direct_hash, g_direct_equal);
+    f->priv.mesh_nodes = ernic_u32_map_new(tcp_mesh_node_info_destroy_notify);
+    f->priv.connections = ernic_u32_map_new(NULL);
     /* No node has claims, so the GID broadcast sends each an empty set */
-    f->priv.node_gids =
-        g_hash_table_new_full(g_direct_hash, g_direct_equal, NULL, free);
-    f->priv.gid_owner = g_hash_table_new_full(g_bytes_hash, g_bytes_equal,
-                                              tcp_gid_key_free, NULL);
+    f->priv.node_gids = ernic_u32_map_new(free);
+    f->priv.gid_owner = ernic_gid_map_new();
     ROCM_ERNIC_WARN_THREAD_SAFETY_ON
     qemu_mutex_init(&f->priv.mesh_table_lock);
     qemu_mutex_init(&f->priv.conn_table_lock);
     qemu_mutex_init(&f->priv.gid_table_lock);
     tcp_broadcaster_init(&f->priv);
 
-    memset(&f->conn, 0, sizeof(f->conn));
     f->conn.node_id = 42;
     /* The fixture's own reference: a lookup's ref and unref can't free it */
     atomic_init(&f->conn.refcount, 1);
@@ -324,14 +317,14 @@ static int fixture_init(struct fixture *f, uint32_t num_nodes)
     qemu_mutex_init(&f->conn.lock);
     ROCM_ERNIC_WARN_THREAD_SAFETY_OFF
     f->conn.sockfd = f->sv[0];
-    g_hash_table_insert(f->priv.connections, GUINT_TO_POINTER(42U), &f->conn);
+    ernic_u32_map_insert(f->priv.connections, 42U, &f->conn);
     fill_mesh(f->priv.mesh_nodes, num_nodes);
     ROCM_ERNIC_WARN_THREAD_SAFETY_ON
     error_reports = 0;
-    return 0;
+    return f;
 }
 
-static void fixture_fini(struct fixture *f)
+static void fixture_free(struct fixture *f)
 {
     close(f->sv[0]);
     close(f->sv[1]);
@@ -341,12 +334,12 @@ static void fixture_fini(struct fixture *f)
     qemu_mutex_destroy(&f->priv.conn_table_lock);
     qemu_mutex_destroy(&f->priv.mesh_table_lock);
     ROCM_ERNIC_WARN_THREAD_SAFETY_OFF
-    g_hash_table_destroy(f->priv.gid_owner);
-    g_hash_table_destroy(f->priv.node_gids);
-    g_hash_table_destroy(f->priv.connections);
-    empty_mesh(f->priv.mesh_nodes);
-    g_hash_table_destroy(f->priv.mesh_nodes);
+    ernic_gid_map_free(f->priv.gid_owner);
+    ernic_u32_map_free(f->priv.node_gids);
+    ernic_u32_map_free(f->priv.connections);
+    ernic_u32_map_free(f->priv.mesh_nodes);
     ROCM_ERNIC_WARN_THREAD_SAFETY_ON
+    free(f);
 }
 
 /*
@@ -447,7 +440,7 @@ static int read_empty_gid_table(const struct testcase *tc, int fd,
  */
 static int run_mesh_case(const struct testcase *tc)
 {
-    struct fixture f;
+    struct fixture *f;
     TcpMsgHeader hdr;
     uint8_t wire[TCP_TOPOLOGY_LEN];
     bool seen[MAX_CASE_NODES] = {false};
@@ -456,14 +449,15 @@ static int run_mesh_case(const struct testcase *tc)
     size_t tail_len;
     int fail = 0;
 
-    if (fixture_init(&f, tc->num_nodes) != 0) {
+    f = fixture_new(tc->num_nodes);
+    if (!f) {
         printf("FAIL %-16s: socketpair failed\n", tc->name);
         return 1;
     }
 
-    tcp_broadcast_topology(&f.priv);
-    tcp_broadcast_gid_table_to(&f.priv, f.conn.node_id);
-    if (broadcast_on_poisoned_stack(&f.priv) != 0) {
+    tcp_broadcast_topology(&f->priv);
+    tcp_broadcast_gid_table_to(&f->priv, f->conn.node_id);
+    if (broadcast_on_poisoned_stack(&f->priv) != 0) {
         printf("FAIL %-16s: broadcast did not run on the poisoned stack "
                "(thread setup failed, or ASan relocated the frame to a fake "
                "stack -- the tail check below would be vacuous)\n",
@@ -472,10 +466,10 @@ static int run_mesh_case(const struct testcase *tc)
         goto out;
     }
     /* So reading past the last message sees end-of-file, not a hang */
-    shutdown(f.sv[0], SHUT_WR);
+    shutdown(f->sv[0], SHUT_WR);
 
-    if (read_hdr(f.sv[1], &hdr) != 0 ||
-        read_exact(f.sv[1], wire, sizeof(wire)) != 0) {
+    if (read_hdr(f->sv[1], &hdr) != 0 ||
+        read_exact(f->sv[1], wire, sizeof(wire)) != 0) {
         printf("FAIL %-16s: short read from socketpair\n", tc->name);
         fail = 1;
         goto out;
@@ -533,8 +527,8 @@ static int run_mesh_case(const struct testcase *tc)
     }
 
     /* The GID table follows the topology, on the same poisoned stack */
-    fail |= read_empty_gid_table(tc, f.sv[1], carried);
-    fail |= check_eof(tc, f.sv[1], "pass");
+    fail |= read_empty_gid_table(tc, f->sv[1], carried);
+    fail |= check_eof(tc, f->sv[1], "pass");
     fail |= check_errors(tc, "pass", 2);
 
     if (!fail) {
@@ -544,7 +538,7 @@ static int run_mesh_case(const struct testcase *tc)
     }
 
 out:
-    fixture_fini(&f);
+    fixture_free(f);
     return fail;
 }
 
@@ -554,22 +548,23 @@ out:
  */
 static int run_table_case(const struct testcase *tc)
 {
-    struct fixture f;
+    struct fixture *f;
     uint32_t carried = carried_nodes(tc->num_nodes);
     int fail = 0;
 
-    if (fixture_init(&f, tc->num_nodes) != 0) {
+    f = fixture_new(tc->num_nodes);
+    if (!f) {
         printf("FAIL %-16s: socketpair failed\n", tc->name);
         return 1;
     }
 
-    tcp_broadcast_gid_table_to(&f.priv, f.conn.node_id);
-    tcp_broadcast_pass(&f.priv);
+    tcp_broadcast_gid_table_to(&f->priv, f->conn.node_id);
+    tcp_broadcast_pass(&f->priv);
     /* So reading past the last message sees end-of-file, not a hang */
-    shutdown(f.sv[0], SHUT_WR);
+    shutdown(f->sv[0], SHUT_WR);
 
-    fail |= read_empty_gid_table(tc, f.sv[1], carried);
-    fail |= check_eof(tc, f.sv[1], "GID table");
+    fail |= read_empty_gid_table(tc, f->sv[1], carried);
+    fail |= check_eof(tc, f->sv[1], "GID table");
     fail |= check_errors(tc, "GID table", 1);
 
     if (!fail) {
@@ -577,7 +572,7 @@ static int run_table_case(const struct testcase *tc)
                carried, tc->num_nodes);
     }
 
-    fixture_fini(&f);
+    fixture_free(f);
     return fail;
 }
 
@@ -632,36 +627,37 @@ static int check_gid_set(const char *what, const TcpNodeGidsWire *wire,
 static int run_update_case(void)
 {
     static const char what[] = "update";
-    struct fixture f;
+    struct fixture *f;
     TcpNodeGidsWire wire;
     bool seen[3] = {false, false, false};
     MeshNodeInfo *node;
     int fail = 0;
 
-    if (fixture_init(&f, 3) != 0) {
+    f = fixture_new(3);
+    if (!f) {
         printf("FAIL %-16s: socketpair failed\n", what);
         return 1;
     }
-    tcp_gid_claims_set(&f.priv, 100, claimed, 1);
-    tcp_gid_claims_set(&f.priv, 101, claimed, 1);
-    tcp_gid_claims_set(&f.priv, 999, claimed, 1);
-    qemu_mutex_lock(&f.priv.mesh_table_lock);
-    node = g_hash_table_lookup(f.priv.mesh_nodes, GUINT_TO_POINTER(101U));
-    tcp_node_set_alive(&f.priv, node, false, NULL);
-    qemu_mutex_unlock(&f.priv.mesh_table_lock);
+    tcp_gid_claims_set(&f->priv, 100, claimed, 1);
+    tcp_gid_claims_set(&f->priv, 101, claimed, 1);
+    tcp_gid_claims_set(&f->priv, 999, claimed, 1);
+    qemu_mutex_lock(&f->priv.mesh_table_lock);
+    node = ernic_u32_map_lookup(f->priv.mesh_nodes, 101U);
+    tcp_node_set_alive(&f->priv, node, false, NULL);
+    qemu_mutex_unlock(&f->priv.mesh_table_lock);
 
-    tcp_broadcast_node_gids(&f.priv, 100);
-    tcp_broadcast_node_gids(&f.priv, 101);
-    tcp_broadcast_node_gids(&f.priv, 999);
-    tcp_broadcast_node_gids(&f.priv, 100);
-    tcp_broadcast_pass(&f.priv);
-    shutdown(f.sv[0], SHUT_WR);
+    tcp_broadcast_node_gids(&f->priv, 100);
+    tcp_broadcast_node_gids(&f->priv, 101);
+    tcp_broadcast_node_gids(&f->priv, 999);
+    tcp_broadcast_node_gids(&f->priv, 100);
+    tcp_broadcast_pass(&f->priv);
+    shutdown(f->sv[0], SHUT_WR);
 
     /* In no particular order: the nodes are a set */
     for (int i = 0; !fail && i < 3; i++) {
         uint32_t id;
 
-        if (!read_gid_set(what, f.sv[1], &wire)) {
+        if (!read_gid_set(what, f->sv[1], &wire)) {
             fail = 1;
             break;
         }
@@ -685,7 +681,7 @@ static int run_update_case(void)
     if (!fail) {
         static const struct testcase tc = {what, 3};
 
-        fail |= check_eof(&tc, f.sv[1], "the pass");
+        fail |= check_eof(&tc, f->sv[1], "the pass");
     }
 
     if (!fail) {
@@ -693,7 +689,7 @@ static int run_update_case(void)
                "nothing when the node is dead or gone\n",
                what);
     }
-    fixture_fini(&f);
+    fixture_free(f);
     return fail;
 }
 
@@ -713,6 +709,7 @@ static void *pass_thread(void *opaque)
 static bool topology_taken(TcpBackendPrivate *priv)
 {
     for (int i = 0; i < 5000; i++) {
+        struct timespec one_ms = {.tv_sec = 0, .tv_nsec = 1000000};
         bool asked;
 
         qemu_mutex_lock(&priv->broadcast_lock);
@@ -721,7 +718,7 @@ static bool topology_taken(TcpBackendPrivate *priv)
         if (!asked) {
             return true;
         }
-        g_usleep(1000);
+        nanosleep(&one_ms, NULL);
     }
     return false;
 }
@@ -748,14 +745,15 @@ static int run_order_case(void)
 {
     static const struct testcase tc = {"order", 2};
     const uint32_t claimant = 100;
-    struct fixture f;
+    struct fixture *f;
     struct case_thread first = {.started = false};
     TcpMsgHeader hdr;
     uint8_t topo[TCP_TOPOLOGY_LEN];
     TcpNodeGidsWire wire;
     int fail = 0;
 
-    if (fixture_init(&f, tc.num_nodes) != 0) {
+    f = fixture_new(tc.num_nodes);
+    if (!f) {
         printf("FAIL %-16s: socketpair failed\n", tc.name);
         return 1;
     }
@@ -764,40 +762,41 @@ static int run_order_case(void)
      * Hold the connections table, so the first pass stops between its
      * topology snapshot and its sends, once it has taken what it was asked.
      */
-    tcp_broadcast_topology(&f.priv);
-    qemu_mutex_lock(&f.priv.conn_table_lock);
-    first.started = pthread_create(&first.tid, NULL, pass_thread, &f.priv) == 0;
-    if (!first.started || !topology_taken(&f.priv)) {
+    tcp_broadcast_topology(&f->priv);
+    qemu_mutex_lock(&f->priv.conn_table_lock);
+    first.started =
+        pthread_create(&first.tid, NULL, pass_thread, &f->priv) == 0;
+    if (!first.started || !topology_taken(&f->priv)) {
         printf("FAIL %-16s: the first pass didn't start\n", tc.name);
         fail = 1;
     } else {
-        tcp_gid_claims_set(&f.priv, claimant, claimed, 1);
+        tcp_gid_claims_set(&f->priv, claimant, claimed, 1);
         for (int i = 0; i < 2; i++) {
-            tcp_broadcast_topology(&f.priv);
-            tcp_broadcast_node_gids(&f.priv, claimant);
+            tcp_broadcast_topology(&f->priv);
+            tcp_broadcast_node_gids(&f->priv, claimant);
         }
     }
-    qemu_mutex_unlock(&f.priv.conn_table_lock);
+    qemu_mutex_unlock(&f->priv.conn_table_lock);
     if (first.started) {
         pthread_join(first.tid, NULL);
     }
     if (fail) {
         goto out;
     }
-    if (sent_so_far(&f.priv) != 1) {
+    if (sent_so_far(&f->priv) != 1) {
         printf("FAIL %-16s: the first pass sent %" PRIu64 " broadcast(s), "
                "expected the 1 asked before it\n",
-               tc.name, sent_so_far(&f.priv));
+               tc.name, sent_so_far(&f->priv));
         fail = 1;
         goto out;
     }
-    tcp_broadcast_pass(&f.priv);
-    shutdown(f.sv[0], SHUT_WR);
+    tcp_broadcast_pass(&f->priv);
+    shutdown(f->sv[0], SHUT_WR);
 
     for (int i = 0; i < 2; i++) {
-        if (read_hdr(f.sv[1], &hdr) != 0 ||
+        if (read_hdr(f->sv[1], &hdr) != 0 ||
             hdr.msg_type != TCP_MSG_MESH_TOPOLOGY ||
-            read_exact(f.sv[1], topo, sizeof(topo)) != 0) {
+            read_exact(f->sv[1], topo, sizeof(topo)) != 0) {
             printf("FAIL %-16s: topology %d didn't come, or not before the "
                    "GID set\n",
                    tc.name, i + 1);
@@ -805,7 +804,7 @@ static int run_order_case(void)
             goto out;
         }
     }
-    if (!read_gid_set(tc.name, f.sv[1], &wire)) {
+    if (!read_gid_set(tc.name, f->sv[1], &wire)) {
         fail = 1;
         goto out;
     }
@@ -815,11 +814,11 @@ static int run_order_case(void)
         fail = 1;
     }
     fail |= check_gid_set(tc.name, &wire, claimant, 1);
-    fail |= check_eof(&tc, f.sv[1], "the second pass");
-    if (!fail && sent_so_far(&f.priv) != 5) {
+    fail |= check_eof(&tc, f->sv[1], "the second pass");
+    if (!fail && sent_so_far(&f->priv) != 5) {
         printf("FAIL %-16s: the passes sent %" PRIu64 " broadcast(s), "
                "expected all 5 asked\n",
-               tc.name, sent_so_far(&f.priv));
+               tc.name, sent_so_far(&f->priv));
         fail = 1;
     }
 
@@ -830,7 +829,7 @@ static int run_order_case(void)
     }
 
 out:
-    fixture_fini(&f);
+    fixture_free(f);
     return fail;
 }
 

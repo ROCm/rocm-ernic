@@ -103,10 +103,10 @@
 #include <stdlib.h>
 #include <string.h>
 
-#include <glib.h>
 #include <infiniband/verbs.h>
 
 #include "ernic_ib.h"
+#include "ernic_map.h"
 #include "pvrdma/rdma_backend.h"
 #include "pvrdma/rdma_backend_defs.h"
 #include "pvrdma/rdma_rm.h"
@@ -170,8 +170,8 @@ void rdma_backend_destroy_srq(RdmaBackendSRQ *srq)
  *
  * res_tbl_init() allocates each table's entries with malloc(), and its
  * bitmap through bitmap_new(), which calls calloc(). Nothing else that
- * rdma_rm_init() reaches calls either, other than GLib, whose own calls
- * aren't wrapped. The test is linked with --wrap=malloc,--wrap=calloc
+ * rdma_rm_init() reaches calls either: the QP map allocates nothing until a
+ * QP is added. The test is linked with --wrap=malloc,--wrap=calloc
  * (tests/CMakeLists.txt), so the calls in its own objects come here first,
  * and a case can fail either allocation for a given table. The test's own
  * allocations are counted too, but no case counts across one.
@@ -508,8 +508,8 @@ static bool rm_init_left_nothing(const char *name)
             ok = false;
         }
     }
-    if (dev_res.qp_hash) {
-        printf("FAIL %-18s: the QP hash table is still allocated\n", name);
+    if (ernic_u32_map_size(&dev_res.qp_hash) != 0) {
+        printf("FAIL %-18s: the QP hash table still holds QPs\n", name);
         ok = false;
     }
     return ok;
@@ -1338,11 +1338,11 @@ static bool test_backend_fails(const char *name, BackendOp op)
     if (dev_res.pd_tbl.used != (op == OP_CREATE_PD ? 0U : 1U) ||
         dev_res.cq_tbl.used != (have_cq ? 1U : 0U) ||
         dev_res.qp_tbl.used != (have_qp ? 1U : 0U) ||
-        g_hash_table_size(dev_res.qp_hash) != (have_qp ? 1U : 0U)) {
-        printf("FAIL %-18s: %u PD(s), %u CQ(s), %u QP(s) and %u QPN(s) "
+        ernic_u32_map_size(&dev_res.qp_hash) != (have_qp ? 1U : 0U)) {
+        printf("FAIL %-18s: %u PD(s), %u CQ(s), %u QP(s) and %zu QPN(s) "
                "allocated\n",
                name, dev_res.pd_tbl.used, dev_res.cq_tbl.used,
-               dev_res.qp_tbl.used, g_hash_table_size(dev_res.qp_hash));
+               dev_res.qp_tbl.used, ernic_u32_map_size(&dev_res.qp_hash));
         ok = false;
     }
     if (cq_destroys != 0 || qp_destroys != 0) {
@@ -1664,10 +1664,10 @@ static bool test_qp_no_backend(void)
     rdma_rm_dealloc_qp(&dev_res, qpn);
     rdma_rm_dealloc_qp(&dev_res, smi);
     rdma_rm_dealloc_qp(&dev_res, gsi);
-    if (dev_res.qp_tbl.used != 0 || g_hash_table_size(dev_res.qp_hash) != 0) {
-        printf("FAIL %-18s: %u QP(s) and %u QPN(s) left after freeing every "
+    if (dev_res.qp_tbl.used != 0 || ernic_u32_map_size(&dev_res.qp_hash) != 0) {
+        printf("FAIL %-18s: %u QP(s) and %zu QPN(s) left after freeing every "
                "QP\n",
-               name, dev_res.qp_tbl.used, g_hash_table_size(dev_res.qp_hash));
+               name, dev_res.qp_tbl.used, ernic_u32_map_size(&dev_res.qp_hash));
         ok = false;
     }
 
@@ -1763,12 +1763,13 @@ static bool test_bad_handles(void)
 
     if (dev_res.pd_tbl.used != 1 || dev_res.cq_tbl.used != 1 ||
         dev_res.mr_tbl.used != 0 || dev_res.qp_tbl.used != 0 ||
-        dev_res.srq_tbl.used != 0 || g_hash_table_size(dev_res.qp_hash) != 0) {
+        dev_res.srq_tbl.used != 0 ||
+        ernic_u32_map_size(&dev_res.qp_hash) != 0) {
         printf("FAIL %-18s: %u PD(s), %u CQ(s), %u MR(s), %u QP(s), %u "
-               "SRQ(s) and %u QPN(s) allocated, expected 1, 1 and none\n",
+               "SRQ(s) and %zu QPN(s) allocated, expected 1, 1 and none\n",
                name, dev_res.pd_tbl.used, dev_res.cq_tbl.used,
                dev_res.mr_tbl.used, dev_res.qp_tbl.used, dev_res.srq_tbl.used,
-               g_hash_table_size(dev_res.qp_hash));
+               ernic_u32_map_size(&dev_res.qp_hash));
         ok = false;
     }
     if (srq_create_calls != 0 || srq_modify_calls != 0 ||

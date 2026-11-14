@@ -18,6 +18,7 @@
 #include "rdma/rdma_backend_tcp_priv.h"
 #include "byteorder.h"
 #include "ernic_alloc.h"
+#include "ernic_map.h"
 #include "ernic_time.h"
 #include "ernic_vec.h"
 #include "pvrdma/rdma_utils.h"
@@ -30,7 +31,6 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#include <glib.h>
 #include <time.h>
 #include <inttypes.h>
 
@@ -44,8 +44,8 @@ void tcp_mesh_node_info_free(MeshNodeInfo *node)
     free(node);
 }
 
-/* GDestroyNotify adapter for tcp_mesh_node_info_free() */
-void tcp_mesh_node_info_destroy_notify(gpointer data)
+/* tcp_mesh_node_info_free(), typed as a map's free function */
+void tcp_mesh_node_info_destroy_notify(void *data)
 {
     tcp_mesh_node_info_free(data);
 }
@@ -106,8 +106,8 @@ bool tcp_node_set_alive(TcpBackendPrivate *priv, MeshNodeInfo *node, bool alive,
 static bool tcp_node_id_taken(const TcpBackendPrivate *priv, uint32_t node_id)
     TSA_REQUIRES(priv->mesh_table_lock, priv->conn_table_lock)
 {
-    return g_hash_table_contains(priv->mesh_nodes, GUINT_TO_POINTER(node_id)) ||
-           g_hash_table_contains(priv->connections, GUINT_TO_POINTER(node_id));
+    return ernic_u32_map_contains(priv->mesh_nodes, node_id) ||
+           ernic_u32_map_contains(priv->connections, node_id);
 }
 
 /*
@@ -144,8 +144,7 @@ static int tcp_register_again(TcpBackendPrivate *priv, uint32_t node_id,
                               TcpConnection **old, const char **why)
     TSA_REQUIRES(priv->mesh_table_lock, priv->conn_table_lock)
 {
-    const MeshNodeInfo *node =
-        g_hash_table_lookup(priv->mesh_nodes, GUINT_TO_POINTER(node_id));
+    const MeshNodeInfo *node = ernic_u32_map_lookup(priv->mesh_nodes, node_id);
     TcpConnection *conn;
 
     *old = NULL;
@@ -161,7 +160,7 @@ static int tcp_register_again(TcpBackendPrivate *priv, uint32_t node_id,
         *why = "the node registered from another address";
         return -EACCES;
     }
-    conn = g_hash_table_lookup(priv->connections, GUINT_TO_POINTER(node_id));
+    conn = ernic_u32_map_lookup(priv->connections, node_id);
     if (conn && !tcp_conn_dead(conn) && node->is_alive) {
         *why = "the node is still connected";
         return -EBUSY;
@@ -210,8 +209,8 @@ static uint32_t tcp_evict_dead_node(TcpBackendPrivate *priv,
                                     TcpConnection **old)
     TSA_REQUIRES(priv->mesh_table_lock, priv->conn_table_lock)
 {
-    GHashTableIter iter;
-    gpointer value;
+    ErnicU32MapIter iter;
+    void *value;
     uint32_t victim = UINT32_MAX;
     uint64_t victim_age = 0;
     /* Read under the lock, so no heartbeat is newer */
@@ -220,12 +219,12 @@ static uint32_t tcp_evict_dead_node(TcpBackendPrivate *priv,
 
     *old = NULL;
     if (atomic_load(&priv->stopping) ||
-        g_hash_table_size(priv->mesh_nodes) < TCP_MAX_MESH_NODES) {
+        ernic_u32_map_size(priv->mesh_nodes) < TCP_MAX_MESH_NODES) {
         return UINT32_MAX;
     }
 
-    g_hash_table_iter_init(&iter, priv->mesh_nodes);
-    while (g_hash_table_iter_next(&iter, NULL, &value)) {
+    ernic_u32_map_iter_init(&iter, priv->mesh_nodes);
+    while (ernic_u32_map_iter_next(&iter, NULL, &value)) {
         const MeshNodeInfo *node = value;
         /* Unsigned, so it's right even if the clock was near zero */
         uint64_t age = now_ms - node->last_heartbeat_ms;
@@ -233,8 +232,7 @@ static uint32_t tcp_evict_dead_node(TcpBackendPrivate *priv,
         if (node->is_alive || node->node_id == tcp_local_node(priv)) {
             continue;
         }
-        conn = g_hash_table_lookup(priv->connections,
-                                   GUINT_TO_POINTER(node->node_id));
+        conn = ernic_u32_map_lookup(priv->connections, node->node_id);
         if (conn && !tcp_conn_dead(conn)) {
             continue;
         }
@@ -249,12 +247,12 @@ static uint32_t tcp_evict_dead_node(TcpBackendPrivate *priv,
         return UINT32_MAX;
     }
 
-    conn = g_hash_table_lookup(priv->connections, GUINT_TO_POINTER(victim));
+    conn = ernic_u32_map_lookup(priv->connections, victim);
     if (conn) {
         tcp_conn_table_take(priv, victim, conn);
         *old = conn;
     }
-    g_hash_table_remove(priv->mesh_nodes, GUINT_TO_POINTER(victim));
+    ernic_u32_map_remove(priv->mesh_nodes, victim);
     return victim;
 }
 
@@ -281,12 +279,12 @@ static uint32_t tcp_collect_dead_claimants(TcpBackendPrivate *priv,
                                            uint32_t out[TCP_MAX_MESH_NODES])
     TSA_REQUIRES(priv->mesh_table_lock)
 {
-    GHashTableIter iter;
-    gpointer value;
+    ErnicU32MapIter iter;
+    void *value;
     uint32_t n = 0;
 
-    g_hash_table_iter_init(&iter, priv->mesh_nodes);
-    while (g_hash_table_iter_next(&iter, NULL, &value) &&
+    ernic_u32_map_iter_init(&iter, priv->mesh_nodes);
+    while (ernic_u32_map_iter_next(&iter, NULL, &value) &&
            n < TCP_MAX_MESH_NODES) {
         const MeshNodeInfo *node = value;
         uint32_t node_id = node->node_id;
@@ -341,7 +339,7 @@ bool tcp_declare_dead_if_unreachable(TcpBackendPrivate *priv, uint32_t node_id)
     bool declared = false, gids = false;
 
     qemu_mutex_lock(&priv->mesh_table_lock);
-    node = g_hash_table_lookup(priv->mesh_nodes, GUINT_TO_POINTER(node_id));
+    node = ernic_u32_map_lookup(priv->mesh_nodes, node_id);
     conn = tcp_connection_lookup(priv, node_id);
     if (node && (!conn || tcp_conn_dead(conn))) {
         declared = tcp_node_set_alive(priv, node, false, &gids);
@@ -494,7 +492,7 @@ static bool tcp_register_new_node(TcpBackendPrivate *priv,
      * nothing was given it.
      */
     if (adm->evicted == UINT32_MAX &&
-        g_hash_table_size(priv->mesh_nodes) >= TCP_MAX_MESH_NODES) {
+        ernic_u32_map_size(priv->mesh_nodes) >= TCP_MAX_MESH_NODES) {
         tcp_mesh_node_info_free(node);
         adm->why = "the mesh is full, and has no dead node that can be "
                    "evicted";
@@ -502,7 +500,7 @@ static bool tcp_register_new_node(TcpBackendPrivate *priv,
         return false;
     }
     priv->next_available_node_id = assigned_id + 1;
-    g_hash_table_insert(priv->mesh_nodes, GUINT_TO_POINTER(assigned_id), node);
+    ernic_u32_map_insert(priv->mesh_nodes, assigned_id, node);
     adm->node_id = assigned_id;
     return true;
 }
@@ -575,11 +573,17 @@ static bool tcp_register_admit(TcpBackendPrivate *priv, TcpConnection *conn,
     }
     qemu_mutex_unlock(&priv->conn_table_lock);
 
-    if (admitted && adm->again) {
-        MeshNodeInfo *node = g_hash_table_lookup(
-            priv->mesh_nodes, GUINT_TO_POINTER(adm->node_id));
+    /*
+     * A node registering again is in mesh_nodes: tcp_register_again() found
+     * it there, and mesh_table_lock has been held since.
+     */
+    MeshNodeInfo *returning =
+        admitted && adm->again
+            ? ernic_u32_map_lookup(priv->mesh_nodes, adm->node_id)
+            : NULL;
 
-        node->last_heartbeat_ms = ernic_monotonic_ms();
+    if (returning) {
+        returning->last_heartbeat_ms = ernic_monotonic_ms();
         /*
          * The node's addresses are its own again, without its advertising
          * them: a node the health check declared dead had its claims taken
@@ -589,7 +593,7 @@ static bool tcp_register_admit(TcpBackendPrivate *priv, TcpConnection *conn,
          * tcp_declare_dead_if_unreachable() can't act on a stale finding of
          * it dead in between.
          */
-        tcp_node_set_alive(priv, node, true, &adm->gids_back);
+        tcp_node_set_alive(priv, returning, true, &adm->gids_back);
     }
     if (admitted) {
         /*
@@ -599,8 +603,11 @@ static bool tcp_register_admit(TcpBackendPrivate *priv, TcpConnection *conn,
         if (adm->evicted != UINT32_MAX) {
             tcp_gid_claims_forget(priv, adm->evicted);
         }
-        /* For the answer, read under the lock that guards the table */
-        adm->num_nodes = g_hash_table_size(priv->mesh_nodes);
+        /*
+         * For the answer, read under the lock that guards the table.
+         * Registration keeps it to TCP_MAX_MESH_NODES, so the size fits.
+         */
+        adm->num_nodes = (uint32_t)ernic_u32_map_size(priv->mesh_nodes);
     }
     qemu_mutex_unlock(&priv->mesh_table_lock);
 
@@ -823,8 +830,7 @@ void tcp_manager_recv_heartbeat(TcpConnection *conn)
     MeshNodeInfo *node;
 
     qemu_mutex_lock(&priv->mesh_table_lock);
-    node =
-        g_hash_table_lookup(priv->mesh_nodes, GUINT_TO_POINTER(conn->node_id));
+    node = ernic_u32_map_lookup(priv->mesh_nodes, conn->node_id);
     if (node) {
         node->last_heartbeat_ms = ernic_monotonic_ms();
         revived = tcp_node_set_alive(priv, node, true, &gids_back);
@@ -990,10 +996,10 @@ void tcp_manager_accept(TcpBackendPrivate *priv, int sockfd, const char *host,
  * table, which breaks the mesh with no other sign, so say so.  @table_size is
  * the size of mesh_nodes the broadcast found.
  */
-static void tcp_report_mesh_overflow(const char *broadcast, guint table_size)
+static void tcp_report_mesh_overflow(const char *broadcast, size_t table_size)
 {
-    rdma_error_report("TCP: the mesh table holds %u nodes, but the %s carries "
-                      "at most %u; %u nodes were left out",
+    rdma_error_report("TCP: the mesh table holds %zu nodes, but the %s carries "
+                      "at most %u; %zu nodes were left out",
                       table_size, broadcast, TCP_MAX_MESH_NODES,
                       table_size - TCP_MAX_MESH_NODES);
 }
@@ -1011,19 +1017,18 @@ static void tcp_send_mesh_topology(TcpBackendPrivate *priv)
     uint8_t topo[TCP_TOPOLOGY_LEN];
     memset(topo, 0, sizeof(topo));
     uint32_t num_nodes = 0;
-    guint overflow = 0; /* the size of mesh_nodes, if past the cap */
+    size_t overflow = 0; /* the size of mesh_nodes, if past the cap */
 
     qemu_mutex_lock(&priv->mesh_table_lock);
 
     /* Build topology payload */
-    GHashTableIter iter;
-    gpointer key;
-    gpointer value;
-    g_hash_table_iter_init(&iter, priv->mesh_nodes);
+    ErnicU32MapIter iter;
+    void *value;
+    ernic_u32_map_iter_init(&iter, priv->mesh_nodes);
 
-    while (g_hash_table_iter_next(&iter, &key, &value)) {
+    while (ernic_u32_map_iter_next(&iter, NULL, &value)) {
         if (num_nodes == TCP_MAX_MESH_NODES) {
-            overflow = g_hash_table_size(priv->mesh_nodes);
+            overflow = ernic_u32_map_size(priv->mesh_nodes);
             break;
         }
 
@@ -1089,9 +1094,8 @@ static void tcp_snapshot_node_gids(const TcpBackendPrivate *priv,
 {
     const TcpNodeGids *claims = NULL;
 
-    if (g_hash_table_contains(priv->mesh_nodes, GUINT_TO_POINTER(node_id))) {
-        claims =
-            g_hash_table_lookup(priv->node_gids, GUINT_TO_POINTER(node_id));
+    if (ernic_u32_map_contains(priv->mesh_nodes, node_id)) {
+        claims = ernic_u32_map_lookup(priv->node_gids, node_id);
     }
     if (claims && claims->alive) {
         tcp_fill_node_gids(out, node_id, claims->gids, claims->num_gids);
@@ -1134,7 +1138,7 @@ static void tcp_send_gid_updates(TcpBackendPrivate *priv,
      */
     TcpNodeGidsWire table[TCP_MAX_MESH_NODES];
     uint32_t num_table = 0;
-    guint overflow = 0; /* the size of mesh_nodes, if past the cap */
+    size_t overflow = 0; /* the size of mesh_nodes, if past the cap */
     TcpNodeGidsWire *changed =
         ernic_xcalloc(ernic_vec_len(nodes), sizeof(*changed));
 
@@ -1147,17 +1151,16 @@ static void tcp_send_gid_updates(TcpBackendPrivate *priv,
     qemu_mutex_lock(&priv->gid_table_lock);
 
     if (ernic_vec_len(tables) > 0) {
-        GHashTableIter iter;
-        gpointer key;
+        ErnicU32MapIter iter;
+        uint32_t node_id;
 
-        g_hash_table_iter_init(&iter, priv->mesh_nodes);
-        while (g_hash_table_iter_next(&iter, &key, NULL)) {
+        ernic_u32_map_iter_init(&iter, priv->mesh_nodes);
+        while (ernic_u32_map_iter_next(&iter, &node_id, NULL)) {
             if (num_table == sizeof(table) / sizeof(table[0])) {
-                overflow = g_hash_table_size(priv->mesh_nodes);
+                overflow = ernic_u32_map_size(priv->mesh_nodes);
                 break;
             }
-            tcp_snapshot_node_gids(priv, GPOINTER_TO_UINT(key),
-                                   &table[num_table++]);
+            tcp_snapshot_node_gids(priv, node_id, &table[num_table++]);
         }
     }
     for (size_t i = 0; i < ernic_vec_len(nodes); i++) {
@@ -1209,8 +1212,8 @@ void tcp_broadcaster_init(TcpBackendPrivate *priv)
     /* No other thread can reach priv yet */
     ROCM_ERNIC_WARN_THREAD_SAFETY_OFF
     priv->broadcast_topology = false;
-    priv->broadcast_gids = g_hash_table_new(g_direct_hash, g_direct_equal);
-    priv->broadcast_tables = g_hash_table_new(g_direct_hash, g_direct_equal);
+    priv->broadcast_gids = ernic_u32_map_new(NULL);
+    priv->broadcast_tables = ernic_u32_map_new(NULL);
     priv->broadcasts_asked = 0;
     priv->broadcasts_sent = 0;
     ROCM_ERNIC_WARN_THREAD_SAFETY_ON
@@ -1221,8 +1224,8 @@ void tcp_broadcaster_destroy(TcpBackendPrivate *priv)
 {
     /* Nor can any other thread reach priv now */
     ROCM_ERNIC_WARN_THREAD_SAFETY_OFF
-    g_hash_table_destroy(priv->broadcast_tables);
-    g_hash_table_destroy(priv->broadcast_gids);
+    ernic_u32_map_free(priv->broadcast_tables);
+    ernic_u32_map_free(priv->broadcast_gids);
     ROCM_ERNIC_WARN_THREAD_SAFETY_ON
     qemu_cond_destroy(&priv->broadcast_cond);
     qemu_mutex_destroy(&priv->broadcast_lock);
@@ -1248,10 +1251,10 @@ static void tcp_broadcast_ask(TcpBackendPrivate *priv, bool topology,
         priv->broadcast_topology = true;
     }
     if (gids_of != UINT32_MAX) {
-        g_hash_table_add(priv->broadcast_gids, GUINT_TO_POINTER(gids_of));
+        ernic_u32_map_add(priv->broadcast_gids, gids_of);
     }
     if (table_to != UINT32_MAX) {
-        g_hash_table_add(priv->broadcast_tables, GUINT_TO_POINTER(table_to));
+        ernic_u32_map_add(priv->broadcast_tables, table_to);
     }
     priv->broadcasts_asked++;
     qemu_cond_signal(&priv->broadcast_cond);
@@ -1286,18 +1289,17 @@ void tcp_broadcast_gid_table_to(TcpBackendPrivate *priv, uint32_t node_id)
 }
 
 /* Move the node ids in @set to @ids.  The caller holds broadcast_lock. */
-static void tcp_broadcast_take_ids(GHashTable *set, ErnicVec *ids)
+static void tcp_broadcast_take_ids(ErnicU32Map *set, ErnicVec *ids)
 {
-    GHashTableIter iter;
-    gpointer key;
+    ErnicU32MapIter iter;
+    uint32_t id;
 
-    g_hash_table_iter_init(&iter, set);
-    while (g_hash_table_iter_next(&iter, &key, NULL)) {
-        uint32_t id = GPOINTER_TO_UINT(key);
-
+    ernic_u32_map_iter_init(&iter, set);
+    while (ernic_u32_map_iter_next(&iter, &id, NULL)) {
         ernic_vec_append(ids, &id);
     }
-    g_hash_table_remove_all(set);
+    /* Empties the set, which stays in use */
+    ernic_u32_map_destroy(set);
 }
 
 /*
@@ -1414,15 +1416,15 @@ static bool tcp_node_silent(const TcpBackendPrivate *priv,
 static void tcp_health_check_scan(TcpBackendPrivate *priv, ErnicVec *items,
                                   ErnicVec *dead)
 {
-    GHashTableIter iter;
-    gpointer value;
+    ErnicU32MapIter iter;
+    void *value;
 
     qemu_mutex_lock(&priv->mesh_table_lock);
     /* Read under the lock, so no heartbeat is newer */
     uint64_t now_ms = ernic_monotonic_ms();
 
-    g_hash_table_iter_init(&iter, priv->mesh_nodes);
-    while (g_hash_table_iter_next(&iter, NULL, &value)) {
+    ernic_u32_map_iter_init(&iter, priv->mesh_nodes);
+    while (ernic_u32_map_iter_next(&iter, NULL, &value)) {
         MeshNodeInfo *node = (MeshNodeInfo *)value;
         TcpHealthCheckItem item = {node->node_id, NULL, false, false};
         bool newly_dead = false, gids_gone = false;
@@ -1510,7 +1512,7 @@ static bool tcp_node_still_silent(TcpBackendPrivate *priv, uint32_t node_id)
     bool evicted, silent = false;
 
     qemu_mutex_lock(&priv->mesh_table_lock);
-    node = g_hash_table_lookup(priv->mesh_nodes, GUINT_TO_POINTER(node_id));
+    node = ernic_u32_map_lookup(priv->mesh_nodes, node_id);
     evicted = !node;
     if (node) {
         silent = tcp_node_silent(priv, node, ernic_monotonic_ms());

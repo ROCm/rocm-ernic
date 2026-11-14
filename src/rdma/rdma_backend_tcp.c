@@ -23,6 +23,7 @@
 #include "rdma/rdma_backend_tcp_priv.h"
 #include "ernic_alloc.h"
 #include "ernic_limits.h"
+#include "ernic_map.h"
 #include "ernic_mesh.h"
 #include "ernic_time.h"
 #include "ernic_vec.h"
@@ -37,7 +38,6 @@
 #include <stdbool.h>
 #include <stdlib.h>
 #include <string.h>
-#include <glib.h>
 #include <unistd.h>
 #include <inttypes.h>
 
@@ -300,13 +300,11 @@ static void tcp_priv_free(TcpBackendPrivate *priv)
     /* With the threads stopped, nothing else can reach priv */
     ROCM_ERNIC_WARN_THREAD_SAFETY_OFF
     ernic_vec_free(&priv->peer_targets);
-    if (priv->mesh_nodes) {
-        g_hash_table_destroy(priv->mesh_nodes);
-    }
-    g_hash_table_destroy(priv->connections);
-    g_hash_table_destroy(priv->node_gids);
-    g_hash_table_destroy(priv->gid_owner);
-    g_hash_table_destroy(priv->qpns);
+    ernic_u32_map_free(priv->mesh_nodes);
+    ernic_u32_map_free(priv->connections);
+    ernic_u32_map_free(priv->node_gids);
+    ernic_gid_map_free(priv->gid_owner);
+    ernic_u32_map_free(priv->qpns);
     ROCM_ERNIC_WARN_THREAD_SAFETY_ON
 
     if (priv->mesh_table_lock.initialized) {
@@ -362,18 +360,15 @@ int tcp_init_with_interval(RdmaBackendDev *backend_dev, const char *config,
      * the fields the backend's locks guard are set up without them.
      */
     ROCM_ERNIC_WARN_THREAD_SAFETY_OFF
-    priv->connections = g_hash_table_new_full(
-        g_direct_hash, g_direct_equal, NULL, tcp_connection_destroy_notify);
+    priv->connections = ernic_u32_map_new(tcp_connection_destroy_notify);
     ernic_ptr_vec_init(&priv->pending_conns);
-    priv->node_gids =
-        g_hash_table_new_full(g_direct_hash, g_direct_equal, NULL, free);
-    priv->gid_owner = g_hash_table_new_full(g_bytes_hash, g_bytes_equal,
-                                            tcp_gid_key_free, NULL);
+    priv->node_gids = ernic_u32_map_new(free);
+    priv->gid_owner = ernic_gid_map_new();
 
     priv->next_pd_handle = 1;
     priv->next_cq_handle = 1;
     priv->next_qpn = TCP_FIRST_QPN;
-    priv->qpns = g_hash_table_new(g_direct_hash, g_direct_equal);
+    priv->qpns = ernic_u32_map_new(NULL);
     atomic_init(&priv->next_seq, 1);
     atomic_init(&priv->tcp_stats.peer_connect_attempts, 0);
     atomic_init(&priv->tcp_stats.manager_reconnects, 0);
@@ -451,9 +446,8 @@ int tcp_init_with_interval(RdmaBackendDev *backend_dev, const char *config,
          * The mesh nodes table, with the manager itself in it, under the
          * configured host, or "localhost" in listen mode, which names none
          */
-        GHashTable *mesh_nodes =
-            g_hash_table_new_full(g_direct_hash, g_direct_equal, NULL,
-                                  tcp_mesh_node_info_destroy_notify);
+        ErnicU32Map *mesh_nodes =
+            ernic_u32_map_new(tcp_mesh_node_info_destroy_notify);
         qemu_mutex_init(&priv->mesh_table_lock);
         ROCM_ERNIC_WARN_THREAD_SAFETY_OFF
         priv->mesh_nodes = mesh_nodes;
@@ -465,7 +459,7 @@ int tcp_init_with_interval(RdmaBackendDev *backend_dev, const char *config,
             free(manager_host);
             goto error;
         }
-        g_hash_table_insert(mesh_nodes, GUINT_TO_POINTER(0), manager_node);
+        ernic_u32_map_insert(mesh_nodes, 0, manager_node);
 
         rdma_info_report("TCP backend: Manager mode on port %u", manager_port);
 
@@ -748,9 +742,8 @@ static int tcp_create_qp(RdmaBackendQP *qp, uint8_t qp_type, RdmaBackendPD *pd,
     qemu_mutex_lock(&priv->lock);
     do {
         qpn = priv->next_qpn++;
-    } while (qpn < TCP_FIRST_QPN ||
-             g_hash_table_contains(priv->qpns, GUINT_TO_POINTER(qpn)));
-    g_hash_table_add(priv->qpns, GUINT_TO_POINTER(qpn));
+    } while (qpn < TCP_FIRST_QPN || ernic_u32_map_contains(priv->qpns, qpn));
+    ernic_u32_map_add(priv->qpns, qpn);
     qemu_mutex_unlock(&priv->lock);
 
     qp->backend_dev = scq->backend_dev;
@@ -768,7 +761,7 @@ static void tcp_destroy_qp(RdmaBackendQP *qp, RdmaDeviceResources *dev_res)
 
     if (priv) {
         qemu_mutex_lock(&priv->lock);
-        g_hash_table_remove(priv->qpns, GUINT_TO_POINTER(qp->qpn));
+        ernic_u32_map_remove(priv->qpns, qp->qpn);
         qemu_mutex_unlock(&priv->lock);
     }
     rdma_info_report("TCP: Destroyed QP qpn=%u", qp->qpn);

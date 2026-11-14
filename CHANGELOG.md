@@ -157,8 +157,8 @@
 
 * The server now includes uthash 2.4.0, a single header copied into
   `third-party/uthash/` and compiled in, so it needs nothing installed to
-  build. The loopback backend's QP table uses it in place of GLib's. It
-  is `BSD-1-Clause`; `LICENSE.md` lists it, and packages install its
+  build. The server's hash tables use it in place of GLib's. It is
+  `BSD-1-Clause`; `LICENSE.md` lists it, and packages install its
   license as `share/doc/rocm-ernic/uthash/LICENSE`.
 * CI defines its own builder image, the container the VM lanes run in, in
   `ci/images/builder/`, and the `CI images` workflow (`ci-images.yml`)

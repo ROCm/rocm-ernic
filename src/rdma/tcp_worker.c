@@ -16,6 +16,7 @@
 
 #include "rdma/rdma_backend_tcp_priv.h"
 #include "byteorder.h"
+#include "ernic_map.h"
 #include "ernic_time.h"
 #include "ernic_vec.h"
 #include "pvrdma/rdma_utils.h"
@@ -26,7 +27,6 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#include <glib.h>
 #include <unistd.h>
 #include <poll.h>
 #include <time.h>
@@ -420,8 +420,7 @@ bool tcp_worker_publish_peer(TcpBackendPrivate *priv,
                          "meanwhile; closing the new connection",
                          target->node_id);
     } else {
-        old = g_hash_table_lookup(priv->connections,
-                                  GUINT_TO_POINTER(target->node_id));
+        old = ernic_u32_map_lookup(priv->connections, target->node_id);
         if (old && !tcp_conn_dead(old)) {
             rdma_info_report("TCP: Peer node %u connected to this node "
                              "meanwhile; closing the new connection",
@@ -567,17 +566,16 @@ static void tcp_worker_peer_sweep(TcpBackendPrivate *priv)
 {
     ErnicPtrVec swept;
     uint32_t local = tcp_local_node(priv);
-    GHashTableIter iter;
-    gpointer key;
-    gpointer value;
+    ErnicU32MapIter iter;
+    uint32_t node_id;
+    void *value;
 
     ernic_ptr_vec_init(&swept);
     qemu_mutex_lock(&priv->peer_lock);
     qemu_mutex_lock(&priv->conn_table_lock);
-    g_hash_table_iter_init(&iter, priv->connections);
-    while (g_hash_table_iter_next(&iter, &key, &value)) {
+    ernic_u32_map_iter_init(&iter, priv->connections);
+    while (ernic_u32_map_iter_next(&iter, &node_id, &value)) {
         TcpConnection *conn = value;
-        uint32_t node_id = GPOINTER_TO_UINT(key);
 
         if (tcp_conn_dead(conn)) {
             rdma_info_report("TCP: Closing the connection to node %u, which "
@@ -595,7 +593,7 @@ static void tcp_worker_peer_sweep(TcpBackendPrivate *priv)
             continue;
         }
         /* Hands the table's reference over, as tcp_conn_table_take() does */
-        g_hash_table_iter_steal(&iter);
+        ernic_u32_map_iter_steal(&iter);
         tcp_conn_unpublished(conn);
         ernic_ptr_vec_push(&swept, conn);
     }
@@ -1101,8 +1099,7 @@ void tcp_worker_accept(TcpBackendPrivate *priv, int sockfd, const char *host,
      * joins its thread.
      */
     qemu_mutex_lock(&priv->conn_table_lock);
-    old = g_hash_table_lookup(priv->connections,
-                              GUINT_TO_POINTER(remote_node_id));
+    old = ernic_u32_map_lookup(priv->connections, remote_node_id);
     if (old && !tcp_conn_dead(old)) {
         qemu_mutex_unlock(&priv->conn_table_lock);
         rdma_info_report("TCP: Connection to node %u already exists, closing "

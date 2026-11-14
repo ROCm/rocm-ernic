@@ -1674,6 +1674,9 @@ Where to Look in the Source
        out of memory
    * - ``src/ernic_vec.c``, ``.h``
      - Growable arrays, for lists whose length the server bounds
+   * - ``src/ernic_map.c``, ``.h``
+     - Hash maps keyed by a number or a GID, over the vendored
+       uthash, hashed with a per-process SipHash key
    * - ``src/ernic_shm.c``, ``.h``
      - Memory shared with QEMU by a file descriptor, behind the
        CMB
