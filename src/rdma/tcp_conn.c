@@ -150,7 +150,6 @@ TcpConnection *tcp_connection_new(TcpBackendPrivate *priv, uint32_t node_id,
     /* No other thread can reach conn yet */
     ROCM_ERNIC_WARN_THREAD_SAFETY_OFF
     conn->sockfd = sockfd;
-    g_queue_init(&conn->sendq);
     ROCM_ERNIC_WARN_THREAD_SAFETY_ON
     return conn;
 }
@@ -341,6 +340,49 @@ void tcp_retire_conn(TcpConnection *conn)
     qemu_mutex_unlock(&conn->lock);
 }
 
+/* Put msg at the tail of conn's send queue.  The caller holds sendq_lock. */
+static void tcp_sendq_push_tail(TcpConnection *conn, TcpQueuedMsg *msg)
+    TSA_REQUIRES(conn->sendq_lock)
+{
+    msg->next = NULL;
+    if (conn->sendq_tail) {
+        conn->sendq_tail->next = msg;
+    } else {
+        conn->sendq_head = msg;
+    }
+    conn->sendq_tail = msg;
+}
+
+/* Put msg at the head of conn's send queue.  The caller holds sendq_lock. */
+static void tcp_sendq_push_head(TcpConnection *conn, TcpQueuedMsg *msg)
+    TSA_REQUIRES(conn->sendq_lock)
+{
+    msg->next = conn->sendq_head;
+    conn->sendq_head = msg;
+    if (!conn->sendq_tail) {
+        conn->sendq_tail = msg;
+    }
+}
+
+/*
+ * Take the message at the head of conn's send queue off it, and return it, or
+ * NULL if the queue is empty.  The caller holds sendq_lock.
+ */
+static TcpQueuedMsg *tcp_sendq_pop_head(TcpConnection *conn)
+    TSA_REQUIRES(conn->sendq_lock)
+{
+    TcpQueuedMsg *msg = conn->sendq_head;
+
+    if (msg) {
+        conn->sendq_head = msg->next;
+        if (!conn->sendq_head) {
+            conn->sendq_tail = NULL;
+        }
+        msg->next = NULL;
+    }
+    return msg;
+}
+
 /*
  * Drop what is on conn's send queue and close it to more.  The caller holds
  * sendq_lock.
@@ -350,7 +392,7 @@ static void tcp_sendq_close(TcpConnection *conn)
     TcpQueuedMsg *msg;
 
     conn->sendq_closed = true;
-    while ((msg = g_queue_pop_head(&conn->sendq)) != NULL) {
+    while ((msg = tcp_sendq_pop_head(conn)) != NULL) {
         free(msg);
     }
     conn->sendq_bytes = 0;
@@ -377,7 +419,7 @@ static void *tcp_send_thread(void *opaque)
 
     qemu_mutex_lock(&conn->sendq_lock);
     while (!conn->sendq_closed) {
-        TcpQueuedMsg *msg = g_queue_pop_head(&conn->sendq);
+        TcpQueuedMsg *msg = tcp_sendq_pop_head(conn);
         int ret = -1;
 
         if (!msg) {
@@ -456,6 +498,7 @@ static TcpQueuedMsg *tcp_queued_msg_new(const TcpConnection *conn,
     if (!msg) {
         return NULL;
     }
+    msg->next = NULL;
     msg->msg_type = msg_type;
     msg->seq = atomic_fetch_add_explicit(&conn->priv->next_seq, 1,
                                          memory_order_relaxed);
@@ -526,7 +569,7 @@ int tcp_conn_enqueue(TcpConnection *conn, const void *hdr, size_t hdr_len,
     if (body_len > 0) {
         memcpy(msg->data + hdr_len, body, body_len);
     }
-    g_queue_push_tail(&conn->sendq, msg);
+    tcp_sendq_push_tail(conn, msg);
     conn->sendq_bytes += len;
     qemu_cond_signal(&conn->sendq_cond);
     qemu_mutex_unlock(&conn->sendq_lock);
@@ -542,9 +585,8 @@ static bool tcp_sendq_has_heartbeat(const TcpConnection *conn,
                                     TcpMsgType msg_type)
     TSA_REQUIRES(conn->sendq_lock)
 {
-    for (GList *link = conn->sendq.head; link != NULL; link = link->next) {
-        const TcpQueuedMsg *msg = link->data;
-
+    for (const TcpQueuedMsg *msg = conn->sendq_head; msg != NULL;
+         msg = msg->next) {
         if (msg->msg_type == TCP_MSG_IONIC) {
             break;
         }
@@ -576,7 +618,7 @@ static int tcp_sendq_push_heartbeat(TcpConnection *conn, TcpMsgType msg_type,
         TcpQueuedMsg *msg = tcp_queued_msg_new(conn, msg_type, dst_node, 0);
 
         if (msg) {
-            g_queue_push_head(&conn->sendq, msg);
+            tcp_sendq_push_head(conn, msg);
             qemu_cond_signal(&conn->sendq_cond);
         } else {
             ret = -ENOMEM;
@@ -594,18 +636,30 @@ static int tcp_sendq_push_heartbeat(TcpConnection *conn, TcpMsgType msg_type,
  */
 void tcp_sendq_cancel(TcpConnection *conn, uint64_t tag, uint64_t mask)
 {
+    TcpQueuedMsg *prev = NULL; /* the last message kept */
+    TcpQueuedMsg *msg;
+
     qemu_mutex_lock(&conn->sendq_lock);
-    for (GList *link = conn->sendq.head; link != NULL;) {
-        GList *next = link->next;
-        TcpQueuedMsg *msg = link->data;
+    msg = conn->sendq_head;
+    while (msg != NULL) {
+        TcpQueuedMsg *next = msg->next;
 
         if (msg->msg_type == TCP_MSG_IONIC && !msg->reply &&
             (msg->tag & mask) == (tag & mask)) {
+            if (prev) {
+                prev->next = next;
+            } else {
+                conn->sendq_head = next;
+            }
+            if (conn->sendq_tail == msg) {
+                conn->sendq_tail = prev;
+            }
             conn->sendq_bytes -= msg->len;
-            g_queue_delete_link(&conn->sendq, link);
             free(msg);
+        } else {
+            prev = msg;
         }
-        link = next;
+        msg = next;
     }
     qemu_mutex_unlock(&conn->sendq_lock);
 }
