@@ -41,7 +41,7 @@ Quick Start
 .. code-block:: bash
 
    sudo apt install cmake meson ninja-build pkg-config \
-     libibverbs-dev librdmacm-dev libglib2.0-dev libjson-c-dev
+     libibverbs-dev librdmacm-dev libjson-c-dev
    cmake -B build -G Ninja -DCMAKE_BUILD_TYPE=Debug
    cmake --build build
 

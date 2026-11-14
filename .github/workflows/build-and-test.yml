@@ -170,7 +170,6 @@ jobs:
           sudo apt-get install -y \
             libibverbs-dev \
             librdmacm-dev \
-            libglib2.0-dev \
             libjson-c-dev
 
       # The coverage report needs the llvm-profdata and llvm-cov of the

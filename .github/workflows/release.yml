@@ -51,8 +51,7 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y \
             libibverbs-dev \
-            librdmacm-dev \
-            libglib2.0-dev
+            librdmacm-dev
 
       # Built from source on every run rather than restored from
       # actions/cache: the release links against this library, and a

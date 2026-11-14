@@ -72,7 +72,6 @@ RUN apt-get update && \
         curl \
         git \
         libcmocka-dev \
-        libglib2.0-dev \
         libjson-c-dev \
         meson \
         ninja-build \
@@ -85,6 +84,7 @@ RUN apt-get update && \
 # them too, so every library QEMU linked against is there at run time.
 RUN apt-get update && \
     apt-get install -y --no-install-recommends \
+        libglib2.0-dev \
         libpixman-1-dev \
         libslirp-dev && \
     rm -rf /var/lib/apt/lists/*

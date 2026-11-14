@@ -18,11 +18,8 @@ include_guard(GLOBAL)
 # links, and HEADER_DEPS those whose headers it only includes, such as
 # one whose functions the test stubs. Their headers are SYSTEM includes,
 # as for the server, so their warnings stay quiet while the sources under
-# test are still warning-checked. A program that uses GLib's headers also
-# gets GLib's other compile flags (usually -pthread), as the server does. A
-# dependency is one of:
+# test are still warning-checked. A dependency is one of:
 #
-#   glib       GLib
 #   ibverbs    libibverbs
 #   vfio-user  libvfio-user
 #   json-c     json-c (DEPS only; exists only with ERNIC_BUILD_P4)
@@ -50,15 +47,9 @@ function(ernic_add_test_program name)
     foreach(kind IN ITEMS DEPS HEADER_DEPS)
         foreach(dep IN LISTS arg_${kind})
             unset(include_dirs)
-            unset(compile_options)
             unset(link_dirs)
             unset(libraries)
-            if(dep STREQUAL "glib")
-                set(include_dirs ${GLIB2_INCLUDE_DIRS})
-                set(compile_options ${GLIB2_CFLAGS_OTHER})
-                set(link_dirs ${GLIB2_LIBRARY_DIRS})
-                set(libraries ${GLIB2_LIBRARIES})
-            elseif(dep STREQUAL "ibverbs")
+            if(dep STREQUAL "ibverbs")
                 set(include_dirs ${ERNIC_IBVERBS_INCLUDE_DIRS})
                 set(link_dirs ${IBVERBS_LIBRARY_DIRS})
                 set(libraries ${IBVERBS_LIBRARIES})
@@ -79,9 +70,6 @@ function(ernic_add_test_program name)
             if(include_dirs)
                 target_include_directories(${name} SYSTEM PRIVATE
                   ${include_dirs})
-            endif()
-            if(compile_options)
-                target_compile_options(${name} PRIVATE ${compile_options})
             endif()
             if(kind STREQUAL "DEPS")
                 if(link_dirs)

@@ -1138,9 +1138,9 @@
     The guest test builds in CI and Ansible compile with
     `-std=c11 -pedantic` and the same macros, as do the Nix fuzz and
     `ernic-rdma-errors` builds.
-  * A configure that can't find GLib or libibverbs names the package to
-    install (`libglib2.0-dev` or `glib2-devel`, `libibverbs-dev` or
-    `libibverbs-devel`); it stopped before showing that message.
+  * A configure that can't find libibverbs names the package to install
+    (`libibverbs-dev` or `libibverbs-devel`); it stopped before showing
+    that message.
   * The build type alone decides whether the server has debug info, as for
     every other target: a `Release` or `MinSizeRel` server, such as the
     release tarball's and the `.deb` packages', no longer has any. Build
@@ -1276,6 +1276,14 @@
 
 ### Removed
 
+* **GLib is no longer a dependency.** The server, its tests, and the Nix
+  builds no longer use or link it, so building rocm-ernic no longer needs
+  `libglib2.0-dev` (Ubuntu/Debian) or `glib2-devel` (Fedora/RHEL), and
+  the server and its packages no longer need `libglib2.0-0` at run time.
+  Its hash tables, arrays, and send queue are now the project's own (see
+  Added for uthash), and NIC profiles are read without `GKeyFile`.
+  `ernic_add_test_program()` no longer accepts `glib` in `DEPS` or
+  `HEADER_DEPS`. CI's builder image still installs it, for QEMU.
 * **The PVRDMA-derived device and everything that only served it**: the
   `--legacy` / `--pvrdma` flags and the `-I` / `--ionic` no-op, the
   out-of-tree `rocm_ernic_eth` / `rocm_ernic_rdma` driver in `driver/`, the

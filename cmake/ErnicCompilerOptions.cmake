@@ -156,9 +156,8 @@ function(ernic_set_compiler_flags target)
 
     # -pthread is critical for sanitizer builds through TheRock, as it is
     # for hipFile's and hipObject's tests. It's needed even though glibc
-    # 2.34 and later has the thread functions in libc, and GLib's compile
-    # flags usually add it, so every program is compiled and linked with
-    # it explicitly. NEVER REMOVE IT.
+    # 2.34 and later has the thread functions in libc, so every program is
+    # compiled and linked with it explicitly. NEVER REMOVE IT.
     target_compile_options(${target} PRIVATE -pthread)
     target_link_options(${target} PRIVATE -pthread)
 

@@ -49,7 +49,7 @@ let
 
   # doCheck=false overrides for dependencies whose test suites fail under
   # cross/emulation. Kept empty until a spike build proves one is needed —
-  # our closure (glib, json_c, rdma-core, from-source libvfio-user) is far
+  # our closure (json_c, rdma-core, from-source libvfio-user) is far
   # smaller than xdp2's, so it may stay empty. Add entries like:
   #   somePkg = prev.somePkg.overrideAttrs (_: { doCheck = false; });
   crossFixes = final: prev: {

@@ -87,7 +87,6 @@ jobs:
           packages: >-
             libibverbs-dev
             librdmacm-dev
-            libglib2.0-dev
             libjson-c-dev
 
       # apt only trusts the key with the known fingerprint, and only for

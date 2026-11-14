@@ -90,7 +90,6 @@ jobs:
           sudo apt-get install -y \
             libibverbs-dev \
             librdmacm-dev \
-            libglib2.0-dev \
             meson \
             libjson-c-dev \
             libcmocka-dev

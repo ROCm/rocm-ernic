@@ -37,13 +37,11 @@ rec {
 
   # Libraries required to compile and link rocm-ernic.
   #   vfio-user   -> libvfio-user (from source, see libvfio-user.nix)
-  #   glib-2.0    -> pkgs.glib (glib.dev provides pkg-config + headers)
   #   libibverbs, -> pkgs.rdma-core
   #   librdmacm
   #   json-c      -> transitive dep of libvfio-user; kept explicit for safety
   buildInputs = [
     libvfio-user
-    pkgs.glib
     pkgs.rdma-core
     pkgs.json_c
   ];

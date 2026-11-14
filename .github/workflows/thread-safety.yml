@@ -77,7 +77,6 @@ jobs:
           packages: >-
             libibverbs-dev
             librdmacm-dev
-            libglib2.0-dev
             libjson-c-dev
 
       # As in the clang-tidy workflow: apt only trusts the key with the

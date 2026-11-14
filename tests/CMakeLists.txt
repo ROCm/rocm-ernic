@@ -840,7 +840,7 @@ ernic_add_test_program(ernic-test-ernic-stats
         s3_alloc_fail.c
         ${PROJECT_SOURCE_DIR}/src/ernic_stats.c
         ${PROJECT_SOURCE_DIR}/src/ernic_log.c
-    DEPS glib pthread
+    DEPS pthread
 )
 target_link_options(ernic-test-ernic-stats PRIVATE
     "LINKER:--wrap=malloc,--wrap=calloc,--wrap=realloc"

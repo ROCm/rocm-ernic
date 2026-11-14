@@ -150,7 +150,7 @@ jobs:
         sudo apt-get update
         sudo apt-get install -y \
           libibverbs-dev librdmacm-dev \
-          libglib2.0-dev libjson-c-dev meson \
+          libjson-c-dev meson \
           libcmocka-dev
 
     - name: Clone and build libvfio-user
