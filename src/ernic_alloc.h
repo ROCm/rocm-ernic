@@ -47,6 +47,19 @@ void *ernic_xmalloc(size_t size);
 void *ernic_xcalloc(size_t nmemb, size_t size);
 
 /**
+ * Resize an array, keeping its contents
+ *
+ * @param ptr   the array, or NULL for a new one
+ * @param nmemb how many elements it is to hold
+ * @param size  the size of each
+ *
+ * Returns the array, which may have moved, never NULL; elements past the
+ * old size are uninitialized.  Aborts through ernic_log_fatal() if @p nmemb
+ * times @p size doesn't fit in a size_t.
+ */
+void *ernic_xreallocarray(void *ptr, size_t nmemb, size_t size);
+
+/**
  * Copy a string
  *
  * @param s the string

@@ -19,6 +19,7 @@
 #include "byteorder.h"
 #include "ernic_alloc.h"
 #include "ernic_time.h"
+#include "ernic_vec.h"
 #include "pvrdma/rdma_utils.h"
 #include "qemu/thread.h"
 #include "rocm-ernic-warnings.h"
@@ -551,7 +552,7 @@ static bool tcp_register_admit(TcpBackendPrivate *priv, TcpConnection *conn,
      * REGISTER_NODE on the same socket would otherwise put the connection in
      * the table under a second id, and teardown would free it once for each.
      */
-    pending = g_ptr_array_remove_fast(priv->pending_conns, conn) != FALSE;
+    pending = ernic_ptr_vec_remove_fast(&priv->pending_conns, conn);
     if (pending && adm->again) {
         adm->refused = tcp_register_again(priv, reg->requested_id, reg->host,
                                           reg->port, &adm->replaced, &adm->why);
@@ -570,7 +571,7 @@ static bool tcp_register_admit(TcpBackendPrivate *priv, TcpConnection *conn,
         tcp_conn_table_add(priv, adm->node_id, conn);
     } else if (pending) {
         /* Still unregistered, so the reap closes it, or teardown finds it */
-        g_ptr_array_add(priv->pending_conns, conn);
+        ernic_ptr_vec_push(&priv->pending_conns, conn);
     }
     qemu_mutex_unlock(&priv->conn_table_lock);
 
@@ -901,29 +902,30 @@ void tcp_manager_relay_ionic(TcpBackendPrivate *priv, const TcpRecvMsg *msg)
  */
 void tcp_reap_pending_conns(TcpBackendPrivate *priv)
 {
-    GPtrArray *reaped = g_ptr_array_new();
+    ErnicPtrVec reaped;
 
+    ernic_ptr_vec_init(&reaped);
     qemu_mutex_lock(&priv->conn_table_lock);
     /* Read under the lock, so no connection on the list is newer */
     uint64_t now_ms = ernic_monotonic_ms();
 
-    for (guint i = 0; i < priv->pending_conns->len;) {
-        TcpConnection *conn = g_ptr_array_index(priv->pending_conns, i);
+    for (size_t i = 0; i < ernic_ptr_vec_len(&priv->pending_conns);) {
+        TcpConnection *conn = ernic_ptr_vec_get(&priv->pending_conns, i);
 
         if (tcp_conn_dead(conn) ||
             (now_ms >= conn->accepted_ms &&
              now_ms - conn->accepted_ms >= TCP_REGISTER_TIMEOUT_MS)) {
             /* Moves the last connection to i, which is looked at next */
-            g_ptr_array_remove_index_fast(priv->pending_conns, i);
-            g_ptr_array_add(reaped, conn);
+            (void)ernic_ptr_vec_remove_index_fast(&priv->pending_conns, i);
+            ernic_ptr_vec_push(&reaped, conn);
         } else {
             i++;
         }
     }
     qemu_mutex_unlock(&priv->conn_table_lock);
 
-    for (guint i = 0; i < reaped->len; i++) {
-        TcpConnection *conn = g_ptr_array_index(reaped, i);
+    for (size_t i = 0; i < ernic_ptr_vec_len(&reaped); i++) {
+        TcpConnection *conn = ernic_ptr_vec_get(&reaped, i);
         char *addr = tcp_addr_str(conn->remote_host, conn->remote_port);
 
         rdma_info_report("TCP: Closing the connection from %s, which didn't "
@@ -933,7 +935,7 @@ void tcp_reap_pending_conns(TcpBackendPrivate *priv)
         tcp_retire_conn(conn);
         tcp_connection_unref(conn);
     }
-    g_ptr_array_free(reaped, TRUE);
+    ernic_ptr_vec_free(&reaped, NULL);
 }
 
 /*
@@ -961,7 +963,7 @@ void tcp_manager_accept(TcpBackendPrivate *priv, int sockfd, const char *host,
      * it's there.
      */
     qemu_mutex_lock(&priv->conn_table_lock);
-    if (priv->pending_conns->len >= TCP_MAX_PENDING_CONNS) {
+    if (ernic_ptr_vec_len(&priv->pending_conns) >= TCP_MAX_PENDING_CONNS) {
         qemu_mutex_unlock(&priv->conn_table_lock);
         addr = tcp_addr_str(host, port);
         rdma_error_report("TCP: %u connections are already waiting to "
@@ -976,7 +978,7 @@ void tcp_manager_accept(TcpBackendPrivate *priv, int sockfd, const char *host,
         tcp_connection_unref(conn);
         return;
     }
-    g_ptr_array_add(priv->pending_conns, conn);
+    ernic_ptr_vec_push(&priv->pending_conns, conn);
     qemu_mutex_unlock(&priv->conn_table_lock);
 }
 
@@ -1050,10 +1052,10 @@ static void tcp_send_mesh_topology(TcpBackendPrivate *priv)
     }
 
     /* Broadcast to all connected workers */
-    GPtrArray *conns = tcp_conns_snapshot(priv);
+    ErnicPtrVec conns = tcp_conns_snapshot(priv);
 
-    for (guint i = 0; i < conns->len; i++) {
-        TcpConnection *conn = g_ptr_array_index(conns, i);
+    for (size_t i = 0; i < ernic_ptr_vec_len(&conns); i++) {
+        TcpConnection *conn = ernic_ptr_vec_get(&conns, i);
 
         /* Checked under the lock tcp_retire_conn() changes them under */
         qemu_mutex_lock(&conn->lock);
@@ -1067,7 +1069,7 @@ static void tcp_send_mesh_topology(TcpBackendPrivate *priv)
         }
         qemu_mutex_unlock(&conn->lock);
     }
-    g_ptr_array_free(conns, TRUE);
+    ernic_ptr_vec_free(&conns, tcp_connection_destroy_notify);
 
     rdma_info_report("TCP: Broadcast mesh topology to %u nodes", num_nodes);
 }
@@ -1118,8 +1120,8 @@ static void tcp_snapshot_node_gids(const TcpBackendPrivate *priv,
  * another's -- so a change costs one message to each connection, not one for
  * each node.
  */
-static void tcp_send_gid_updates(TcpBackendPrivate *priv, const GArray *tables,
-                                 const GArray *nodes)
+static void tcp_send_gid_updates(TcpBackendPrivate *priv,
+                                 const ErnicVec *tables, const ErnicVec *nodes)
 {
     if (!tcp_has_gid_tables(priv) || !tcp_has_mesh_table(priv)) {
         return;
@@ -1133,7 +1135,8 @@ static void tcp_send_gid_updates(TcpBackendPrivate *priv, const GArray *tables,
     TcpNodeGidsWire table[TCP_MAX_MESH_NODES];
     uint32_t num_table = 0;
     guint overflow = 0; /* the size of mesh_nodes, if past the cap */
-    TcpNodeGidsWire *changed = ernic_xcalloc(nodes->len, sizeof(*changed));
+    TcpNodeGidsWire *changed =
+        ernic_xcalloc(ernic_vec_len(nodes), sizeof(*changed));
 
     /*
      * Snapshot under the mesh and claim locks; the sends are not, because
@@ -1143,7 +1146,7 @@ static void tcp_send_gid_updates(TcpBackendPrivate *priv, const GArray *tables,
     qemu_mutex_lock(&priv->mesh_table_lock);
     qemu_mutex_lock(&priv->gid_table_lock);
 
-    if (tables->len > 0) {
+    if (ernic_vec_len(tables) > 0) {
         GHashTableIter iter;
         gpointer key;
 
@@ -1157,9 +1160,10 @@ static void tcp_send_gid_updates(TcpBackendPrivate *priv, const GArray *tables,
                                    &table[num_table++]);
         }
     }
-    for (guint i = 0; i < nodes->len; i++) {
-        tcp_snapshot_node_gids(priv, g_array_index(nodes, uint32_t, i),
-                               &changed[i]);
+    for (size_t i = 0; i < ernic_vec_len(nodes); i++) {
+        const uint32_t *node_id = ernic_vec_get(nodes, i);
+
+        tcp_snapshot_node_gids(priv, *node_id, &changed[i]);
     }
 
     qemu_mutex_unlock(&priv->gid_table_lock);
@@ -1169,9 +1173,9 @@ static void tcp_send_gid_updates(TcpBackendPrivate *priv, const GArray *tables,
         tcp_report_mesh_overflow("GID table", overflow);
     }
 
-    for (guint i = 0; i < tables->len; i++) {
-        TcpConnection *conn =
-            tcp_connection_lookup(priv, g_array_index(tables, uint32_t, i));
+    for (size_t i = 0; i < ernic_vec_len(tables); i++) {
+        const uint32_t *node_id = ernic_vec_get(tables, i);
+        TcpConnection *conn = tcp_connection_lookup(priv, *node_id);
 
         for (uint32_t n = 0; n < num_table; n++) {
             tcp_send_node_gids(priv, conn, &table[n]);
@@ -1179,16 +1183,16 @@ static void tcp_send_gid_updates(TcpBackendPrivate *priv, const GArray *tables,
         tcp_connection_unref(conn);
     }
 
-    if (nodes->len > 0) {
-        GPtrArray *conns = tcp_conns_snapshot(priv);
+    if (ernic_vec_len(nodes) > 0) {
+        ErnicPtrVec conns = tcp_conns_snapshot(priv);
 
-        for (guint i = 0; i < nodes->len; i++) {
-            for (guint c = 0; c < conns->len; c++) {
-                tcp_send_node_gids(priv, g_ptr_array_index(conns, c),
+        for (size_t i = 0; i < ernic_vec_len(nodes); i++) {
+            for (size_t c = 0; c < ernic_ptr_vec_len(&conns); c++) {
+                tcp_send_node_gids(priv, ernic_ptr_vec_get(&conns, c),
                                    &changed[i]);
             }
         }
-        g_ptr_array_free(conns, TRUE);
+        ernic_ptr_vec_free(&conns, tcp_connection_destroy_notify);
     }
     free(changed);
 }
@@ -1282,7 +1286,7 @@ void tcp_broadcast_gid_table_to(TcpBackendPrivate *priv, uint32_t node_id)
 }
 
 /* Move the node ids in @set to @ids.  The caller holds broadcast_lock. */
-static void tcp_broadcast_take_ids(GHashTable *set, GArray *ids)
+static void tcp_broadcast_take_ids(GHashTable *set, ErnicVec *ids)
 {
     GHashTableIter iter;
     gpointer key;
@@ -1291,7 +1295,7 @@ static void tcp_broadcast_take_ids(GHashTable *set, GArray *ids)
     while (g_hash_table_iter_next(&iter, &key, NULL)) {
         uint32_t id = GPOINTER_TO_UINT(key);
 
-        g_array_append_val(ids, id);
+        ernic_vec_append(ids, &id);
     }
     g_hash_table_remove_all(set);
 }
@@ -1309,32 +1313,34 @@ static void tcp_broadcast_take_ids(GHashTable *set, GArray *ids)
  */
 void tcp_broadcast_pass(TcpBackendPrivate *priv)
 {
-    GArray *tables = g_array_new(FALSE, FALSE, sizeof(uint32_t));
-    GArray *nodes = g_array_new(FALSE, FALSE, sizeof(uint32_t));
+    ErnicVec tables;
+    ErnicVec nodes;
     bool topology;
     uint64_t asked;
 
+    ernic_vec_init(&tables, sizeof(uint32_t));
+    ernic_vec_init(&nodes, sizeof(uint32_t));
     qemu_mutex_lock(&priv->broadcast_lock);
     topology = priv->broadcast_topology;
     priv->broadcast_topology = false;
-    tcp_broadcast_take_ids(priv->broadcast_tables, tables);
-    tcp_broadcast_take_ids(priv->broadcast_gids, nodes);
+    tcp_broadcast_take_ids(priv->broadcast_tables, &tables);
+    tcp_broadcast_take_ids(priv->broadcast_gids, &nodes);
     asked = priv->broadcasts_asked;
     qemu_mutex_unlock(&priv->broadcast_lock);
 
     if (topology) {
         tcp_send_mesh_topology(priv);
     }
-    if (tables->len > 0 || nodes->len > 0) {
-        tcp_send_gid_updates(priv, tables, nodes);
+    if (ernic_vec_len(&tables) > 0 || ernic_vec_len(&nodes) > 0) {
+        tcp_send_gid_updates(priv, &tables, &nodes);
     }
 
     qemu_mutex_lock(&priv->broadcast_lock);
     priv->broadcasts_sent = asked;
     qemu_mutex_unlock(&priv->broadcast_lock);
 
-    g_array_free(nodes, TRUE);
-    g_array_free(tables, TRUE);
+    ernic_vec_free(&nodes);
+    ernic_vec_free(&tables);
 }
 
 /*
@@ -1405,8 +1411,8 @@ static bool tcp_node_silent(const TcpBackendPrivate *priv,
  * nodes whose connection has ended and those that have stopped answering,
  * adding their ids to @dead, for the rest of the mesh to be told.
  */
-static void tcp_health_check_scan(TcpBackendPrivate *priv, GArray *items,
-                                  GArray *dead)
+static void tcp_health_check_scan(TcpBackendPrivate *priv, ErnicVec *items,
+                                  ErnicVec *dead)
 {
     GHashTableIter iter;
     gpointer value;
@@ -1457,12 +1463,12 @@ static void tcp_health_check_scan(TcpBackendPrivate *priv, GArray *items,
             tcp_gid_claims_report_alive(node->node_id, false);
         }
         if (newly_dead) {
-            g_array_append_val(dead, node->node_id);
+            ernic_vec_append(dead, &node->node_id);
         }
 
         /* Every reference taken above lands in items, to be released */
         if (item.conn) {
-            g_array_append_val(items, item);
+            ernic_vec_append(items, &item);
         }
     }
     qemu_mutex_unlock(&priv->mesh_table_lock);
@@ -1534,10 +1540,10 @@ static bool tcp_node_still_silent(TcpBackendPrivate *priv, uint32_t node_id)
  * node's side, if the node is still there to see it, and the node connects
  * to the manager again; the manager never connects to a node itself.
  */
-void tcp_health_check_retire(TcpBackendPrivate *priv, GArray *items)
+void tcp_health_check_retire(TcpBackendPrivate *priv, ErnicVec *items)
 {
-    for (guint i = 0; i < items->len; i++) {
-        TcpHealthCheckItem *item = &g_array_index(items, TcpHealthCheckItem, i);
+    for (size_t i = 0; i < ernic_vec_len(items); i++) {
+        TcpHealthCheckItem *item = ernic_vec_get(items, i);
 
         if (!item->disconnected &&
             !(item->silent && tcp_node_still_silent(priv, item->node_id))) {
@@ -1555,15 +1561,15 @@ void tcp_health_check_retire(TcpBackendPrivate *priv, GArray *items)
 }
 
 /* Drop the references the scan took, at the end of a pass. */
-static void tcp_health_check_release(GArray *items)
+static void tcp_health_check_release(ErnicVec *items)
 {
-    for (guint i = 0; i < items->len; i++) {
-        TcpHealthCheckItem *item = &g_array_index(items, TcpHealthCheckItem, i);
+    for (size_t i = 0; i < ernic_vec_len(items); i++) {
+        TcpHealthCheckItem *item = ernic_vec_get(items, i);
 
         tcp_connection_unref(item->conn);
         item->conn = NULL;
     }
-    g_array_set_size(items, 0);
+    ernic_vec_clear(items);
 }
 
 /*
@@ -1580,21 +1586,22 @@ static void tcp_health_check_release(GArray *items)
 void *tcp_manager_health_check_thread(void *opaque)
 {
     TcpBackendPrivate *priv = (TcpBackendPrivate *)opaque;
-    GArray *items = g_array_new(FALSE, FALSE, sizeof(TcpHealthCheckItem));
-    GArray *dead = g_array_new(FALSE, FALSE, sizeof(uint32_t));
+    ErnicVec items;
+    ErnicVec dead;
 
+    ernic_vec_init(&items, sizeof(TcpHealthCheckItem));
+    ernic_vec_init(&dead, sizeof(uint32_t));
     rdma_info_report("TCP: Manager health check thread started");
 
     while (atomic_load(&priv->health_check_running)) {
         /* The accept thread reaps too, but only when a peer connects */
         tcp_reap_pending_conns(priv);
 
-        tcp_health_check_scan(priv, items, dead);
-        tcp_health_check_retire(priv, items);
+        tcp_health_check_scan(priv, &items, &dead);
+        tcp_health_check_retire(priv, &items);
 
-        for (guint i = 0; i < items->len; i++) {
-            const TcpHealthCheckItem *item =
-                &g_array_index(items, TcpHealthCheckItem, i);
+        for (size_t i = 0; i < ernic_vec_len(&items); i++) {
+            const TcpHealthCheckItem *item = ernic_vec_get(&items, i);
             TcpConnection *conn = item->conn;
 
             if (conn) {
@@ -1602,7 +1609,7 @@ void *tcp_manager_health_check_thread(void *opaque)
                                    item->node_id);
             }
         }
-        tcp_health_check_release(items);
+        tcp_health_check_release(&items);
 
         /*
          * A node the scan declared dead had its claims marked not-alive,
@@ -1615,10 +1622,12 @@ void *tcp_manager_health_check_thread(void *opaque)
          * for once the node's connection is retired, so a worker told the
          * node is dead finds the manager has closed it.
          */
-        for (guint i = 0; i < dead->len; i++) {
-            tcp_broadcast_node(priv, g_array_index(dead, uint32_t, i));
+        for (size_t i = 0; i < ernic_vec_len(&dead); i++) {
+            const uint32_t *node_id = ernic_vec_get(&dead, i);
+
+            tcp_broadcast_node(priv, *node_id);
         }
-        g_array_set_size(dead, 0);
+        ernic_vec_clear(&dead);
 
         /*
          * Wait out the interval, or until tcp_stop_health_check_thread()
@@ -1640,8 +1649,8 @@ void *tcp_manager_health_check_thread(void *opaque)
         qemu_mutex_unlock(&priv->health_check_lock);
     }
 
-    g_array_free(dead, TRUE);
-    g_array_free(items, TRUE);
+    ernic_vec_free(&dead);
+    ernic_vec_free(&items);
     rdma_info_report("TCP: Manager health check thread exiting");
     return NULL;
 }

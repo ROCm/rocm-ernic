@@ -17,6 +17,7 @@
 #include "rdma/rdma_backend_tcp_priv.h"
 #include "byteorder.h"
 #include "ernic_time.h"
+#include "ernic_vec.h"
 #include "pvrdma/rdma_utils.h"
 #include "qemu/thread.h"
 #include <errno.h>
@@ -282,7 +283,7 @@ int tcp_worker_register_with_manager(TcpBackendPrivate *priv,
  */
 static void tcp_topology_targets(const TcpBackendPrivate *priv,
                                  const uint8_t *topo, uint32_t num_nodes,
-                                 GArray *targets)
+                                 ErnicVec *targets)
 {
     uint32_t local = tcp_local_node(priv);
 
@@ -322,7 +323,7 @@ static void tcp_topology_targets(const TcpBackendPrivate *priv,
         }
         target.node_id = peer_id;
         target.port = ernic_get_be16(entry + TCP_MESH_NODE_PORT_OFF);
-        g_array_append_val(targets, target);
+        ernic_vec_append(targets, &target);
     }
 }
 
@@ -335,17 +336,20 @@ static void tcp_topology_targets(const TcpBackendPrivate *priv,
 static void tcp_worker_set_peers(TcpBackendPrivate *priv, const uint8_t *topo,
                                  uint32_t num_nodes)
 {
-    GArray *targets = g_array_new(FALSE, FALSE, sizeof(TcpPeerTarget));
-    GArray *old;
+    ErnicVec targets;
+    ErnicVec old;
 
-    tcp_topology_targets(priv, topo, num_nodes, targets);
+    ernic_vec_init(&targets, sizeof(TcpPeerTarget));
+    tcp_topology_targets(priv, topo, num_nodes, &targets);
+    /* Hands the vectors' storage over, so nothing is allocated or freed under
+     * the lock */
     qemu_mutex_lock(&priv->peer_lock);
     old = priv->peer_targets;
     priv->peer_targets = targets;
     priv->peer_targets_changed = true;
     qemu_cond_signal(&priv->peer_cond);
     qemu_mutex_unlock(&priv->peer_lock);
-    g_array_free(old, TRUE);
+    ernic_vec_free(&old);
 }
 
 /*
@@ -356,9 +360,8 @@ static bool tcp_worker_peer_named(const TcpBackendPrivate *priv,
                                   uint32_t node_id, const char *host,
                                   uint16_t port) TSA_REQUIRES(priv->peer_lock)
 {
-    for (guint i = 0; i < priv->peer_targets->len; i++) {
-        const TcpPeerTarget *latest =
-            &g_array_index(priv->peer_targets, TcpPeerTarget, i);
+    for (size_t i = 0; i < ernic_vec_len(&priv->peer_targets); i++) {
+        const TcpPeerTarget *latest = ernic_vec_get(&priv->peer_targets, i);
 
         if (latest->node_id == node_id) {
             return latest->port == port && host &&
@@ -562,12 +565,13 @@ static bool tcp_worker_connect_peer(TcpBackendPrivate *priv,
  */
 static void tcp_worker_peer_sweep(TcpBackendPrivate *priv)
 {
-    GPtrArray *swept = g_ptr_array_new();
+    ErnicPtrVec swept;
     uint32_t local = tcp_local_node(priv);
     GHashTableIter iter;
     gpointer key;
     gpointer value;
 
+    ernic_ptr_vec_init(&swept);
     qemu_mutex_lock(&priv->peer_lock);
     qemu_mutex_lock(&priv->conn_table_lock);
     g_hash_table_iter_init(&iter, priv->connections);
@@ -593,18 +597,18 @@ static void tcp_worker_peer_sweep(TcpBackendPrivate *priv)
         /* Hands the table's reference over, as tcp_conn_table_take() does */
         g_hash_table_iter_steal(&iter);
         tcp_conn_unpublished(conn);
-        g_ptr_array_add(swept, conn);
+        ernic_ptr_vec_push(&swept, conn);
     }
     qemu_mutex_unlock(&priv->conn_table_lock);
     qemu_mutex_unlock(&priv->peer_lock);
 
-    for (guint i = 0; i < swept->len; i++) {
-        TcpConnection *conn = g_ptr_array_index(swept, i);
+    for (size_t i = 0; i < ernic_ptr_vec_len(&swept); i++) {
+        TcpConnection *conn = ernic_ptr_vec_get(&swept, i);
 
         tcp_retire_conn(conn);
         tcp_connection_unref(conn);
     }
-    g_ptr_array_free(swept, TRUE);
+    ernic_ptr_vec_free(&swept, NULL);
 }
 
 /*
@@ -618,13 +622,15 @@ static void tcp_worker_peer_sweep(TcpBackendPrivate *priv)
  * straight after.  Before each connect, the worker's connection to the
  * manager is checked (tcp_worker_manager_pass()).
  */
-static void tcp_worker_peer_pass(TcpBackendPrivate *priv, const GArray *targets)
+static void tcp_worker_peer_pass(TcpBackendPrivate *priv,
+                                 const ErnicVec *targets)
 {
     tcp_worker_peer_sweep(priv);
 
-    for (guint i = 0;
-         i < targets->len && atomic_load(&priv->peer_thread_running); i++) {
-        const TcpPeerTarget *target = &g_array_index(targets, TcpPeerTarget, i);
+    for (size_t i = 0;
+         i < ernic_vec_len(targets) && atomic_load(&priv->peer_thread_running);
+         i++) {
+        const TcpPeerTarget *target = ernic_vec_get(targets, i);
 
         if (tcp_has_live_connection(priv, target->node_id) ||
             !tcp_worker_peer_current(priv, target)) {
@@ -741,21 +747,20 @@ void tcp_worker_manager_pass(TcpBackendPrivate *priv)
 void *tcp_worker_peer_thread(void *opaque)
 {
     TcpBackendPrivate *priv = (TcpBackendPrivate *)opaque;
-    GArray *targets = g_array_new(FALSE, FALSE, sizeof(TcpPeerTarget));
+    ErnicVec targets;
 
+    ernic_vec_init(&targets, sizeof(TcpPeerTarget));
     rdma_info_report("TCP: Peer-connect thread started");
 
     while (atomic_load(&priv->peer_thread_running)) {
         tcp_worker_manager_pass(priv);
 
         qemu_mutex_lock(&priv->peer_lock);
-        g_array_set_size(targets, 0);
-        g_array_append_vals(targets, priv->peer_targets->data,
-                            priv->peer_targets->len);
+        ernic_vec_copy(&targets, &priv->peer_targets);
         priv->peer_targets_changed = false;
         qemu_mutex_unlock(&priv->peer_lock);
 
-        tcp_worker_peer_pass(priv, targets);
+        tcp_worker_peer_pass(priv, &targets);
 
         /*
          * Wait out the interval, or until an update arrives or
@@ -777,7 +782,7 @@ void *tcp_worker_peer_thread(void *opaque)
         qemu_mutex_unlock(&priv->peer_lock);
     }
 
-    g_array_free(targets, TRUE);
+    ernic_vec_free(&targets);
     rdma_info_report("TCP: Peer-connect thread exiting");
     return NULL;
 }

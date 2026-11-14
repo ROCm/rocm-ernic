@@ -20,6 +20,7 @@
 #include "ernic_alloc.h"
 #include "ernic_gnu.h"
 #include "ernic_time.h"
+#include "ernic_vec.h"
 #include "pvrdma/rdma_utils.h"
 #include "qemu/thread.h"
 #include "rocm-ernic-warnings.h"
@@ -185,20 +186,21 @@ TcpConnection *tcp_connection_lookup(TcpBackendPrivate *priv, uint32_t node_id)
 
 /*
  * Every connection in connections, each with a reference, which freeing the
- * array drops.  For sending to each with conn_table_lock dropped: a send can
- * wait on its peer, and every lookup on the data path takes the lock.
+ * vector with tcp_connection_destroy_notify() drops.  For sending to each
+ * with conn_table_lock dropped: a send can wait on its peer, and every lookup
+ * on the data path takes the lock.
  */
-GPtrArray *tcp_conns_snapshot(TcpBackendPrivate *priv)
+ErnicPtrVec tcp_conns_snapshot(TcpBackendPrivate *priv)
 {
-    GPtrArray *conns =
-        g_ptr_array_new_with_free_func(tcp_connection_destroy_notify);
+    ErnicPtrVec conns;
     GHashTableIter iter;
     gpointer value;
 
+    ernic_ptr_vec_init(&conns);
     qemu_mutex_lock(&priv->conn_table_lock);
     g_hash_table_iter_init(&iter, priv->connections);
     while (g_hash_table_iter_next(&iter, NULL, &value)) {
-        g_ptr_array_add(conns, tcp_connection_ref(value));
+        ernic_ptr_vec_push(&conns, tcp_connection_ref(value));
     }
     qemu_mutex_unlock(&priv->conn_table_lock);
     return conns;
@@ -1027,8 +1029,8 @@ void tcp_stop_accept_thread(TcpBackendPrivate *priv)
  * receive with end-of-file.  The descriptor stays open, so neither thread
  * can end up using a reused one; it's closed when conn is freed.
  */
-static void tcp_claim_conn_threads(GPtrArray *recv_batch, GPtrArray *send_batch,
-                                   TcpConnection *conn)
+static void tcp_claim_conn_threads(ErnicPtrVec *recv_batch,
+                                   ErnicPtrVec *send_batch, TcpConnection *conn)
 {
     bool recv_running = atomic_exchange(&conn->recv_thread_running, false);
     int fd = tcp_conn_sockfd_unlocked(conn);
@@ -1044,10 +1046,10 @@ static void tcp_claim_conn_threads(GPtrArray *recv_batch, GPtrArray *send_batch,
         shutdown(fd, SHUT_RDWR);
     }
     if (recv_running) {
-        g_ptr_array_add(recv_batch, conn);
+        ernic_ptr_vec_push(recv_batch, conn);
     }
     if (send_running) {
-        g_ptr_array_add(send_batch, conn);
+        ernic_ptr_vec_push(send_batch, conn);
     }
 }
 
@@ -1064,37 +1066,40 @@ static void tcp_claim_conn_threads(GPtrArray *recv_batch, GPtrArray *send_batch,
 void tcp_stop_recv_threads(TcpBackendPrivate *priv)
 {
     for (;;) {
-        GPtrArray *recv_batch = g_ptr_array_new();
-        GPtrArray *send_batch = g_ptr_array_new();
+        ErnicPtrVec recv_batch;
+        ErnicPtrVec send_batch;
         GHashTableIter iter;
         gpointer value;
 
+        ernic_ptr_vec_init(&recv_batch);
+        ernic_ptr_vec_init(&send_batch);
         qemu_mutex_lock(&priv->conn_table_lock);
         g_hash_table_iter_init(&iter, priv->connections);
         while (g_hash_table_iter_next(&iter, NULL, &value)) {
-            tcp_claim_conn_threads(recv_batch, send_batch, value);
+            tcp_claim_conn_threads(&recv_batch, &send_batch, value);
         }
-        for (guint i = 0; i < priv->pending_conns->len; i++) {
-            tcp_claim_conn_threads(recv_batch, send_batch,
-                                   g_ptr_array_index(priv->pending_conns, i));
+        for (size_t i = 0; i < ernic_ptr_vec_len(&priv->pending_conns); i++) {
+            tcp_claim_conn_threads(&recv_batch, &send_batch,
+                                   ernic_ptr_vec_get(&priv->pending_conns, i));
         }
         TcpConnection *mgr = atomic_load(&priv->manager_conn);
         if (mgr) {
-            tcp_claim_conn_threads(recv_batch, send_batch, mgr);
+            tcp_claim_conn_threads(&recv_batch, &send_batch, mgr);
         }
         qemu_mutex_unlock(&priv->conn_table_lock);
 
-        guint stopped = recv_batch->len + send_batch->len;
-        for (guint i = 0; i < recv_batch->len; i++) {
-            TcpConnection *conn = g_ptr_array_index(recv_batch, i);
+        size_t stopped =
+            ernic_ptr_vec_len(&recv_batch) + ernic_ptr_vec_len(&send_batch);
+        for (size_t i = 0; i < ernic_ptr_vec_len(&recv_batch); i++) {
+            TcpConnection *conn = ernic_ptr_vec_get(&recv_batch, i);
             qemu_thread_join(&conn->recv_thread);
         }
-        for (guint i = 0; i < send_batch->len; i++) {
-            TcpConnection *conn = g_ptr_array_index(send_batch, i);
+        for (size_t i = 0; i < ernic_ptr_vec_len(&send_batch); i++) {
+            TcpConnection *conn = ernic_ptr_vec_get(&send_batch, i);
             qemu_thread_join(&conn->send_thread);
         }
-        g_ptr_array_free(recv_batch, TRUE);
-        g_ptr_array_free(send_batch, TRUE);
+        ernic_ptr_vec_free(&recv_batch, NULL);
+        ernic_ptr_vec_free(&send_batch, NULL);
         if (stopped == 0) {
             return;
         }
@@ -1102,20 +1107,18 @@ void tcp_stop_recv_threads(TcpBackendPrivate *priv)
 }
 
 /*
- * Release the pending connections, and the list; their threads must already
- * be stopped.
+ * Release the pending connections, and the list's storage, leaving it
+ * empty; their threads must already be stopped.
  */
 void tcp_free_pending_conns(TcpBackendPrivate *priv)
 {
-    GPtrArray *pending;
+    ErnicPtrVec pending;
 
     /* Every thread that can reach the list has stopped */
     ROCM_ERNIC_WARN_THREAD_SAFETY_OFF
     pending = priv->pending_conns;
+    ernic_ptr_vec_init(&priv->pending_conns);
     ROCM_ERNIC_WARN_THREAD_SAFETY_ON
 
-    for (guint i = 0; i < pending->len; i++) {
-        tcp_connection_unref(g_ptr_array_index(pending, i));
-    }
-    g_ptr_array_free(pending, TRUE);
+    ernic_ptr_vec_free(&pending, tcp_connection_destroy_notify);
 }

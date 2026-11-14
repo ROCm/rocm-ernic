@@ -69,15 +69,16 @@ set(ERNIC_TEST_P4_FIXTURE_DIR ${CMAKE_CURRENT_SOURCE_DIR}/data/p4)
 
 # The TCP backend's sources. The list comes from the top-level
 # CMakeLists.txt, so the tests keep linking what the server links, plus
-# the allocators and GNU extensions it calls and the log, which the
-# allocators and the thread wrappers (qemu/thread.h) abort through. The
-# tests stub QEMU's reporters.
+# the allocators, growable arrays, and GNU extensions it calls and the
+# log, which the allocators and the thread wrappers (qemu/thread.h) abort
+# through. The tests stub QEMU's reporters.
 set(ERNIC_TCP_TEST_SOURCES ${TCP_BACKEND_SOURCES})
 list(TRANSFORM ERNIC_TCP_TEST_SOURCES PREPEND "${PROJECT_SOURCE_DIR}/")
 list(APPEND ERNIC_TCP_TEST_SOURCES
     ${PROJECT_SOURCE_DIR}/src/ernic_alloc.c
     ${PROJECT_SOURCE_DIR}/src/ernic_gnu.c
     ${PROJECT_SOURCE_DIR}/src/ernic_log.c
+    ${PROJECT_SOURCE_DIR}/src/ernic_vec.c
 )
 
 # -- test_pci_client (no extra dependencies) ---------------------
@@ -215,8 +216,9 @@ ernic_add_test_program(ernic-test-siphash
 )
 
 # The allocators that abort when out of memory (ernic_alloc.h), and the
-# log they abort through. It fails malloc() and calloc() on demand: the
-# linker routes the calls in its own objects through wrappers in the test.
+# log they abort through. It fails malloc(), calloc(), and realloc() on
+# demand: the linker routes the calls in its own objects through wrappers
+# in the test.
 ernic_add_test_program(ernic-test-ernic-alloc
     SOURCES
         test_ernic_alloc.c
@@ -225,7 +227,7 @@ ernic_add_test_program(ernic-test-ernic-alloc
     DEPS pthread
 )
 target_link_options(ernic-test-ernic-alloc PRIVATE
-    "LINKER:--wrap=malloc,--wrap=calloc")
+    "LINKER:--wrap=malloc,--wrap=calloc,--wrap=realloc")
 
 # The memory the server shares with its client (ernic_shm.h), and the GNU
 # extensions it's made with. It fails each call that can fail on demand:
@@ -252,6 +254,19 @@ ernic_add_test_program(ernic-test-ernic-map
         ${PROJECT_SOURCE_DIR}/src/ernic_siphash.c
     DEPS pthread
 )
+
+# The growable arrays (ernic_vec.h). It links the allocators and the log,
+# which the arrays abort through, and fails realloc() on demand: the linker
+# routes the calls in its own objects through a wrapper in the test.
+ernic_add_test_program(ernic-test-ernic-vec
+    SOURCES
+        test_ernic_vec.c
+        ${PROJECT_SOURCE_DIR}/src/ernic_alloc.c
+        ${PROJECT_SOURCE_DIR}/src/ernic_log.c
+        ${PROJECT_SOURCE_DIR}/src/ernic_vec.c
+    DEPS pthread
+)
+target_link_options(ernic-test-ernic-vec PRIVATE "LINKER:--wrap=realloc")
 
 # P4 engine test. The engine is frames-in/frames-out, so this links the
 # engine's own translation units and nothing else -- no device, no guest
@@ -964,6 +979,9 @@ ernic_add_unit_test(ernic-shm-unit ernic-test-ernic-shm TIMEOUT 30)
 
 # The hash maps: insert, replace, remove, walk, and growth
 ernic_add_unit_test(ernic-map-unit ernic-test-ernic-map TIMEOUT 30)
+
+# The growable arrays: push, get, remove, copy, growth, and each abort
+ernic_add_unit_test(ernic-vec-unit ernic-test-ernic-vec TIMEOUT 30)
 
 # P4 engine unit test: port model, frame bounds, and the no-program path.
 if(ERNIC_BUILD_P4)

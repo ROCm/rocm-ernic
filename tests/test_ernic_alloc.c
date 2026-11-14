@@ -1,18 +1,21 @@
 /*
  * Unit tests for the allocation helpers (ernic_alloc.h).
  *
- * Each helper is checked for what it returns: a zeroed array, a copy cut
- * at the right length, a formatted string, and a usable block for a zero
- * size.  The copies are checked under ASan for reading no further than
- * they should, from a buffer with no terminator.
+ * Each helper is checked for what it returns: a zeroed array, a resized
+ * array with its contents kept, a copy cut at the right length, a formatted
+ * string, and a usable block for a zero size.  The copies are checked under
+ * ASan for reading no further than they should, from a buffer with no
+ * terminator.
  *
- * The program is linked with --wrap=malloc,--wrap=calloc
+ * The program is linked with --wrap=malloc,--wrap=calloc,--wrap=realloc
  * (tests/CMakeLists.txt), so a case can fail the next allocation.  Every
- * helper must then abort, as must ernic_xcalloc() given an array too large
- * for a size_t and ernic_xasprintf() given arguments it can't format.  Each
+ * helper must then abort, as must ernic_xcalloc() and ernic_xreallocarray()
+ * given an array too large for a size_t and ernic_xasprintf() given
+ * arguments it can't format.  Each
  * of those runs in a child process, which must die by SIGABRT.  The
  * wrappers also return NULL for an allocation of nothing, as the C library
- * may, so a helper that passed a zero size on would abort.
+ * may (realloc() freeing the block first, as glibc's does), so a helper that
+ * passed a zero size on would abort.
  *
  * Copyright (C) Advanced Micro Devices, Inc.
  * SPDX-License-Identifier: GPL-2.0-or-later
@@ -38,7 +41,7 @@
 
 static int failures;
 
-/* While set, the next malloc() or calloc() fails and clears it */
+/* While set, the next malloc(), calloc(), or realloc() fails and clears it */
 static bool fail_next_alloc;
 
 static void check(bool ok, const char *what)
@@ -60,6 +63,8 @@ void *__real_malloc(size_t size);
 void *__real_calloc(size_t nmemb, size_t size);
 void *__wrap_malloc(size_t size);
 void *__wrap_calloc(size_t nmemb, size_t size);
+void *__real_realloc(void *ptr, size_t size);
+void *__wrap_realloc(void *ptr, size_t size);
 
 void *__wrap_malloc(size_t size)
 {
@@ -79,6 +84,20 @@ void *__wrap_calloc(size_t nmemb, size_t size)
         return NULL;
     }
     return nmemb && size ? __real_calloc(nmemb, size) : NULL;
+}
+
+void *__wrap_realloc(void *ptr, size_t size)
+{
+    if (fail_next_alloc) {
+        fail_next_alloc = false;
+        errno = ENOMEM;
+        return NULL;
+    }
+    if (size == 0) {
+        free(ptr);
+        return NULL;
+    }
+    return __real_realloc(ptr, size);
 }
 /* NOLINTEND(misc-use-internal-linkage) */
 /* NOLINTEND(bugprone-reserved-identifier,cert-dcl37-c,cert-dcl51-cpp) */
@@ -116,6 +135,33 @@ static void test_xcalloc(void)
     free(a);
     a = ernic_xcalloc(4, 0);
     check(a != NULL, "xcalloc: zero-size elements gave NULL");
+    free(a);
+}
+
+static void test_xreallocarray(void)
+{
+    uint32_t *a = ernic_xreallocarray(NULL, 4, sizeof(*a));
+    bool kept = true;
+
+    for (uint32_t i = 0; i < 4; i++) {
+        a[i] = i + 1;
+    }
+    /* Far enough that the block is likely to move */
+    a = ernic_xreallocarray(a, 1U << 16, sizeof(*a));
+    a[(1U << 16) - 1] = 7;
+    for (uint32_t i = 0; i < 4; i++) {
+        if (a[i] != i + 1) {
+            kept = false;
+        }
+    }
+    check(kept, "xreallocarray: contents kept growing");
+    a = ernic_xreallocarray(a, 2, sizeof(*a));
+    check(a[0] == 1 && a[1] == 2, "xreallocarray: contents kept shrinking");
+
+    a = ernic_xreallocarray(a, 0, sizeof(*a));
+    check(a != NULL, "xreallocarray: zero elements gave NULL");
+    a = ernic_xreallocarray(a, 4, 0);
+    check(a != NULL, "xreallocarray: zero-size elements gave NULL");
     free(a);
 }
 
@@ -236,6 +282,17 @@ static void xcalloc_overflow(void)
     free(ernic_xcalloc((SIZE_MAX / 8) + 1, 8));
 }
 
+static void xreallocarray_no_memory(void)
+{
+    fail_next_alloc = true;
+    free(ernic_xreallocarray(NULL, 4, 4));
+}
+
+static void xreallocarray_overflow(void)
+{
+    free(ernic_xreallocarray(NULL, (SIZE_MAX / 8) + 1, 8));
+}
+
 static void xstrdup_no_memory(void)
 {
     fail_next_alloc = true;
@@ -266,6 +323,7 @@ int main(void)
 {
     test_xmalloc();
     test_xcalloc();
+    test_xreallocarray();
     test_xstrdup();
     test_xstrndup();
     test_xasprintf();
@@ -274,6 +332,8 @@ int main(void)
     expect_abort(xmalloc_zero_no_memory, "xmalloc of 0 out of memory");
     expect_abort(xcalloc_no_memory, "xcalloc out of memory");
     expect_abort(xcalloc_overflow, "xcalloc overflow");
+    expect_abort(xreallocarray_no_memory, "xreallocarray out of memory");
+    expect_abort(xreallocarray_overflow, "xreallocarray overflow");
     expect_abort(xstrdup_no_memory, "xstrdup out of memory");
     expect_abort(xstrndup_no_memory, "xstrndup out of memory");
     expect_abort(xasprintf_no_memory, "xasprintf out of memory");

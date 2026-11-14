@@ -1,8 +1,8 @@
 /*
  * Allocation that aborts when out of memory.  See ernic_alloc.h.
  *
- * Every allocation here goes through malloc() or calloc(), so a test that
- * fails them with --wrap reaches these too.
+ * Every allocation here goes through malloc(), calloc(), or realloc(), so a
+ * test that fails them with --wrap reaches these too.
  *
  * Copyright (C) Advanced Micro Devices, Inc.
  * SPDX-License-Identifier: GPL-2.0-or-later
@@ -49,6 +49,26 @@ void *ernic_xcalloc(size_t nmemb, size_t size)
     p = calloc(nmemb, size);
     if (!p) {
         ernic_log_fatal("out of memory allocating %zu elements of %zu bytes",
+                        nmemb, size);
+    }
+    return p;
+}
+
+void *ernic_xreallocarray(void *ptr, size_t nmemb, size_t size)
+{
+    size_t bytes;
+    void *p;
+
+    if (size != 0 && nmemb > SIZE_MAX / size) {
+        ernic_log_fatal("an array of %zu elements of %zu bytes is too large",
+                        nmemb, size);
+    }
+    bytes = nmemb * size;
+    /* realloc() to nothing may free the block and return NULL */
+    p = realloc(ptr, bytes ? bytes : 1);
+    if (!p) {
+        ernic_log_fatal("out of memory resizing an array to %zu elements of "
+                        "%zu bytes",
                         nmemb, size);
     }
     return p;
