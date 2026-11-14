@@ -190,9 +190,7 @@ workflow for their environment).
   literal. `htons()`/`htonl()` are still right for `struct sockaddr_in`.
   Don't copy `src/p4/p4_devcmd.c`, which predates this.
 - **Allocate with `malloc()` and its family**, never GLib's
-  (`g_new0()`, `g_strdup()`, `g_malloc()`), and free with `free()`;
-  only what GLib returns (e.g. `g_key_file_get_string()`) is freed with
-  `g_free()`:
+  (`g_new0()`, `g_strdup()`, `g_malloc()`), and free with `free()`:
   - A fixed-size internal allocation, where running out of memory leaves
     nothing to do but stop, may use
     [`src/ernic_alloc.h`](src/ernic_alloc.h)'s `ernic_xmalloc()`,
@@ -397,6 +395,10 @@ new general patterns here when a scanner reports one.
   (`ionic_eth_emu_queue_rx_frame()` in `tests/test_ionic_cq_arm.c`) makes
   a bare call in `src/` "have no effect". Check the result, or cast the
   call to `(void)` with a comment saying why, as `dp_s3_tx_frame()` does.
+- **Changing a `for` loop's counter in its body**
+  (`cpp/loop-variable-changed`), e.g. an `i++` to step over an escape's
+  second character: when the body decides how far to advance, write a
+  `while` loop.
 - **A Python variable assigned only in a `try`**
   (`py/uninitialized-local-variable`), even when the `except` path exits
   through a later check: CodeQL doesn't follow that check. Give every
