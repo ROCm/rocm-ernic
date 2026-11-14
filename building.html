@@ -417,14 +417,12 @@ needs:</p>
 <li><p>libvfio-user, built from source (see below), which needs Meson,
 Ninja, and cmocka to build</p></li>
 <li><p>libibverbs and librdmacm development packages</p></li>
-<li><p>GLib 2.0 development package</p></li>
 <li><p>json-c development package. libvfio-user needs it, and with
 <code class="docutils literal notranslate"><span class="pre">ERNIC_BUILD_P4</span></code> rocm-ernic links it too.</p></li>
 </ul>
 <p>Install them on Ubuntu/Debian:</p>
 <div class="highlight-bash notranslate"><div class="highlight"><pre><span></span>sudo<span class="w"> </span>apt<span class="w"> </span>install<span class="w"> </span>cmake<span class="w"> </span>meson<span class="w"> </span>ninja-build<span class="w"> </span>pkg-config<span class="w"> </span><span class="se">\</span>
-<span class="w">  </span>libibverbs-dev<span class="w"> </span>librdmacm-dev<span class="w"> </span>libglib2.0-dev<span class="w"> </span>libjson-c-dev<span class="w"> </span><span class="se">\</span>
-<span class="w">  </span>libcmocka-dev
+<span class="w">  </span>libibverbs-dev<span class="w"> </span>librdmacm-dev<span class="w"> </span>libjson-c-dev<span class="w"> </span>libcmocka-dev
 </pre></div>
 </div>
 <p>Build and install <code class="docutils literal notranslate"><span class="pre">libvfio-user</span></code> if it is not already
@@ -796,9 +794,8 @@ ctest<span class="w"> </span>--test-dir<span class="w"> </span>build-asan
 </pre></div>
 </div>
 <p>The sanitizers instrument everything rocm-ernic compiles.
-Libraries that come from
-the system, such as libvfio-user, GLib, and libibverbs, are not
-instrumented.</p>
+Libraries that come from the system, such as libvfio-user,
+json-c, and libibverbs, are not instrumented.</p>
 <p>Every sanitizer report is fatal, so a test with a report fails.
 Each program sets some of the sanitizers’ run-time options, such
 as the one that turns on GCC’s <code class="docutils literal notranslate"><span class="pre">pointer-compare</span></code> and
@@ -922,7 +919,7 @@ cmake<span class="w"> </span>--build<span class="w"> </span>build<span class="w"
 </div>
 <p>The generated HTML is written to <code class="docutils literal notranslate"><span class="pre">build/docs/html/</span></code>.</p>
 <p>To build documentation without needing a C compiler or the
-project’s library dependencies (libvfio-user, glib,
+project’s library dependencies (libvfio-user, json-c,
 libibverbs):</p>
 <div class="highlight-bash notranslate"><div class="highlight"><pre><span></span>cmake<span class="w"> </span>-B<span class="w"> </span>build<span class="w"> </span>-DERNIC_DOCS_ONLY<span class="o">=</span>ON<span class="w"> </span><span class="se">\</span>
 <span class="w">  </span>-DERNIC_BUILD_DOCS<span class="o">=</span>ON

@@ -18,7 +18,6 @@ needs:
 - libvfio-user, built from source (see below), which needs Meson,
   Ninja, and cmocka to build
 - libibverbs and librdmacm development packages
-- GLib 2.0 development package
 - json-c development package. libvfio-user needs it, and with
   ``ERNIC_BUILD_P4`` rocm-ernic links it too.
 
@@ -27,8 +26,7 @@ Install them on Ubuntu/Debian:
 .. code-block:: bash
 
    sudo apt install cmake meson ninja-build pkg-config \
-     libibverbs-dev librdmacm-dev libglib2.0-dev libjson-c-dev \
-     libcmocka-dev
+     libibverbs-dev librdmacm-dev libjson-c-dev libcmocka-dev
 
 Build and install ``libvfio-user`` if it is not already
 available on your system. Its setup needs cmocka, though only its
@@ -396,9 +394,8 @@ for example, the sanitizer runtimes aren't installed:
    ctest --test-dir build-asan
 
 The sanitizers instrument everything rocm-ernic compiles.
-Libraries that come from
-the system, such as libvfio-user, GLib, and libibverbs, are not
-instrumented.
+Libraries that come from the system, such as libvfio-user,
+json-c, and libibverbs, are not instrumented.
 
 Every sanitizer report is fatal, so a test with a report fails.
 Each program sets some of the sanitizers' run-time options, such
@@ -551,7 +548,7 @@ environment is created automatically in the build tree.
 The generated HTML is written to ``build/docs/html/``.
 
 To build documentation without needing a C compiler or the
-project's library dependencies (libvfio-user, glib,
+project's library dependencies (libvfio-user, json-c,
 libibverbs):
 
 .. code-block:: bash
