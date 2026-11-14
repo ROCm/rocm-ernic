@@ -7930,6 +7930,24 @@ static bool has_send_thread(TcpBackendPrivate *priv, uint32_t id)
     return started;
 }
 
+/*
+ * How many messages conn's send queue holds, or SIZE_MAX if its tail isn't
+ * the last message on it.
+ */
+static size_t sendq_length(const TcpConnection *conn)
+    TSA_REQUIRES(conn->sendq_lock)
+{
+    const TcpQueuedMsg *last = NULL;
+    size_t n = 0;
+
+    for (const TcpQueuedMsg *msg = conn->sendq_head; msg != NULL;
+         msg = msg->next) {
+        last = msg;
+        n++;
+    }
+    return last == conn->sendq_tail ? n : SIZE_MAX;
+}
+
 static void *lt_stop(void *opaque)
 {
     tcp_stop_recv_threads(opaque);
@@ -9064,7 +9082,7 @@ static const char *wl_cancel(RdmaBackendDev *dev, TcpConnection *old)
                                       UINT64_C(0xffffffff00000000));
     qemu_mutex_lock(&old->sendq_lock);
     /* The message being written is off the queue, but still counted */
-    cancelled = old->sendq.length == 0 &&
+    cancelled = sendq_length(old) == 0 &&
                 old->sendq_bytes == WL_STUCK_LEN + sizeof(hdr);
     qemu_mutex_unlock(&old->sendq_lock);
     return cancelled ? NULL : "the request wasn't cancelled";
@@ -9701,7 +9719,7 @@ static const char *st_cancel(struct mgr_fixture *fx)
     RdmaBackendDev dev;
     size_t want = 100 + 16; /* the message being written, with its header */
     const char *why = NULL;
-    GList *link;
+    const TcpQueuedMsg *msg;
 
     memset(&dev, 0, sizeof(dev));
     dev.backend_private = fx->priv;
@@ -9726,10 +9744,8 @@ static const char *st_cancel(struct mgr_fixture *fx)
     rdma_backend_ops_tcp.mesh->cancel(&dev, ST_TAG(6, 4), UINT64_MAX);
 
     qemu_mutex_lock(&conn->sendq_lock);
-    link = conn->sendq.head;
+    msg = conn->sendq_head;
     for (size_t i = 0; !why && i < sizeof(queued) / sizeof(queued[0]); i++) {
-        const TcpQueuedMsg *msg = link ? link->data : NULL;
-
         if (!queued[i].kept) {
             continue;
         }
@@ -9737,10 +9753,14 @@ static const char *st_cancel(struct mgr_fixture *fx)
             msg->reply != queued[i].reply || msg->len != queued[i].len + 16U) {
             why = "the queue doesn't hold what wasn't cancelled, in order";
         }
-        link = link ? link->next : NULL;
+        msg = msg ? msg->next : NULL;
     }
-    if (!why && link) {
+    if (!why && msg) {
         why = "a cancelled request is still queued";
+    }
+    /* The first and last were cancelled, so both ends moved */
+    if (!why && sendq_length(conn) == SIZE_MAX) {
+        why = "the queue's tail isn't its last message";
     }
     if (!why && conn->sendq_bytes != want) {
         why = "the queue's byte count is wrong";
@@ -9783,7 +9803,7 @@ static const char *st_too_long(struct mgr_fixture *fx)
     }
     qemu_mutex_lock(&conn->sendq_lock);
     bytes = conn->sendq_bytes;
-    queued = conn->send_thread_started || conn->sendq.length != 0;
+    queued = conn->send_thread_started || sendq_length(conn) != 0;
     qemu_mutex_unlock(&conn->sendq_lock);
     return bytes == 0 && !queued ? NULL : "something was queued";
 }
@@ -9894,18 +9914,19 @@ static const char *st_steady(struct mgr_fixture *fx)
  */
 #define ST_FLOOD 100
 
-static int st_queued(TcpConnection *conn, TcpMsgType msg_type, guint *all)
+static int st_queued(TcpConnection *conn, TcpMsgType msg_type, size_t *all)
 {
     int n = 0;
 
     qemu_mutex_lock(&conn->sendq_lock);
-    for (GList *link = conn->sendq.head; link != NULL; link = link->next) {
-        if (((const TcpQueuedMsg *)link->data)->msg_type == msg_type) {
+    for (const TcpQueuedMsg *msg = conn->sendq_head; msg != NULL;
+         msg = msg->next) {
+        if (msg->msg_type == msg_type) {
             n++;
         }
     }
     if (all) {
-        *all = conn->sendq.length;
+        *all = sendq_length(conn);
     }
     qemu_mutex_unlock(&conn->sendq_lock);
     return n;
@@ -9940,7 +9961,7 @@ static bool st_drained(int fd)
 static const char *st_coalesce(struct mgr_fixture *fx)
 {
     TcpConnection *conn = fx->old[0];
-    guint all;
+    size_t all;
 
     /* Alive, so its heartbeats revive nothing and start no broadcast */
     fx->node[0]->is_alive = true;
@@ -9980,7 +10001,7 @@ static const char *st_unpublish(struct mgr_fixture *fx)
     TcpConnection *conn = fx->old[0];
     const char *why = NULL;
     bool taken, closed;
-    guint queued;
+    size_t queued;
     size_t bytes;
     int rc;
 
@@ -10004,7 +10025,7 @@ static const char *st_unpublish(struct mgr_fixture *fx)
 
     qemu_mutex_lock(&conn->sendq_lock);
     closed = conn->sendq_closed;
-    queued = conn->sendq.length;
+    queued = sendq_length(conn);
     bytes = conn->sendq_bytes;
     qemu_mutex_unlock(&conn->sendq_lock);
     if (!closed || queued != 0 || bytes != 0) {
@@ -10030,8 +10051,8 @@ static const char *st_unpublish(struct mgr_fixture *fx)
 static const char *st_no_memory(struct mgr_fixture *fx)
 {
     TcpConnection *conn = fx->old[0];
-    guint queued_before;
-    guint queued;
+    size_t queued_before;
+    size_t queued;
     size_t bytes_before;
     size_t bytes;
     bool sent, consumed;
@@ -10045,7 +10066,7 @@ static const char *st_no_memory(struct mgr_fixture *fx)
     }
 
     qemu_mutex_lock(&conn->sendq_lock);
-    queued_before = conn->sendq.length;
+    queued_before = sendq_length(conn);
     bytes_before = conn->sendq_bytes;
     qemu_mutex_unlock(&conn->sendq_lock);
 
@@ -10062,7 +10083,7 @@ static const char *st_no_memory(struct mgr_fixture *fx)
     }
 
     qemu_mutex_lock(&conn->sendq_lock);
-    queued = conn->sendq.length;
+    queued = sendq_length(conn);
     bytes = conn->sendq_bytes;
     qemu_mutex_unlock(&conn->sendq_lock);
     if (queued != queued_before || bytes != bytes_before) {

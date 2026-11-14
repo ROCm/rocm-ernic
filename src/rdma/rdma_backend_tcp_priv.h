@@ -710,7 +710,9 @@ struct TcpBackendPrivate {
  * heartbeat or its answer, which has no payload (see tcp_send_heartbeat()).
  * It is from malloc(), not ernic_xmalloc(): see tcp_queued_msg_new().
  */
-typedef struct {
+typedef struct TcpQueuedMsg {
+    /* The next on the queue, or NULL at its tail; under sendq_lock */
+    struct TcpQueuedMsg *next;
     uint32_t msg_type; /* a TcpMsgType */
     uint32_t seq;
     uint32_t src_node;
@@ -820,6 +822,10 @@ struct TcpConnection {
      * sendq_cond is signalled when a message is queued and when the queue
      * is closed.
      *
+     * The queue is a list of TcpQueuedMsg linked through next, from
+     * sendq_head to sendq_tail, both NULL when it is empty.  Linking a
+     * message in allocates nothing.
+     *
      * sendq_bytes counts each message's payload until it has been written.
      * sendq_closed is set, never cleared, when the connection leaves its
      * table or manager_conn (tcp_conn_unpublished()), when it is retired, or
@@ -828,7 +834,8 @@ struct TcpConnection {
      * and send_thread_started is set while there is a thread to join.
      */
     QemuCond sendq_cond;
-    GQueue sendq TSA_GUARDED_BY(sendq_lock); /* of TcpQueuedMsg */
+    TcpQueuedMsg *sendq_head TSA_GUARDED_BY(sendq_lock);
+    TcpQueuedMsg *sendq_tail TSA_GUARDED_BY(sendq_lock);
     size_t sendq_bytes TSA_GUARDED_BY(sendq_lock);
     bool sendq_closed TSA_GUARDED_BY(sendq_lock);
     bool send_thread_started TSA_GUARDED_BY(sendq_lock);
