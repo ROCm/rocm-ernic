@@ -30,7 +30,7 @@ EXCLUDED_CHECK_IDS = {
     'checkersReport',
     'syntaxError',                  # Can't parse complex macro constructs
     'preprocessorErrorDirective',   # Intentional #error guards / macro failures
-    'unknownMacro',                 # Doesn't understand project/glib macros
+    'unknownMacro',                 # Doesn't understand project macros
     # Cppcheck false positives in idiomatic C
     'arithOperationsOnVoidPointer', # GNU C extension, intentional in networking code
     'subtractPointers',             # container_of style pointer arithmetic

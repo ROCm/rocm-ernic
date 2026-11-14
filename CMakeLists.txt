@@ -32,7 +32,7 @@ project(rocm-ernic
 list(APPEND CMAKE_MODULE_PATH ${PROJECT_SOURCE_DIR}/cmake)
 
 # Docs-only mode: build documentation without requiring a C compiler,
-# libvfio-user, glib, or libibverbs.
+# libvfio-user, json-c, or libibverbs.
 option(ERNIC_DOCS_ONLY
   "Only configure documentation targets"
   OFF)
@@ -127,18 +127,9 @@ else()
       "${VFIO_USER_VERSION}")
 endif()
 
-# -- glib-2.0 ----------------------------------------------------
-# Not REQUIRED, which would stop the configure before the message below
-# could say what to install; likewise libibverbs.
-pkg_check_modules(GLIB2 glib-2.0)
-if(NOT GLIB2_FOUND)
-    message(FATAL_ERROR
-      "glib-2.0 not found. Install libglib2.0-dev "
-      "(Ubuntu/Debian) or glib2-devel (Fedora/RHEL)."
-    )
-endif()
-
 # -- libibverbs ---------------------------------------------------
+# Not REQUIRED, which would stop the configure before the message below
+# could say what to install.
 pkg_check_modules(IBVERBS libibverbs)
 if(NOT IBVERBS_FOUND)
     message(FATAL_ERROR
@@ -326,7 +317,6 @@ target_include_directories(rocm-ernic PRIVATE
 # stay quiet
 target_include_directories(rocm-ernic SYSTEM PRIVATE
     ${VFIO_USER_INCLUDE_DIRS}
-    ${GLIB2_INCLUDE_DIRS}
     ${ERNIC_IBVERBS_INCLUDE_DIRS}
 )
 
@@ -335,19 +325,13 @@ target_compile_definitions(rocm-ernic PRIVATE
     GIT_SHA_SHORT="${ERNIC_GIT_SHA_SHORT}"
 )
 
-target_compile_options(rocm-ernic PRIVATE
-    ${GLIB2_CFLAGS_OTHER}
-)
-
 target_link_directories(rocm-ernic PRIVATE
     ${VFIO_USER_LIBRARY_DIRS}
-    ${GLIB2_LIBRARY_DIRS}
     ${IBVERBS_LIBRARY_DIRS}
 )
 
 target_link_libraries(rocm-ernic PRIVATE
     ${VFIO_USER_LINK_LIBRARIES}
-    ${GLIB2_LIBRARIES}
     ${IBVERBS_LIBRARIES}
 )
 
@@ -424,7 +408,6 @@ if(PROJECT_IS_TOP_LEVEL)
           "${VFIO_USER_FALLBACK_LIB} (fallback)")
     endif()
     message(STATUS "    Private libvfio-user : ${ERNIC_BUNDLE_VFIO_USER}")
-    message(STATUS "    glib-2.0     : ${GLIB2_VERSION}")
     message(STATUS "    libibverbs   : ${IBVERBS_VERSION}")
     message(STATUS "")
     message(STATUS "  Sanitizers:")

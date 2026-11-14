@@ -36,7 +36,6 @@ function(ernic_add_fuzz_replay harness)
             ${ERNIC_FUZZ_DIR}/fuzz_${harness}.c
             fuzz_replay_main.c
             ${ARGN}
-        DEPS glib
     )
     target_include_directories(${target} PRIVATE ${ERNIC_FUZZ_DIR})
 

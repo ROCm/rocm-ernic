@@ -140,7 +140,6 @@ jobs:
             git \
             jq \
             libcmocka-dev \
-            libglib2.0-dev \
             libibverbs-dev \
             libjson-c-dev \
             librdmacm-dev \

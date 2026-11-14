@@ -1116,9 +1116,9 @@ Adding New Tests
    ``ernic_add_test_program()`` (``cmake/ErnicTesting.cmake``),
    which gives it the project's warning, hardening and
    sanitizer flags and include directories. ``DEPS`` names the
-   libraries it links (``glib``, ``ibverbs``, ``vfio-user``,
-   ``json-c``, ``pthread``) and ``HEADER_DEPS`` those whose
-   headers it only includes. Where a family of tests links the
+   libraries it links (``ibverbs``, ``vfio-user``, ``json-c``,
+   ``pthread``) and ``HEADER_DEPS`` those whose headers it
+   only includes. Where a family of tests links the
    same part of ``src/``, use its list from the top of the file
    (``ERNIC_TEST_ADMINQ_SOURCES``, for one).
 3. Register a test that runs the program on its own with
@@ -1134,8 +1134,7 @@ Examples:
        SOURCES
            test_new_feature.c
            ${ERNIC_TEST_ADMINQ_SOURCES}
-       DEPS glib
-       HEADER_DEPS vfio-user
+       HEADER_DEPS vfio-user ibverbs
    )
    ernic_add_unit_test(new-feature-unit ernic-test-new-feature
        TIMEOUT 30)

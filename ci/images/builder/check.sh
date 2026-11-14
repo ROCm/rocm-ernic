@@ -57,7 +57,7 @@ cache=$(ldconfig -p)
 [[ $cache == *libvfio-user.so* ]] ||
     fail "the dynamic linker can't find libvfio-user"
 
-for pkg in glib-2.0 json-c libibverbs librdmacm; do
+for pkg in json-c libibverbs librdmacm; do
     pkg-config --exists "$pkg" || fail "pkg-config can't find $pkg"
 done
 

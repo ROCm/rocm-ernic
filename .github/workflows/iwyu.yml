@@ -79,7 +79,6 @@ jobs:
             iwyu
             libibverbs-dev
             librdmacm-dev
-            libglib2.0-dev
             libjson-c-dev
 
       # The same key and paths as the Build and Test workflow, so the two

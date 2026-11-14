@@ -27,8 +27,6 @@
 #include <sys/types.h>
 #include <unistd.h>
 
-#include <glib.h>
-
 #include "ernic_limits.h"
 #include "ernic_stats.h"
 #include "s3_alloc_fail.h"
@@ -36,6 +34,9 @@
 
 #define DIR_TEMPLATE "/tmp/ernic-stats-XXXXXX"
 #define STATS_NAME   "ernic.stats"
+
+/* Longer than any file a case reads */
+#define FILE_MAX 16384
 
 /* How every file with no QPs ends; one cut short doesn't. */
 static const char WHOLE_TAIL[] = "Per-QP Statistics:\n"
@@ -120,23 +121,54 @@ static int count_entries(const char *dir)
     return n;
 }
 
-/* The file's contents, to g_free(), or NULL if it can't be read. */
+/* The file's contents, to free(), or NULL if it can't be read or is
+ * FILE_MAX bytes or longer. */
 static char *read_file(const char *path)
 {
-    char *text = NULL;
+    FILE *fp = fopen(path, "re"); /* e: O_CLOEXEC */
+    char *text = malloc(FILE_MAX);
+    size_t len = 0;
 
-    if (!g_file_get_contents(path, &text, NULL, NULL)) {
-        return NULL;
+    if (fp && text) {
+        len = fread(text, 1, FILE_MAX, fp);
+    }
+    if (!fp || !text || ferror(fp) || len == FILE_MAX) {
+        free(text);
+        text = NULL;
+    } else {
+        text[len] = '\0';
+    }
+    if (fp) {
+        (void)fclose(fp);
     }
     return text;
+}
+
+/* Write @len bytes of @data to a new file at @path. */
+static bool write_file(const char *path, const char *data, size_t len)
+{
+    /* With _FORTIFY_SOURCE, glibc 2.40 and later give Clang an
+     * open(path, flags, mode) overload, and android-cloexec-open looks for
+     * O_CLOEXEC in its mode */
+    /* NOLINTBEGIN(android-cloexec-open) */
+    int fd = open(path, O_WRONLY | O_CREAT | O_EXCL | O_CLOEXEC, 0600);
+    /* NOLINTEND(android-cloexec-open) */
+    bool ok;
+
+    if (fd < 0) {
+        return false;
+    }
+    ok = write(fd, data, len) == (ssize_t)len;
+    return close(fd) == 0 && ok;
 }
 
 /* Whether @text has the stats file's opening and its write count is @count. */
 static bool has_count(const char *text, uint64_t count)
 {
+    static const char OPENING[] = "=== ROCm ERNIC Statistics ===\n";
     char line[64];
 
-    if (!text || !g_str_has_prefix(text, "=== ROCm ERNIC Statistics ===\n")) {
+    if (!text || strncmp(text, OPENING, sizeof(OPENING) - 1) != 0) {
         return false;
     }
     test_fmt(line, sizeof(line), "\nWrite count : %" PRIu64 "\n", count);
@@ -147,7 +179,14 @@ static bool has_count(const char *text, uint64_t count)
  * @count. */
 static bool whole_file(const char *text, uint64_t count)
 {
-    return has_count(text, count) && g_str_has_suffix(text, WHOLE_TAIL);
+    size_t len;
+
+    if (!has_count(text, count)) {
+        return false;
+    }
+    len = strlen(text);
+    return len >= sizeof(WHOLE_TAIL) - 1 &&
+           strcmp(text + len - (sizeof(WHOLE_TAIL) - 1), WHOLE_TAIL) == 0;
 }
 
 typedef struct {
@@ -162,7 +201,7 @@ static void probe_section(FILE *fp, void *opaque)
     Probe *p = opaque;
 
     if (p->look) {
-        g_free(p->seen);
+        free(p->seen);
         p->seen = read_file(p->path);
     }
     if (p->break_write) {
@@ -199,12 +238,12 @@ static void test_first_write(void)
         check(T, (st.st_mode & 07777) == 0644, "the stats file isn't 0644");
     }
     check(T, count_entries(f.dir) == 1, "a temporary file was left behind");
-    g_free(text);
+    free(text);
 
     check(T, ernic_stats_write(f.st), "the second write failed");
     text = read_file(f.path);
     check(T, whole_file(text, 1), "the write count didn't go up");
-    g_free(text);
+    free(text);
     fixture_cleanup(&f);
 }
 
@@ -213,7 +252,7 @@ static void test_reader_sees_whole_file(void)
     const char *T = "reader during a write";
     Fixture f;
     Probe probe = {.look = true};
-    char buf[16384];
+    char buf[FILE_MAX];
     ssize_t n;
     int fd;
 
@@ -223,7 +262,7 @@ static void test_reader_sees_whole_file(void)
     ernic_stats_write(f.st);
     char *first = read_file(f.path);
     if (!check(T, whole_file(first, 0), "the first write isn't whole")) {
-        g_free(first);
+        free(first);
         fixture_cleanup(&f);
         return;
     }
@@ -249,9 +288,9 @@ static void test_reader_sees_whole_file(void)
     char *second = read_file(f.path);
     check(T, whole_file(second, 1), "the second write isn't whole");
     check(T, count_entries(f.dir) == 1, "a temporary file was left behind");
-    g_free(second);
-    g_free(first);
-    g_free(probe.seen);
+    free(second);
+    free(first);
+    free(probe.seen);
     fixture_cleanup(&f);
 }
 
@@ -274,15 +313,15 @@ static void test_write_error_keeps_last_file(void)
     check(T, first && after && strcmp(after, first) == 0,
           "a failed write replaced the last file");
     check(T, count_entries(f.dir) == 1, "a temporary file was left behind");
-    g_free(after);
+    free(after);
 
     /* Removing the section removes it, and the failure didn't count */
     ernic_stats_set_section(f.st, NULL, &probe);
     ernic_stats_write(f.st);
     after = read_file(f.path);
     check(T, whole_file(after, 1), "a failed write counted as a write");
-    g_free(after);
-    g_free(first);
+    free(after);
+    free(first);
     fixture_cleanup(&f);
 }
 
@@ -308,7 +347,7 @@ static void test_rename_fails(void)
     ernic_stats_write(f.st);
     char *text = read_file(f.path);
     check(T, whole_file(text, 0), "a failed rename counted as a write");
-    g_free(text);
+    free(text);
     fixture_cleanup(&f);
 }
 
@@ -342,9 +381,7 @@ static void test_symlink_is_replaced(void)
 
     /* The stats file replaces a symlink at its path; it never writes
      * through one to the file it names */
-    check(T,
-          g_file_set_contents(other, UNTOUCHED, sizeof(UNTOUCHED) - 1, NULL) !=
-              FALSE,
+    check(T, write_file(other, UNTOUCHED, sizeof(UNTOUCHED) - 1),
           "can't write the symlink's target");
     check(T, symlink(OTHER, f.path) == 0, "symlink failed");
     ernic_stats_write(f.st);
@@ -354,11 +391,11 @@ static void test_symlink_is_replaced(void)
           "the symlink's target was written to");
     check(T, lstat(f.path, &st) == 0 && S_ISREG(st.st_mode),
           "the symlink wasn't replaced");
-    g_free(text);
+    free(text);
     text = read_file(f.path);
     check(T, whole_file(text, 0), "the file isn't a whole stats file");
     check(T, count_entries(f.dir) == 2, "a temporary file was left behind");
-    g_free(text);
+    free(text);
     fixture_cleanup(&f);
 }
 
@@ -420,7 +457,7 @@ static void test_instance_block(void)
               has_line(text, "  connection  : (not set)") &&
               has_line(text, "  nic_profile : (not set)"),
           "an unset instance block doesn't say so");
-    g_free(text);
+    free(text);
 
     check(T, ernic_stats_set_instance(f.st, &inst) == 0,
           "ernic_stats_set_instance() failed");
@@ -435,7 +472,7 @@ static void test_instance_block(void)
               has_line(text, "  connection  : connected (PCI FLR)") &&
               has_line(text, "  nic_profile : compat (hash 0x1)"),
           "the instance block isn't what was set");
-    g_free(text);
+    free(text);
 
     /* Copies, so the caller's strings needn't last */
     char socket_path[] = "/run/other.sock";
@@ -454,7 +491,7 @@ static void test_instance_block(void)
               has_line(text, "  connection  : (not set)") &&
               has_line(text, "  nic_profile : (not set)"),
           "setting the block again didn't replace it");
-    g_free(text);
+    free(text);
     fixture_cleanup(&f);
 }
 
@@ -514,7 +551,7 @@ static void test_device_counters(void)
           "the file's device statistics aren't what was counted");
     /* Totals only: no QP has anything counted against it */
     check(T, whole_file(text, 0), "a QP was listed");
-    g_free(text);
+    free(text);
     fixture_cleanup(&f);
 }
 
@@ -575,7 +612,7 @@ static void test_qp_counters(void)
               has_line(text, "      RDMA_WRITE            : 1") &&
               has_line(text, "      (other opcodes)       : 1"),
           "QP 3's block isn't what was counted");
-    g_free(text);
+    free(text);
 
     /* A destroyed QP's counters go, and a new one starts from zero */
     ernic_stats_qp_forget(f.st, 3);
@@ -587,7 +624,7 @@ static void test_qp_counters(void)
     ernic_stats_write(f.st);
     text = read_file(f.path);
     check(T, whole_file(text, 1), "a forgotten QP is still listed");
-    g_free(text);
+    free(text);
     fixture_cleanup(&f);
 }
 
@@ -619,7 +656,7 @@ static void test_qp_out_of_range(void)
     ernic_stats_write(f.st);
     char *text = read_file(f.path);
     check(T, whole_file(text, 0), "an out-of-range QP was listed");
-    g_free(text);
+    free(text);
     fixture_cleanup(&f);
 }
 
@@ -715,7 +752,7 @@ static void test_alloc_failures(void)
               has_line(text, "  pci         : (not set)") &&
               has_line(text, "  connection  : connected"),
           "a failed set_instance changed the block");
-    g_free(text);
+    free(text);
 
     /* A failed set_file leaves no file */
     s3_alloc_fail_arm(0);

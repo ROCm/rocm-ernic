@@ -210,7 +210,7 @@ host-side lifecycle driver (`nix/microvms/lib.nix`) matches to exit 0.
 
 **What the qemu-user smoke checks** (`armv7l` / `ppc64le`): the cross binary
 is executed directly under user-mode QEMU. That loads the target-arch dynamic
-linker and every shared library in the closure (glib, json_c, libvfio-user,
+linker and every shared library in the closure (json_c, libvfio-user,
 rdma-core, …), runs the program's own startup and argument parsing, and
 requires it to reach `--help` and exit 0. It does **not** stand up the
 server↔client loopback exercise (no booted guest), so it is a weaker signal

@@ -111,7 +111,7 @@ jobs:
     # As root, for /dev/kvm; --init reaps the QEMU check.sh's boot leaves
     # running, as in the lanes
     container:
-      image: ghcr.io/rocm/rocm-ernic/ci-builder:qemu11.1.1-vfu.5b9c722-a25528b96bfc
+      image: ghcr.io/rocm/rocm-ernic/ci-builder:qemu11.1.1-vfu.5b9c722-4b1ea0f67493
       options: --user root --device /dev/kvm --init
     # No concurrency group, for the builder job's reason
     steps:

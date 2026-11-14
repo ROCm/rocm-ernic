@@ -26,7 +26,7 @@
 # sanitizer-default-options.c are ignored. Ubuntu 26.04's Clang 21 calls
 # them.
 #
-# Libraries that come from the system, such as libvfio-user, GLib, and
+# Libraries that come from the system, such as libvfio-user, json-c, and
 # libibverbs, aren't instrumented.
 #
 # The options are checked, and the compiler is tested with the sanitizer

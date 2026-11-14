@@ -8,7 +8,7 @@
 # Instead of a full VM, this runs the *cross-built* server binary directly
 # under user-mode QEMU emulation (`qemu-arm`, `qemu-ppc64le`). That still
 # exercises the whole target-arch runtime path — the dynamic loader
-# (target glibc), every shared library in the closure (glib, json_c,
+# (target glibc), every shared library in the closure (json_c,
 # libvfio-user, rdma-core, ...), and the program's own startup / argument
 # parsing — and asserts it reaches `--help` and exits 0. It is the
 # "land what's green" degradation path from the plan: a real emulated-run

@@ -39,7 +39,7 @@ let
       installPhase = ''
         mkdir -p $out
         # Strip the sandbox source prefix so report paths are repo-relative
-        # (src/…), then keep only in-tree diagnostics: warnings from glib /
+        # (src/…), then keep only in-tree diagnostics: warnings from
         # system headers are noise triage would discard anyway. The full
         # log is kept alongside.
         # -Wleading-whitespace is a gcc-15 formatting diagnostic that fires

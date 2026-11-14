@@ -233,8 +233,7 @@ ernic_add_test_program(ernic-test-new-feature
     SOURCES
         test_new_feature.c
         ${ERNIC_TEST_ADMINQ_SOURCES}
-    DEPS glib
-    HEADER_DEPS vfio-user
+    HEADER_DEPS vfio-user ibverbs
 )
 ernic_add_unit_test(new-feature-unit ernic-test-new-feature TIMEOUT 30)
 

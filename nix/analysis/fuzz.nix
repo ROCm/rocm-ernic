@@ -69,11 +69,12 @@ let
 
   compileLines = lib.concatMapStringsSep "\n" (h: ''
     echo "Building fuzz_${h.name}..."
-    clang ${sanFlags} ${includeFlags} ${h.cflags or ""} \
+    # -pthread, as ernic_set_compiler_flags() gives every CMake program:
+    # sanitizer builds need it even though libc has the thread functions.
+    clang ${sanFlags} ${includeFlags} ${h.cflags or ""} -pthread \
       -std=c11 -pedantic -D_POSIX_C_SOURCE=200809L -D_DEFAULT_SOURCE \
       "nix/analysis/fuzz/fuzz_${h.name}.c" \
       ${lib.concatStringsSep " " (map (f: "\"${f}\"") h.extra)} \
-      $GLIB \
       -o "out/bin/fuzz_${h.name}"
     # A trivial seed so each corpus starts non-empty.
     mkdir -p "out/corpus/${h.name}"
@@ -123,17 +124,16 @@ let
     pname = "rocm-ernic-fuzzers";
     inherit version src;
 
-    nativeBuildInputs = [ pkgs.clang pkgs.pkg-config ];
+    nativeBuildInputs = [ pkgs.clang ];
     # rdma-core for <infiniband/verbs.h>, whose IB constants the admin
     # queue uses; nothing links libibverbs.
-    buildInputs = [ pkgs.glib pkgs.rdma-core ];
+    buildInputs = [ pkgs.rdma-core ];
 
     dontConfigure = true;
     env.NIX_CFLAGS_COMPILE = compat.string;
 
     buildPhase = ''
       runHook preBuild
-      GLIB=$(pkg-config --cflags --libs glib-2.0)
       mkdir -p out/bin out/corpus
       ${compileLines}
 
