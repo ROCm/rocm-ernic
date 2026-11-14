@@ -4,9 +4,9 @@
  * Each pointer item is a counter in slots[], which the free function
  * increments, so a test can tell which items a vector freed and how often.
  * The growth tests add enough items to make each vector grow several times,
- * then check that every one kept its place.  The element vector's elements
- * are an odd size, so an element written at the wrong offset overlaps its
- * neighbours.
+ * then check that every one kept its place, and one appends the vector's own
+ * elements as it grows.  The element vector's elements are an odd size, so
+ * an element written at the wrong offset overlaps its neighbours.
  *
  * The program is linked with --wrap=realloc (tests/CMakeLists.txt), so a
  * case can fail the next growth.  That must abort, as must an index past the
@@ -333,6 +333,34 @@ static void test_vec_move(void)
     ernic_vec_free(&b);
 }
 
+/*
+ * Appending one of the vector's own elements, through the pointer
+ * ernic_vec_get() gave, including each time the vector is full and grows.
+ * A growth that freed the old storage before copying the element would read
+ * freed memory, which ASan and valgrind report.
+ */
+static void test_vec_append_own(void)
+{
+    ErnicVec vec;
+    Elem3 e = elem3(1);
+    bool ok = true;
+
+    ernic_vec_init(&vec, sizeof(Elem3));
+    ernic_vec_append(&vec, &e);
+    /* Element i is a copy of element i / 2, so every one is elem3(1) */
+    for (size_t i = 1; i < 100; i++) {
+        ernic_vec_append(&vec, ernic_vec_get(&vec, i / 2));
+    }
+    check(ernic_vec_len(&vec) == 100, "append own: len");
+    for (size_t i = 0; i < 100; i++) {
+        if (!elem3_is(ernic_vec_get(&vec, i), 1)) {
+            ok = false;
+        }
+    }
+    check(ok, "append own: every element copied");
+    ernic_vec_free(&vec);
+}
+
 /* ---- What makes them abort ------------------------------------------- */
 
 /* Runs @p fn in a child process, which must die by SIGABRT */
@@ -448,6 +476,7 @@ int main(void)
     test_vec_growth();
     test_vec_copy();
     test_vec_move();
+    test_vec_append_own();
 
     expect_abort(ptr_push_no_memory, "ptr push out of memory");
     expect_abort(ptr_get_past_end, "ptr get past the end");

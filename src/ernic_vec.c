@@ -139,10 +139,29 @@ static void vec_reserve(ErnicVec *vec, size_t need)
 
 void ernic_vec_append(ErnicVec *vec, const void *elem)
 {
-    /* len + 1 can't wrap: len elements of at least a byte are in memory */
-    vec_reserve(vec, vec->len + 1);
+    unsigned char *old = NULL;
+
+    /*
+     * Grow into a new block, and free the old one only after the copy:
+     * @p elem may be one of the vector's own elements, which realloc() could
+     * free before it was read.
+     */
+    if (vec->len == vec->cap) {
+        /* len + 1 can't wrap: len elements of at least a byte are in memory */
+        size_t cap = vec_grown_cap(vec->cap, vec->len + 1);
+        unsigned char *data = ernic_xreallocarray(NULL, cap, vec->elem_size);
+
+        /* memcpy() from a NULL data, a vector that never grew, is undefined */
+        if (vec->len > 0) {
+            memcpy(data, vec->data, vec->len * vec->elem_size);
+        }
+        old = vec->data;
+        vec->data = data;
+        vec->cap = cap;
+    }
     memcpy(vec->data + (vec->len * vec->elem_size), elem, vec->elem_size);
     vec->len++;
+    free(old);
 }
 
 size_t ernic_vec_len(const ErnicVec *vec)

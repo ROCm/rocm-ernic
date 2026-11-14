@@ -141,7 +141,8 @@ void ernic_vec_free(ErnicVec *vec);
  * Copy an element to the end
  *
  * @param vec  the vector
- * @param elem the element, of the vector's element size
+ * @param elem the element, of the vector's element size, which may be one of
+ *             the vector's own
  *
  * Aborts through ernic_log_fatal() when out of memory.
  */
