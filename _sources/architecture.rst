@@ -1672,6 +1672,8 @@ Where to Look in the Source
    * - ``src/ernic_alloc.c``, ``.h``
      - Allocators for fixed-size internal objects, which abort when
        out of memory
+   * - ``src/ernic_vec.c``, ``.h``
+     - Growable arrays, for lists whose length the server bounds
    * - ``src/ernic_shm.c``, ``.h``
      - Memory shared with QEMU by a file descriptor, behind the
        CMB
