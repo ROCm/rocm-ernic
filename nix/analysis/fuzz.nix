@@ -69,7 +69,9 @@ let
 
   compileLines = lib.concatMapStringsSep "\n" (h: ''
     echo "Building fuzz_${h.name}..."
-    clang ${sanFlags} ${includeFlags} ${h.cflags or ""} \
+    # -pthread, as ernic_set_compiler_flags() gives every CMake program:
+    # sanitizer builds need it even though libc has the thread functions.
+    clang ${sanFlags} ${includeFlags} ${h.cflags or ""} -pthread \
       -std=c11 -pedantic -D_POSIX_C_SOURCE=200809L -D_DEFAULT_SOURCE \
       "nix/analysis/fuzz/fuzz_${h.name}.c" \
       ${lib.concatStringsSep " " (map (f: "\"${f}\"") h.extra)} \

@@ -147,7 +147,12 @@ static char *read_file(const char *path)
 /* Write @len bytes of @data to a new file at @path. */
 static bool write_file(const char *path, const char *data, size_t len)
 {
+    /* With _FORTIFY_SOURCE, glibc 2.40 and later give Clang an
+     * open(path, flags, mode) overload, and android-cloexec-open looks for
+     * O_CLOEXEC in its mode */
+    /* NOLINTBEGIN(android-cloexec-open) */
     int fd = open(path, O_WRONLY | O_CREAT | O_EXCL | O_CLOEXEC, 0600);
+    /* NOLINTEND(android-cloexec-open) */
     bool ok;
 
     if (fd < 0) {
