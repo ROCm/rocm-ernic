@@ -96,8 +96,13 @@ runs:
         # lives at perf/history.jsonl on gh-pages, alongside the badges
         # the README points at, so a shield is correct the moment this
         # push lands -- it no longer waits on a Sphinx build that might
-        # fail.
+        # fail.  That perf/ is in the project's directory on gh-pages,
+        # which ci/pages.env names (the branch root while it's empty),
+        # and nothing below writes outside perf/.
+        subdir="$(ci/pages-subdir.sh)" || bail "could not read ci/pages.env"
+        perf_rel="${subdir:+${subdir}/}perf"
         pages="$(mktemp -d)"
+        perf="$pages/$perf_rel"
         git clone --quiet --depth 1 --branch gh-pages "$remote" "$pages" \
           || bail "could not clone gh-pages (has it been seeded?)"
 
@@ -111,8 +116,8 @@ runs:
         # "no data" stubs straight over the live shields.  That is
         # how run 35282938069 greyed out a working NVMe-oF badge.
         mkdir -p docs/perf-history
-        cp "$pages/perf/history.jsonl" docs/perf-history/history.jsonl 2>/dev/null || true
-        cp "$pages"/perf/badge-*.json  docs/perf-history/ 2>/dev/null || true
+        cp "$perf/history.jsonl" docs/perf-history/history.jsonl 2>/dev/null || true
+        cp "$perf"/badge-*.json  docs/perf-history/ 2>/dev/null || true
 
         python3 ci/report/publish-perf.py \
           --summary "$RESULTS/report/summary.json" \
@@ -126,11 +131,11 @@ runs:
         # history, re-append this run's record to it and try again.
         pushed=""
         for attempt in 1 2 3; do
-          mkdir -p "$pages/perf"
-          cp docs/perf-history/history.jsonl "$pages/perf/" || bail "could not stage the history"
-          cp docs/perf-history/badge-*.json "$pages/perf/" || bail "could not stage the badges"
+          mkdir -p "$perf"
+          cp docs/perf-history/history.jsonl "$perf/" || bail "could not stage the history"
+          cp docs/perf-history/badge-*.json "$perf/" || bail "could not stage the badges"
 
-          git -C "$pages" add perf || bail "could not stage perf/"
+          git -C "$pages" add -- "$perf_rel" || bail "could not stage $perf_rel/"
           if git -C "$pages" diff --cached --quiet; then
             echo "no change to publish"
             exit 0
@@ -158,8 +163,8 @@ runs:
           git -C "$pages" fetch --quiet --depth 1 origin gh-pages \
             || bail "could not refresh gh-pages"
           git -C "$pages" reset --hard FETCH_HEAD || bail "could not refresh gh-pages"
-          cp "$pages/perf/history.jsonl" docs/perf-history/history.jsonl 2>/dev/null || true
-          cp "$pages"/perf/badge-*.json  docs/perf-history/ 2>/dev/null || true
+          cp "$perf/history.jsonl" docs/perf-history/history.jsonl 2>/dev/null || true
+          cp "$perf"/badge-*.json  docs/perf-history/ 2>/dev/null || true
           python3 ci/report/publish-perf.py \
             --summary "$RESULTS/report/summary.json" \
             --docs-dir docs \

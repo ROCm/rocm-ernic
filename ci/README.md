@@ -83,6 +83,15 @@ Pages serves (Settings > Pages > "Deploy from a branch",
 `perf/` has no leading underscore deliberately, so it is served
 even if `.nojekyll` is ever lost.
 
+That's the layout while `PAGES_SUBDIR` in `ci/pages.env` is empty.
+Set it to a directory, as on a `gh-pages` branch other projects
+share, and the site and `perf/` move into that directory, while
+the branch root and everything else on the branch are left alone,
+`.nojekyll` included: Pages honours it only at the root, which
+then belongs to the branch's owners. `docs-deploy.yml` and
+`.github/actions/publish-perf` both read the setting through
+`ci/pages-subdir.sh`, so they can't disagree about it.
+
 A publishing lane clones `gh-pages`, copies `perf/history.jsonl`
 into `docs/perf-history/`, runs `ci/report/publish-perf.py` to
 append its record and refresh the badges, copies both back into
@@ -95,9 +104,9 @@ runs, so the lane then dispatches `docs-deploy.yml` explicitly
 (`workflow_dispatch`, needs `actions: write`) to rebuild the site.
 `docs-deploy` fetches `perf/history.jsonl` back off `gh-pages`,
 renders the trend page from it (`publish-perf.py --render-only`),
-builds Sphinx and `rsync -a --delete --exclude perf/`s the result
-onto `gh-pages`. The exclusion is what keeps the two halves of the
-branch from clobbering each other.
+builds Sphinx and `rsync -a --delete --exclude /perf/`s the result
+into the site's directory on `gh-pages`. The exclusion is what keeps
+the two halves of the site from clobbering each other.
 
 The badges are therefore correct the moment a lane pushes: they no
 longer wait on a Sphinx build, which is what left run `35270045274`

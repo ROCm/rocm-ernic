@@ -7,10 +7,12 @@
 # Prerequisites (one-time, requires repo-admin access):
 #   Settings > Pages > Source = "Deploy from a branch", gh-pages / (root)
 #
-# gh-pages holds the site at its root and the performance record under
-# perf/.  Only the perf lanes write perf/; only this workflow writes the
-# rest.  The rsync below is what keeps those two halves from clobbering
-# each other.
+# gh-pages holds the site in the directory ci/pages.env names (the
+# branch root while it's empty) and the performance record in that
+# directory's perf/.  Only the perf lanes write perf/; only this workflow
+# writes the rest of the directory, and nothing here writes outside it,
+# so other projects can publish beside it on a shared gh-pages.  The
+# rsync below is what keeps the halves from clobbering each other.
 
 name: rocm-ernic - Docs Deploy
 
@@ -32,6 +34,8 @@ on:
       - 'src/ionic/ionic_emu_stats.c'
       - 'tools/gen-counter-docs.py'
       - 'cmake/ErnicDocumentation.cmake'
+      - 'ci/pages.env'
+      - 'ci/pages-subdir.sh'
       - '.github/workflows/docs-deploy.yml'
 
 # Serialise deploys.  Unlike the pull request workflows this does NOT
@@ -64,6 +68,15 @@ jobs:
         sudo apt-get update
         sudo apt-get install -y doxygen
 
+    # Every step that reads or writes gh-pages works inside this
+    # directory, empty for the branch root.
+    - name: Read the site's directory on gh-pages
+      run: |
+        set -euo pipefail
+        subdir=$(ci/pages-subdir.sh)
+        echo "PAGES_SUBDIR=${subdir}" >> "$GITHUB_ENV"
+        echo "publishing to gh-pages:/${subdir}"
+
     # docs/perf-history/history.jsonl is committed to develop as an
     # empty placeholder so a local or PR build still renders a complete
     # site.  The real record lives on gh-pages, written by the perf
@@ -72,8 +85,9 @@ jobs:
     - name: Fetch the published performance history
       run: |
         set -euo pipefail
+        history="${PAGES_SUBDIR:+${PAGES_SUBDIR}/}perf/history.jsonl"
         if git fetch --quiet --depth 1 origin gh-pages 2>/dev/null \
-           && git show FETCH_HEAD:perf/history.jsonl \
+           && git show "FETCH_HEAD:${history}" \
                 > docs/perf-history/history.jsonl 2>/dev/null; then
           echo "using $(wc -l < docs/perf-history/history.jsonl) published runs"
         else
@@ -105,26 +119,43 @@ jobs:
         git fetch --quiet origin gh-pages
         git worktree add --quiet --detach ../gh-pages FETCH_HEAD
 
+        # The site's directory in the worktree, and as a pathspec, which
+        # git refuses if empty.
+        site="../gh-pages${PAGES_SUBDIR:+/${PAGES_SUBDIR}}"
+        pathspec="${PAGES_SUBDIR:-.}"
+
+        # sphinx.ext.githubpages emits .nojekyll, but Pages honours it
+        # only at the branch root, and a branch source without it runs
+        # Jekyll and strips _static/, which costs the whole site its CSS.
+        # At the root it's ours to keep, below.  In a subdirectory the
+        # root belongs to the branch's owners, so only say so.
+        if [ -n "$PAGES_SUBDIR" ] && [ ! -e ../gh-pages/.nojekyll ]; then
+          echo "::warning::gh-pages has no root .nojekyll; unless its" \
+               "_config.yml includes them, Jekyll drops _static/ and" \
+               "the other _ directories from ${PAGES_SUBDIR}/"
+        fi
+
         # A perf lane can land a perf/ commit while this build runs --
         # it is what dispatched us, moments earlier.  Concurrency only
         # serialises this workflow against itself, so on a rejected
         # push take their tip and re-apply the site on top.
         for attempt in 1 2 3; do
-          # --exclude perf/ is load-bearing: --delete would otherwise
+          # --exclude /perf/ is load-bearing: --delete would otherwise
           # take the performance record with it on every site rebuild,
           # and it is the one thing on this branch that cannot be
-          # regenerated.
+          # regenerated.  The leading / anchors it to the site's
+          # directory, the transfer's root, where the record lives.
+          mkdir -p "$site"
           rsync -a --delete \
             --exclude '.git' \
-            --exclude 'perf/' \
-            build/docs/html/ ../gh-pages/
+            --exclude '/perf/' \
+            build/docs/html/ "$site/"
 
-          # sphinx.ext.githubpages emits this, but a branch source that
-          # ever loses it runs Jekyll and strips _static/, which costs
-          # the whole site its CSS.  Cheap to assert.
-          touch ../gh-pages/.nojekyll
+          if [ -z "$PAGES_SUBDIR" ]; then
+            touch ../gh-pages/.nojekyll
+          fi
 
-          git -C ../gh-pages add -A
+          git -C ../gh-pages add -A -- "$pathspec"
           if git -C ../gh-pages diff --cached --quiet; then
             echo "site unchanged"
             exit 0
@@ -139,7 +170,9 @@ jobs:
           fi
           echo "push rejected (attempt ${attempt}); refreshing and retrying"
           sleep $((attempt * 5))
-          git fetch --quiet origin gh-pages
+          # Fetch in the worktree: FETCH_HEAD is per worktree, so a
+          # fetch in the main one leaves this one's unset.
+          git -C ../gh-pages fetch --quiet origin gh-pages
           git -C ../gh-pages reset --hard FETCH_HEAD
         done
         echo "::error::could not push the site after 3 attempts"
