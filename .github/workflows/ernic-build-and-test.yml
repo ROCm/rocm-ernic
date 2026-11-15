@@ -1,7 +1,7 @@
 # Copyright (c) Advanced Micro Devices, Inc. All rights reserved.
 #
 # SPDX-License-Identifier: MIT
-name: rocm-ernic - Build and Test
+name: ernic - Build and Test
 
 on:
   # Pushes to develop run too, so that develop's code coverage can be

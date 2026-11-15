@@ -13,7 +13,7 @@
 # the weekly one, or a manual one asking to. A pull request that changes
 # the script runs its test and lists what it would delete, against the
 # real registry.
-name: "rocm-ernic - CI image pruning"
+name: "ernic - CI image pruning"
 
 on:
   # Mondays at 05:37 UTC

@@ -14,7 +14,7 @@
 # so other projects can publish beside it on a shared gh-pages.  The
 # rsync below is what keeps the halves from clobbering each other.
 
-name: rocm-ernic - Docs Deploy
+name: ernic - Docs Deploy
 
 on:
   workflow_dispatch:

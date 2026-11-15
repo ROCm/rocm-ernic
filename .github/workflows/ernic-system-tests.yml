@@ -1,7 +1,7 @@
 # Copyright (c) Advanced Micro Devices, Inc. All rights reserved.
 #
 # SPDX-License-Identifier: MIT
-name: rocm-ernic - System Tests
+name: ernic - System Tests
 
 on:
   pull_request:

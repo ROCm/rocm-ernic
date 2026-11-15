@@ -1,7 +1,7 @@
 # Copyright (c) Advanced Micro Devices, Inc. All rights reserved.
 #
 # SPDX-License-Identifier: MIT
-name: rocm-ernic - Service Tooling Tests
+name: ernic - Service Tooling Tests
 
 on:
   pull_request:

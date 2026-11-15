@@ -1,7 +1,7 @@
 # Copyright (c) Advanced Micro Devices, Inc. All rights reserved.
 #
 # SPDX-License-Identifier: MIT
-name: rocm-ernic - P4 Lane
+name: ernic - P4 Lane
 
 # The guest-driven P4 system-test lane, built on the same shape as the
 # S3 and NVMe-oF lanes, and kept out of ernic-system-tests.yml the way

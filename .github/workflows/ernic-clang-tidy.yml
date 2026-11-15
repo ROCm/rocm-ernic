@@ -9,7 +9,7 @@
 # This uses upstream clang-tidy from apt.llvm.org, as hipObject's
 # clang-tidy workflow does, with the clang of the same version as the
 # compiler, so the two agree on every flag the build passes.
-name: rocm-ernic - clang-tidy
+name: ernic - clang-tidy
 
 on:
   # The Build and Test workflow's paths, since anything it compiles can

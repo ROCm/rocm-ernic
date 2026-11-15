@@ -737,7 +737,9 @@
   `.github/actions/apt-install` is `.github/actions/ernic-apt-install`,
   and so on, except that `pr-security-scan.yml` and
   `weekly-security-scan.yml` are `ernic-security-scan-pr.yml` and
-  `ernic-security-scan-weekly.yml`. Use the new file names with
+  `ernic-security-scan-weekly.yml`. Their names in the Actions tab start
+  `ernic - ` rather than `rocm-ernic - `, and the security scans', which
+  had no prefix, do too. Use the new file names with
   `gh workflow run` and in links to a workflow's runs or status badge;
   runs from before the rename stay under the old workflows.
   `tests/test_nested_checkout.sh` fails if a workflow or action isn't

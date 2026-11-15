@@ -1,7 +1,7 @@
 # Copyright (c) Advanced Micro Devices, Inc. All rights reserved.
 #
 # SPDX-License-Identifier: MIT
-name: rocm-ernic - Nightly
+name: ernic - Nightly
 
 # Builds DEB packages of develop every night and publishes them as the
 # "nightly" prerelease, which each run replaces. There's one set of

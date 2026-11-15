@@ -21,7 +21,7 @@
 # /language:python and /language:actions, but ernic-security-scan-pr.yml
 # analyzes only the languages a pull request touches, so it doesn't fill
 # the gap.
-name: rocm-ernic - CodeQL
+name: ernic - CodeQL
 
 on:
   push:

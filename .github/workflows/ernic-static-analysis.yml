@@ -17,7 +17,7 @@
 #
 # The `standard` level = clang-tidy + cppcheck + flawfinder + clang-analyzer +
 # gcc-warnings, then the triage prioritiser (nix/analysis/triage/).
-name: rocm-ernic - Static Analysis (nix)
+name: ernic - Static Analysis (nix)
 
 on:
   pull_request:

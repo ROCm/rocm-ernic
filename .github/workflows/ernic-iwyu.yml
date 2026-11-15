@@ -10,7 +10,7 @@
 #
 # Don't make this a required check. Which suggestions IWYU makes depends
 # on its version, so a new image or IWYU package can change them.
-name: rocm-ernic - IWYU
+name: ernic - IWYU
 
 on:
   # The Build and Test workflow's paths, since anything it compiles can

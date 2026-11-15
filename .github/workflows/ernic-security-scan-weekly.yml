@@ -6,7 +6,7 @@
 # `ernic-security-scan-pr.yml`, which scans only what changed in a PR and
 # uploads reviewer-readable artifacts for in-review browsing.
 
-name: Security scan (Weekly)
+name: ernic - Security scan (Weekly)
 
 on:
   # Run every Saturday at 10:00 UTC.

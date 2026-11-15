@@ -3,7 +3,7 @@
 # SPDX-License-Identifier: MIT
 #
 # Check that the C sources match .clang-format
-name: rocm-ernic - clang-format
+name: ernic - clang-format
 
 on:
   pull_request:

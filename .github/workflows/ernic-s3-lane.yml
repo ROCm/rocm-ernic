@@ -1,7 +1,7 @@
 # Copyright (c) Advanced Micro Devices, Inc. All rights reserved.
 #
 # SPDX-License-Identifier: MIT
-name: rocm-ernic - S3 Lane
+name: ernic - S3 Lane
 
 # The S3-over-RDMA system-test lane, factored out of
 # ernic-system-tests.yml the way the NVMe-oF one is, because it is

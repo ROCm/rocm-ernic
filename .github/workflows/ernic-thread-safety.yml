@@ -13,7 +13,7 @@
 # clang has and the image's compilers don't doesn't fail this job; the Build
 # and Test workflow checks the rest. Nothing is run: the analysis is all at
 # compile time.
-name: rocm-ernic - Thread safety
+name: ernic - Thread safety
 
 on:
   # The Build and Test workflow's paths, since anything it compiles can be

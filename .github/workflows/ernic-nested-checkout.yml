@@ -10,7 +10,7 @@
 # only those, and that the project configures and builds there. It needs ShellCheck and PyYAML, which the Build and Test
 # workflow doesn't install, and builds the project a second time, so it's
 # a workflow of its own rather than a CTest test.
-name: rocm-ernic - Nested checkout
+name: ernic - Nested checkout
 
 on:
   pull_request:

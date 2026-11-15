@@ -22,7 +22,7 @@
 # ernic-build-and-test.yml's filter, where this job used to live.
 # ernic-codespell.yml is the precedent: a tree-wide check takes a tree-wide
 # trigger.
-name: rocm-ernic - Image pins
+name: ernic - Image pins
 
 on:
   pull_request:

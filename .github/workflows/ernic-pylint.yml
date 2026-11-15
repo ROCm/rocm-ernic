@@ -3,7 +3,7 @@
 # SPDX-License-Identifier: MIT
 #
 # Run black and pylint over the Python files
-name: rocm-ernic - pylint
+name: ernic - pylint
 
 on:
   pull_request:

@@ -11,7 +11,7 @@
 # same-repo PRs. See the scheduled counterpart
 # (ernic-security-scan-weekly.yml) for the SARIF / code-scanning upload.
 
-name: Security scan (PR)
+name: ernic - Security scan (PR)
 
 on:
   pull_request:

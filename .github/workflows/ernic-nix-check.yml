@@ -12,7 +12,7 @@
 # without building the server. Building the analysis toolkit or the
 # cross/OCI targets pulls a very large closure and belongs in a scheduled
 # job, not on every pull request.
-name: rocm-ernic - Nix Check
+name: ernic - Nix Check
 
 on:
   pull_request:

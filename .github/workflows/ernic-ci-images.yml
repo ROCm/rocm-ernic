@@ -14,7 +14,7 @@
 # that changes either publishes it and tests the lanes with it. It has no
 # pull_request trigger of its own: System Tests runs for every change
 # under ci/.
-name: "rocm-ernic - CI images"
+name: "ernic - CI images"
 
 on:
   workflow_call:

@@ -7,7 +7,7 @@
 # The collection is not published to Galaxy; consumers install it
 # from a pinned git SHA (see ansible/PLAYBOOKS.md).
 
-name: rocm-ernic - Ansible Collection
+name: ernic - Ansible Collection
 
 "on":
   workflow_dispatch: {}

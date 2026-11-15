@@ -6,7 +6,7 @@
 # actionlint, which runs ShellCheck on the workflows' run: blocks; and
 # tools/check-embedded-shell.py, which runs it on the shell inside other
 # files (Ansible tasks, composite actions, heredocs).
-name: rocm-ernic - ShellCheck
+name: ernic - ShellCheck
 
 on:
   pull_request:

@@ -3,7 +3,7 @@
 # SPDX-License-Identifier: MIT
 #
 # Run cmakelint over the CMake files
-name: rocm-ernic - cmakelint
+name: ernic - cmakelint
 
 on:
   pull_request:
