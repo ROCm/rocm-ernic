@@ -23,13 +23,20 @@ is RoCE, which addresses it by GID, so this:
 - Sets SO_REUSEADDR on the server's socket before binding it: every run
   uses the same port, and a rerun must not fail with EADDRINUSE while
   the last run's connection is still in TIME_WAIT.
-- Waits for both the first and the last byte of a message before taking
-  it as arrived and clearing the slot, rather than either. The order in
+- Numbers the messages, from 1, in the first and last 8 bytes of each,
+  and waits for both ends of a message before taking it as arrived and
+  clearing the slot, rather than for either end to read 'A'. The order in
   which a WRITE's bytes land isn't defined, so a reader that cleared the
   slot on the first byte could have the rest of the WRITE land after the
-  clear. The 'A' it left in the last byte then counted as the next
-  message, and the two sides' counts drifted apart until one waited
-  forever for a message the other never sent.
+  clear, and count it as the next message. The receiver checks each
+  message's number, so one that lands twice or never is reported, and
+  the program fails at once, rather than the two sides' counts drifting
+  apart until one waits forever. A message whose ends disagree gets
+  100 ms to finish landing. Every message is sent from one buffer, so
+  num_concurr_msgs must be 1, and msg_size a multiple of 8 and at least
+  16.
+- Says how many messages it had received when timeout(1) stops it, so a
+  run that hangs shows how far it got.
 - Has the client wait for its last WRITE to complete before it exits.
   The server waits for that WRITE, but upstream posts it unsignaled and
   exits at once, and exiting destroys the QP, which may drop a WRITE
@@ -51,7 +58,7 @@ index 162bcbc..ad5ad4c 100644
  SRCS=main.c client.c config.c ib.c server.c setup_ib.c sock.c
  OBJS=$(SRCS:.c=.o)
 diff --git a/client.c b/client.c
-index 7219cc5..24e327a 100644
+index 7219cc5..7505e20 100644
 --- a/client.c
 +++ b/client.c
 @@ -11,7 +11,8 @@
@@ -64,20 +71,30 @@ index 7219cc5..24e327a 100644
      long	thread_id	 = (long) arg;
      int         msg_size	 = config_info.msg_size;
  
-@@ -51,7 +52,7 @@ void *client_thread_func (void *arg)
+@@ -30,7 +31,6 @@ void *client_thread_func (void *arg)
+     uint64_t             raddr_base   = ib_res.raddr;
+     uint64_t             raddr        = raddr_base;
+     volatile char       *msg_start    = buf_ptr;
+-    volatile char       *msg_end      = msg_start + msg_size - 1;
+     char                *send_buf_ptr = buf_ptr + buf_size;
+ 
+     struct timeval      start, end;
+@@ -51,15 +51,19 @@ void *client_thread_func (void *arg)
  
      while (ops_count < TOT_NUM_OPS) {
  	/* loop till receive a msg from server */
 -	while ((*msg_start != 'A') && (*msg_end != 'A')) {
-+	while ((*msg_start != 'A') || (*msg_end != 'A')) {
- 	}
+-	}
++	ret = seq_wait (msg_start, msg_size, ops_count + 1);
++	check (ret == 0, "thread[%ld]: received the wrong message", thread_id);
  
  	/* reset recv buffer */
-@@ -59,7 +60,10 @@ void *client_thread_func (void *arg)
+ 	memset ((char *)msg_start, '\0', msg_size);
  
  	/* send a msg back to the server */
  	ops_count += 1;
 -	if ((ops_count % SIG_INTERVAL) == 0) {
++	seq_stamp (send_buf_ptr, msg_size, ops_count);
 +	if (ops_count == TOT_NUM_OPS) {
 +	    ret = post_write_signaled (msg_size, lkey, IB_WR_ID_STOP, qp, send_buf_ptr, raddr, rkey);
 +	    check (ret == 0, "thread[%ld]: failed to post the last write", thread_id);
@@ -85,7 +102,14 @@ index 7219cc5..24e327a 100644
  	    ret = post_write_signaled (msg_size, lkey, 0, qp, send_buf_ptr, raddr, rkey);
  	} else {
  	    ret = post_write_unsignaled (msg_size, lkey, 0, qp, send_buf_ptr, raddr, rkey);
-@@ -74,11 +78,28 @@ void *client_thread_func (void *arg)
+@@ -67,18 +71,34 @@ void *client_thread_func (void *arg)
+ 	
+ 	buf_offset = (buf_offset + msg_size) % buf_size;
+ 	msg_start  = buf_ptr + buf_offset;
+-	msg_end    = msg_start + msg_size - 1;
+ 	raddr      = raddr_base + buf_offset;
+ 
+ 	if (ops_count == NUM_WARMING_UP_OPS) {
  	    gettimeofday (&start, NULL);
  	}
  
@@ -116,12 +140,15 @@ index 7219cc5..24e327a 100644
      duration   = (double)((end.tv_sec - start.tv_sec) * 1000000 + 
  			  (end.tv_usec - start.tv_usec));
 diff --git a/ib.c b/ib.c
-index 638bcdf..2377f5b 100644
+index 638bcdf..51dc58a 100644
 --- a/ib.c
 +++ b/ib.c
-@@ -1,10 +1,13 @@
+@@ -1,10 +1,16 @@
  #include <arpa/inet.h>
++#include <signal.h>
++#include <stdbool.h>
 +#include <string.h>
++#include <time.h>
  #include <unistd.h>
  
  #include "ib.h"
@@ -134,7 +161,7 @@ index 638bcdf..2377f5b 100644
  {
      int ret = 0;
  
-@@ -30,18 +33,23 @@ int modify_qp_to_rts (struct ibv_qp *qp, uint32_t target_qp_num, uint16_t target
+@@ -30,18 +36,23 @@ int modify_qp_to_rts (struct ibv_qp *qp, uint32_t target_qp_num, uint16_t target
      {
  	struct ibv_qp_attr  qp_attr = {
  	    .qp_state           = IBV_QPS_RTR,
@@ -160,11 +187,129 @@ index 638bcdf..2377f5b 100644
  	ret = ibv_modify_qp(qp, &qp_attr,
  			    IBV_QP_STATE | IBV_QP_AV |
  			    IBV_QP_PATH_MTU | IBV_QP_DEST_QPN |
+@@ -172,3 +183,110 @@ int post_write_unsignaled (uint32_t req_size, uint32_t lkey, uint64_t wr_id,
+     ret = ibv_post_send (qp, &send_wr, &bad_send_wr);
+     return ret;
+ }
++
++_Atomic long seq_received = 0;
++
++void seq_stamp (char *buf, int msg_size, uint64_t seq)
++{
++    memcpy (buf, &seq, sizeof(seq));
++    memcpy (buf + msg_size - sizeof(seq), &seq, sizeof(seq));
++}
++
++/* 8 aligned bytes, read in one load */
++static uint64_t seq_word (volatile char *p)
++{
++    return *(volatile uint64_t *) p;
++}
++
++/*
++ * Wait for the message at msg, then check that it is number want. Both of
++ * its ends must have landed, since the order a WRITE's bytes land in isn't
++ * defined. Ends that both name another message are reported at once. Ends
++ * that disagree, one of them perhaps not landed yet, get 100 ms to finish
++ * landing first.
++ */
++int seq_wait (volatile char *msg, int msg_size, uint64_t want)
++{
++    volatile char   *end  = msg + msg_size - sizeof(uint64_t);
++    uint64_t         head = 0, tail = 0;
++    struct timespec  since, now;
++    bool             expired = false;
++
++    do {
++	head = seq_word (msg);
++	tail = seq_word (end);
++    } while (head == 0 && tail == 0);
++
++    clock_gettime (CLOCK_MONOTONIC, &since);
++    while ((head != want || tail != want) && head != tail && !expired) {
++	/* the clock first, so the words that decide are read after the
++	 * deadline is seen, and a pause can't get one reported stale */
++	clock_gettime (CLOCK_MONOTONIC, &now);
++	expired = (now.tv_sec - since.tv_sec) * 1000000000L +
++		  (now.tv_nsec - since.tv_nsec) > 100000000L;
++	head = seq_word (msg);
++	tail = seq_word (end);
++    }
++    if (head != want || tail != want) {
++	log_err ("expected message %" PRIu64 ", but its first 8 bytes say "
++		 "%" PRIu64 " and its last 8 %" PRIu64,
++		 want, head, tail);
++	return -1;
++    }
++
++    atomic_fetch_add (&seq_received, 1);
++    return 0;
++}
++
++/* Append n in decimal to buf at *len: snprintf isn't async-signal-safe */
++static void seq_append_num (char *buf, size_t *len, long n)
++{
++    char   digits[24];
++    size_t i = 0;
++
++    do {
++	digits[i++] = (char)('0' + n % 10);
++	n /= 10;
++    } while (n > 0 && i < sizeof(digits));
++    while (i > 0) {
++	buf[(*len)++] = digits[--i];
++    }
++}
++
++static void seq_append_str (char *buf, size_t *len, const char *s)
++{
++    size_t n = strlen (s);
++
++    memcpy (buf + *len, s, n);
++    *len += n;
++}
++
++/* Say how far the run got, as timeout(1) stops it */
++static void seq_on_signal (int sig)
++{
++    char    buf[128];
++    size_t  len = 0;
++    ssize_t ret;
++
++    seq_append_str (buf, &len, "rdma-tutorial: stopped by signal ");
++    seq_append_num (buf, &len, sig);
++    seq_append_str (buf, &len, " after receiving ");
++    seq_append_num (buf, &len, atomic_load (&seq_received));
++    seq_append_str (buf, &len, " of ");
++    seq_append_num (buf, &len, TOT_NUM_OPS);
++    seq_append_str (buf, &len, " messages\n");
++    ret = write (STDERR_FILENO, buf, len);
++    (void) ret;
++    _exit (128 + sig);
++}
++
++void seq_report_on_signal (void)
++{
++    struct sigaction sa;
++
++    memset (&sa, 0, sizeof(sa));
++    sa.sa_handler = seq_on_signal;
++    sigemptyset (&sa.sa_mask);
++    sigaction (SIGTERM, &sa, NULL);
++    sigaction (SIGINT, &sa, NULL);
++}
 diff --git a/ib.h b/ib.h
-index 32708a9..c2a5c9a 100644
+index 32708a9..8c0ffb0 100644
 --- a/ib.h
 +++ b/ib.h
-@@ -8,12 +8,15 @@
+@@ -2,18 +2,22 @@
+ #define IB_H_
+ 
+ #include <inttypes.h>
++#include <stdatomic.h>
+ #include <sys/types.h>
+ #include <endian.h>
+ #include <byteswap.h>
  #include <infiniband/verbs.h>
  #include <arpa/inet.h>
  
@@ -181,7 +326,7 @@ index 32708a9..c2a5c9a 100644
  #define SIG_INTERVAL            1000
  
  #if __BYTE_ORDER == __LITTLE_ENDIAN
-@@ -28,6 +31,7 @@ static inline uint64_t ntohll (uint64_t x) {return x; }
+@@ -28,6 +32,7 @@ static inline uint64_t ntohll (uint64_t x) {return x; }
  
  struct QPInfo {
      uint16_t lid;
@@ -189,7 +334,7 @@ index 32708a9..c2a5c9a 100644
      uint32_t qp_num;
      uint32_t rkey;
      uint64_t raddr;
-@@ -39,7 +43,8 @@ enum MsgType {
+@@ -39,7 +44,8 @@ enum MsgType {
      MSG_REGULAR,
  };
  
@@ -199,8 +344,22 @@ index 32708a9..c2a5c9a 100644
  
  int post_send (uint32_t req_size, uint32_t lkey, uint64_t wr_id, 
  	       uint32_t imm_data, struct ibv_qp *qp, char *buf);
+@@ -56,4 +62,13 @@ int post_write_unsignaled (uint32_t req_size, uint32_t lkey, uint64_t wr_id,
+ 			   struct ibv_qp *qp, char *buf,
+ 			   uint64_t raddr, uint32_t rkey);
+ 
++/* Each message carries its number, counting from 1, in its first and last
++ * 8 bytes, so one that lands twice or not at all is reported rather than
++ * waited for forever. seq_received counts the messages taken. */
++extern _Atomic long seq_received;
++
++void seq_stamp (char *buf, int msg_size, uint64_t seq);
++int  seq_wait  (volatile char *msg, int msg_size, uint64_t want);
++void seq_report_on_signal (void);
++
+ #endif /*ib.h*/
 diff --git a/main.c b/main.c
-index 74d8682..ba8d9ed 100644
+index 74d8682..7439820 100644
 --- a/main.c
 +++ b/main.c
 @@ -1,4 +1,5 @@
@@ -209,19 +368,68 @@ index 74d8682..ba8d9ed 100644
  
  #include "debug.h"
  #include "config.h"
+@@ -36,6 +37,15 @@ int main (int argc, char *argv[])
+     ret = init_env ();
+     check (ret == 0, "Failed to init env");
+ 
++    /* the sequence numbers need room at each end, aligned, and one
++     * message in flight, since every message is sent from one buffer */
++    ret = -1;
++    check (config_info.msg_size >= 16 && config_info.msg_size % 8 == 0,
++	   "msg_size must be a multiple of 8, and at least 16");
++    check (config_info.num_concurr_msgs == 1,
++	   "num_concurr_msgs must be 1");
++    seq_report_on_signal ();
++
+     ret = setup_ib ();
+     check (ret == 0, "Failed to setup IB");
+ 
 diff --git a/server.c b/server.c
-index 7189796..021c7c5 100644
+index 7189796..f6730cf 100644
 --- a/server.c
 +++ b/server.c
-@@ -58,7 +58,7 @@ void *server_thread (void *arg)
+@@ -31,7 +31,6 @@ void *server_thread (void *arg)
+     uint64_t             raddr_base   = ib_res.raddr;
+     uint64_t             raddr        = ib_res.raddr;
+     volatile char       *msg_start    = buf_ptr;
+-    volatile char       *msg_end      = msg_start + msg_size - 1;
+     char                *send_buf_ptr = buf_ptr + buf_size;
+ 
+     struct timeval      start, end;
+@@ -51,6 +50,7 @@ void *server_thread (void *arg)
+ 
+     /* pre-post writes */
+     for (i = 0; i < num_concurr_msgs; i++) {
++	seq_stamp (send_buf_ptr, msg_size, i + 1);
+ 	post_write_unsignaled (msg_size, lkey, 0, qp, send_buf_ptr, raddr, rkey);
+ 	buf_offset = (buf_offset + msg_size) % buf_size;
+ 	raddr      = raddr_base + buf_offset;
+@@ -58,14 +58,15 @@ void *server_thread (void *arg)
      
      while (ops_count < TOT_NUM_OPS) {
          /* loop till receive a msg from server */
 -        while ((*msg_start != 'A') && (*msg_end != 'A')) {
-+        while ((*msg_start != 'A') || (*msg_end != 'A')) {
-         }	
+-        }	
++        ret = seq_wait (msg_start, msg_size, ops_count + 1);
++        check (ret == 0, "thread[%ld]: received the wrong message", thread_id);
  
          /* reset recv buffer */
+         memset ((char *)msg_start, '\0', msg_size);
+ 
+         /* send a msg back to the server */
+ 	ops_count += 1;
++	seq_stamp (send_buf_ptr, msg_size, ops_count + 1);
+         if ((ops_count % SIG_INTERVAL) == 0) {
+             ret = post_write_signaled (msg_size, lkey, 0, qp, send_buf_ptr, raddr, rkey);
+         } else {
+@@ -74,7 +75,6 @@ void *server_thread (void *arg)
+ 
+         buf_offset = (buf_offset + msg_size) % buf_size;
+         msg_start  = buf_ptr + buf_offset;
+-        msg_end    = msg_start + msg_size - 1;
+         raddr      = raddr_base + buf_offset;
+ 	
+         if (ops_count == NUM_WARMING_UP_OPS) {
 diff --git a/setup_ib.c b/setup_ib.c
 index 32d5e94..7f3f21b 100644
 --- a/setup_ib.c

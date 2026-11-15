@@ -260,6 +260,18 @@ struct ionic_qp_ring {
 
     /* This QP's share of ionic_datapath.rdma, zeroed at registration. */
     uint64_t rdma[IONIC_DP_RDMA_COUNT];
+
+    /*
+     * The RDMA WRITEs and WRITE_IMMs this QP queued in the mesh for another
+     * node, those of them the peer acknowledged as landed, and those another
+     * node sent that landed here, addressed to this QP.  Queued isn't sent:
+     * the mesh drops what is still queued on a connection it closes.
+     * Logged when the QP is destroyed, so the two ends of a connection can
+     * be compared; zeroed at registration.  Only the vfu thread moves them.
+     */
+    uint64_t writes_queued;
+    uint64_t writes_acked;
+    uint64_t writes_landed;
 };
 
 /*
@@ -344,6 +356,7 @@ struct dp_pending {
     uint32_t msn;
     bool use_msn;    /* RC/UC retire by MSN, everything else by SQ index */
     bool signalled;  /* NPG completions are only posted when asked for */
+    bool write;      /* a WRITE or WRITE_IMM, counted in writes_acked */
     uint32_t length; /* expected READ/ATOMIC response size */
     struct dp_sge_list local; /* scatter target for the response */
     uint64_t deadline_ms;

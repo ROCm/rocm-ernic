@@ -709,6 +709,9 @@ int ionic_datapath_register_qp(struct ionic_datapath *dp, uint32_t qp_id,
     q->sq_cmb_buf_offset = 0;
     q->rq_cmb_buf_offset = 0;
     memset(q->rdma, 0, sizeof(q->rdma));
+    q->writes_queued = 0;
+    q->writes_acked = 0;
+    q->writes_landed = 0;
     q->valid = true;
 
     vfu_log(dp->vfu_ctx, LOG_INFO,
@@ -749,6 +752,17 @@ void ionic_datapath_unregister_qp(struct ionic_datapath *dp, uint32_t qp_id)
     if (!dp || qp_id >= dp->qp_count) {
         return;
     }
+
+    struct ionic_qp_ring *q = &dp->qp[qp_id];
+
+    if (q->valid && (q->writes_queued || q->writes_landed)) {
+        vfu_log(dp->vfu_ctx, LOG_INFO,
+                "ionic_datapath: QP %u queued %" PRIu64
+                " RDMA WRITEs for other nodes (%" PRIu64
+                " acknowledged), and %" PRIu64 " from other nodes landed",
+                qp_id, q->writes_queued, q->writes_acked, q->writes_landed);
+    }
+
     ionic_dp_nvmeof_drop_qp(dp, qp_id);
     /*
      * The requests this QP still has queued in the mesh go out, unlike a
@@ -766,8 +780,6 @@ void ionic_datapath_unregister_qp(struct ionic_datapath *dp, uint32_t qp_id)
      * qp_id next isn't sent this one's completions.
      */
     pending_cancel_qp(dp, qp_id);
-
-    struct ionic_qp_ring *q = &dp->qp[qp_id];
 
     sq_stall_clear(dp, q);
     ionic_dp_buf_release(&q->sq_buf);
@@ -2614,9 +2626,11 @@ static enum dp_post remote_post(struct ionic_datapath *dp,
         break;
     case IONIC_V1_OP_RDMA_WRITE:
         wire_op = IONIC_WIRE_WRITE;
+        p->write = true;
         break;
     case IONIC_V1_OP_RDMA_WRITE_IMM:
         wire_op = IONIC_WIRE_WRITE_IMM;
+        p->write = true;
         break;
     case IONIC_V1_OP_RDMA_READ:
         wire_op = IONIC_WIRE_READ_REQ;
@@ -2750,9 +2764,10 @@ static enum dp_post remote_post(struct ionic_datapath *dp,
 
         /* A READ has moved nothing yet; it is counted when the response
          * scatters into p->local. */
-        if (wire_op == IONIC_WIRE_WRITE || wire_op == IONIC_WIRE_WRITE_IMM) {
+        if (p->write) {
             ionic_dp_rdma_bytes(dp, qp_id, payload_len, ERNIC_STAT_RDMA_WRITE,
                                 DP_RDMA_TX);
+            q->writes_queued++;
         } else if (wire_op != IONIC_WIRE_READ_REQ &&
                    wire_op != IONIC_WIRE_ATOMIC_REQ) {
             ionic_dp_rdma_bytes(dp, qp_id, payload_len, ERNIC_STAT_SEND,
@@ -3964,6 +3979,9 @@ static void dp_wire_write(struct ionic_datapath *dp, uint32_t src_node,
         ionic_dp_rdma_bytes(dp, stat_qp, h->length, ERNIC_STAT_RDMA_WRITE,
                             DP_RDMA_RX);
 
+        if (dq) {
+            dq->writes_landed++;
+        }
         if (h->op == IONIC_WIRE_WRITE_IMM && dq) {
             struct dp_sge_list written = {.count = 0, .total = h->length};
             ionic_dp_deliver_recv(dp, dq, h->dst_qp_id, h->src_qp_id, &written,
@@ -4066,6 +4084,12 @@ static void dp_wire_response(struct ionic_datapath *dp,
             ionic_dp_rdma_bytes(dp, p->qp_id, got, ERNIC_STAT_RDMA_READ,
                                 DP_RDMA_RX);
         }
+    }
+    /* pending_cancel_qp() drops a destroyed QP's entries, so p's QP is
+     * the one that sent the WRITE */
+    if (p->write && status == IONIC_STS_OK && p->qp_id < dp->qp_count &&
+        dp->qp[p->qp_id].valid) {
+        dp->qp[p->qp_id].writes_acked++;
     }
     pending_complete(dp, p, status);
 }
