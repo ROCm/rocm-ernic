@@ -12,15 +12,16 @@
 #
 # It also checks the lockfile: ci/images/image-tag.sh --check fails unless
 # ci/guest-image.env and the lanes' image: lines name the images ci/images/
-# defines. ci-images.yml checks the same, but only when System Tests runs,
-# which its paths filter decides.
+# defines. ernic-ci-images.yml checks the same, but only when System Tests
+# runs, which its paths filter decides.
 #
 # Its own workflow, and deliberately with no paths filter. The check greps
 # the whole tree, so a stray pin can arrive in any file; gating it on a
 # paths list would excuse exactly the files most likely to carry one --
 # ansible/, ci/, tools/ and the lane workflows, none of which appear in
-# build-and-test.yml's filter, where this job used to live. codespell.yml
-# is the precedent: a tree-wide check takes a tree-wide trigger.
+# ernic-build-and-test.yml's filter, where this job used to live.
+# ernic-codespell.yml is the precedent: a tree-wide check takes a tree-wide
+# trigger.
 name: rocm-ernic - Image pins
 
 on:

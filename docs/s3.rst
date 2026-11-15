@@ -363,12 +363,13 @@ store came back empty.
 
 The hosted lane runs the whole thing from scratch --
 build, unit tests, boot a guest, provision it, transfer --
-in :file:`.github/workflows/s3-lane.yml`. Like the NVMe-oF
-lane it is a reusable workflow with a single ``publish``
-input, called by :file:`.github/workflows/system-tests.yml`:
-false on a pull request, true on a scheduled or dispatched
-run against ``develop``. The steps are the same either way, so a
-green pull request and a scheduled run mean the same thing.
+in :file:`.github/workflows/ernic-s3-lane.yml`. Like the
+NVMe-oF lane it is a reusable workflow with a single
+``publish`` input, called by
+:file:`.github/workflows/ernic-system-tests.yml`: false on a
+pull request, true on a scheduled or dispatched run against
+``develop``. The steps are the same either way, so a green pull
+request and a scheduled run mean the same thing.
 
 The endpoint's address, port and bucket are Ansible
 variables (``ernic_s3_addr``, ``ernic_s3_port``,
@@ -380,7 +381,7 @@ Performance
 -----------
 
 The scheduled run of
-:file:`.github/workflows/system-tests.yml` sweeps the client
+:file:`.github/workflows/ernic-system-tests.yml` sweeps the client
 across three object sizes and publishes what it measured, on
 the same terms and through the same code path as the RDMA,
 TCP/IP and NVMe-oF figures. The numbers land on the

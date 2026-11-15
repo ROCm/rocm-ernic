@@ -1,15 +1,15 @@
 # rocm-ernic
 
 [![License](https://img.shields.io/badge/License-MIT%20%7C%20GPL--2.0--or--later-blue.svg)][license]
-[![Build](https://img.shields.io/github/actions/workflow/status/ROCm/rocm-ernic/build-and-test.yml?label=Build)][ci-build]
+[![Build](https://img.shields.io/github/actions/workflow/status/ROCm/rocm-ernic/ernic-build-and-test.yml?label=Build)][ci-build]
 [![Coverage](https://img.shields.io/endpoint?url=https%3A%2F%2Fraw.githubusercontent.com%2FROCm%2Frocm-ernic%2Fbadges%2Fcoverage.json)][ci-build]
-[![Docs](https://img.shields.io/github/actions/workflow/status/ROCm/rocm-ernic/docs-check.yml?label=Docs)][ci-docs]
-[![clang-format](https://img.shields.io/github/actions/workflow/status/ROCm/rocm-ernic/clang-format.yml?label=clang-format)][ci-clang-format]
-[![ShellCheck](https://img.shields.io/github/actions/workflow/status/ROCm/rocm-ernic/shellcheck.yml?label=ShellCheck)][ci-shellcheck]
-[![pylint](https://img.shields.io/github/actions/workflow/status/ROCm/rocm-ernic/pylint.yml?label=pylint)][ci-pylint]
-[![cmakelint](https://img.shields.io/github/actions/workflow/status/ROCm/rocm-ernic/cmakelint.yml?label=cmakelint)][ci-cmakelint]
-[![CodeQL](https://img.shields.io/github/actions/workflow/status/ROCm/rocm-ernic/codeql.yml?label=CodeQL)][ci-codeql]
-[![System Tests](https://img.shields.io/github/actions/workflow/status/ROCm/rocm-ernic/system-tests.yml?label=System%20Tests)][ci-system-tests]
+[![Docs](https://img.shields.io/github/actions/workflow/status/ROCm/rocm-ernic/ernic-docs-check.yml?label=Docs)][ci-docs]
+[![clang-format](https://img.shields.io/github/actions/workflow/status/ROCm/rocm-ernic/ernic-clang-format.yml?label=clang-format)][ci-clang-format]
+[![ShellCheck](https://img.shields.io/github/actions/workflow/status/ROCm/rocm-ernic/ernic-shellcheck.yml?label=ShellCheck)][ci-shellcheck]
+[![pylint](https://img.shields.io/github/actions/workflow/status/ROCm/rocm-ernic/ernic-pylint.yml?label=pylint)][ci-pylint]
+[![cmakelint](https://img.shields.io/github/actions/workflow/status/ROCm/rocm-ernic/ernic-cmakelint.yml?label=cmakelint)][ci-cmakelint]
+[![CodeQL](https://img.shields.io/github/actions/workflow/status/ROCm/rocm-ernic/ernic-codeql.yml?label=CodeQL)][ci-codeql]
+[![System Tests](https://img.shields.io/github/actions/workflow/status/ROCm/rocm-ernic/ernic-system-tests.yml?label=System%20Tests)][ci-system-tests]
 [![Platform](https://img.shields.io/badge/platform-linux-lightgrey.svg)](INSTALL.md)
 [![CI guest kernel](https://img.shields.io/badge/CI%20guest%20kernel-7.2.6-blue.svg)][guest-kernel]
 [![RDMA bandwidth](https://img.shields.io/endpoint?url=https%3A%2F%2Frocm.github.io%2Frocm-ernic%2Fperf%2Fbadge-rdma.json)][perf-trends]
@@ -76,14 +76,14 @@ authoritative; see
 <!-- References -->
 
 [license]: https://github.com/ROCm/rocm-ernic/blob/develop/LICENSE.md
-[ci-build]: https://github.com/ROCm/rocm-ernic/actions/workflows/build-and-test.yml
-[ci-docs]: https://github.com/ROCm/rocm-ernic/actions/workflows/docs-check.yml
-[ci-clang-format]: https://github.com/ROCm/rocm-ernic/actions/workflows/clang-format.yml
-[ci-shellcheck]: https://github.com/ROCm/rocm-ernic/actions/workflows/shellcheck.yml
-[ci-pylint]: https://github.com/ROCm/rocm-ernic/actions/workflows/pylint.yml
-[ci-cmakelint]: https://github.com/ROCm/rocm-ernic/actions/workflows/cmakelint.yml
-[ci-codeql]: https://github.com/ROCm/rocm-ernic/actions/workflows/codeql.yml
-[ci-system-tests]: https://github.com/ROCm/rocm-ernic/actions/workflows/system-tests.yml
+[ci-build]: https://github.com/ROCm/rocm-ernic/actions/workflows/ernic-build-and-test.yml
+[ci-docs]: https://github.com/ROCm/rocm-ernic/actions/workflows/ernic-docs-check.yml
+[ci-clang-format]: https://github.com/ROCm/rocm-ernic/actions/workflows/ernic-clang-format.yml
+[ci-shellcheck]: https://github.com/ROCm/rocm-ernic/actions/workflows/ernic-shellcheck.yml
+[ci-pylint]: https://github.com/ROCm/rocm-ernic/actions/workflows/ernic-pylint.yml
+[ci-cmakelint]: https://github.com/ROCm/rocm-ernic/actions/workflows/ernic-cmakelint.yml
+[ci-codeql]: https://github.com/ROCm/rocm-ernic/actions/workflows/ernic-codeql.yml
+[ci-system-tests]: https://github.com/ROCm/rocm-ernic/actions/workflows/ernic-system-tests.yml
 [guest-kernel]: https://github.com/ROCm/rocm-ernic/blob/develop/docs/performance.rst
 [perf-trends]: https://rocm.github.io/rocm-ernic/perf-trends.html
 [libvfio]: https://github.com/nutanix/libvfio-user

@@ -17,9 +17,10 @@
 # touches it. GitHub's CodeQL check compares a pull request's analyses
 # against every configuration develop has, and if any is missing it can't
 # tell which alerts are new, so it reports none, C's included.
-# weekly-security-scan.yml gives develop /language:c-cpp, /language:python
-# and /language:actions, but pr-security-scan.yml analyzes only the
-# languages a pull request touches, so it doesn't fill the gap.
+# ernic-security-scan-weekly.yml gives develop /language:c-cpp,
+# /language:python and /language:actions, but ernic-security-scan-pr.yml
+# analyzes only the languages a pull request touches, so it doesn't fill
+# the gap.
 name: rocm-ernic - CodeQL
 
 on:
@@ -96,8 +97,8 @@ jobs:
 
       # Built before CodeQL is initialized so that only rocm-ernic's own
       # compilation is traced. The pin is LIBVFIO_USER_COMMIT in
-      # ci/images/builder/pins.env; build-and-test.yml says why only
-      # the library is built.
+      # ci/images/builder/pins.env; ernic-build-and-test.yml says why
+      # only the library is built.
       - name: Build and install libvfio-user
         if: matrix.language == 'c-cpp'
         run: |

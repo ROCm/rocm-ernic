@@ -135,11 +135,11 @@
 
 * The IWYU workflow could run for an hour or more while Ubuntu's mirror
   served its 100 MB of LLVM packages slowly. It, clang-tidy and Thread
-  safety now install through `.github/actions/apt-install`, which caches
-  the packages they download and has apt drop a stalled connection and try
-  another mirror, so they no longer download LLVM on every run. Every CI
-  job that runs on its own runner now has a time limit, a few times its
-  longest recent run, rather than GitHub's six hours.
+  safety now install through `.github/actions/ernic-apt-install`, which
+  caches the packages they download and has apt drop a stalled connection
+  and try another mirror, so they no longer download LLVM on every run.
+  Every CI job that runs on its own runner now has a time limit, a few
+  times its longest recent run, rather than GitHub's six hours.
 
 * A KV `List` command whose key-length field (CDW11[07:00]) was nonzero but
   exceeded `NVMEOF_KV_KEY_MAX` (16) was silently accepted and treated as a
@@ -161,7 +161,7 @@
   `BSD-1-Clause`; `LICENSE.md` lists it, and packages install its
   license as `share/doc/rocm-ernic/uthash/LICENSE`.
 * CI defines its own builder image, the container the VM lanes run in, in
-  `ci/images/builder/`, and the `CI images` workflow (`ci-images.yml`)
+  `ci/images/builder/`, and the `CI images` workflow (`ernic-ci-images.yml`)
   publishes it to `ghcr.io/rocm/rocm-ernic/ci-builder` when a pull
   request changes it. Its tag names its contents, so a published tag
   never changes: `ci/images/image-tag.sh` computes it, and
@@ -184,8 +184,8 @@
   `ci/guest-image.env` pins it, and `image-tag.sh --check` also fails if
   its kernel isn't `IONIC_KERNEL_REF`. `ernic-ci-images` now tests the
   guest's tag, publishing and `push.sh`, and needs `jq`.
-* The `Image pins` workflow (`guest-image-pin.yml`, formerly `Guest image
-  pin`), which runs on every pull request, now also fails if
+* The `Image pins` workflow (`ernic-guest-image-pin.yml`, formerly
+  `Guest image pin`), which runs on every pull request, now also fails if
   `ci/guest-image.env` or a lane's container `image:` line doesn't name
   the CI images the tree defines (`ci/images/image-tag.sh --check`), not
   only when System Tests runs. It first runs the tests of its checks:
@@ -199,16 +199,17 @@
   rocm-systems. They read the workflows and actions in `.github/` at the
   top of the checkout, only those named `ernic-*` when the project isn't
   the top, and name files by their paths from the top. The
-  `fetch-guest-vm` action takes the project's directory as `project_dir`,
-  and the lanes find `ci/boot-guest.sh`, `scripts/qemu-vm-diagnose.sh` and
-  the project for Ansible in the directory their steps run in, not
-  `$GITHUB_WORKSPACE`. The new `Nested checkout` workflow
-  (`nested-checkout.yml`) runs `tests/test_nested_checkout.sh`, which
-  copies the tree into `emulation/ernic/` of a scratch repository beside
-  another project, checks that the three look at the project's files and
-  only those, and builds it there.
-* The `CI image pruning` workflow (`ci-images-prune.yml`) deletes the
-  versions of the CI images in GHCR that nothing needs, every Monday,
+  `ernic-fetch-guest-vm` action takes the project's directory as
+  `project_dir`, and the lanes find `ci/boot-guest.sh`,
+  `scripts/qemu-vm-diagnose.sh` and the project for Ansible in the
+  directory their steps run in, not `$GITHUB_WORKSPACE`. The new
+  `Nested checkout` workflow (`ernic-nested-checkout.yml`) runs
+  `tests/test_nested_checkout.sh`, which copies the tree into
+  `emulation/ernic/` of a scratch repository beside another project,
+  checks that the three look at the project's files and only those, and
+  builds it there.
+* The `CI image pruning` workflow (`ernic-ci-images-prune.yml`) deletes
+  the versions of the CI images in GHCR that nothing needs, every Monday,
   with `ci/images/prune-images.sh`. It keeps the tags develop's
   `ci/guest-image.env` pins, the 10 newest, anything under 30 days old or
   with another tag, such as `buildcache`, and whatever a kept version
@@ -527,15 +528,14 @@
     refusal among them), `ernic-p4-driver` (frames and the control surface
     over a real vfio-user socket, with its servers under valgrind in the
     valgrind leg), a `p4`
-    leg in `driver-build.yml` that applies the patch series on top of the
-    base series and checks it creates the auxiliary device, the clang-tidy,
-    include-what-you-use and CodeQL workflows, which all build with
-    `-DERNIC_BUILD_P4=ON`, and the
-    "P4 Guest-Driven fp8" VM lane
-    (`p4-lane.yml`), which loads a program from inside a guest through
-    `/dev/ernic-p4` and checks the result of an ordinary libibverbs write.
-    The lane publishes a `p4cvt` fp16-to-fp8 conversion trend at 4 KiB and
-    64 KiB.
+    leg in `ernic-driver-build.yml` that applies the patch series on top of
+    the base series and checks it creates the auxiliary device, the
+    clang-tidy, include-what-you-use and CodeQL workflows, which all build
+    with `-DERNIC_BUILD_P4=ON`, and the "P4 Guest-Driven fp8" VM lane
+    (`ernic-p4-lane.yml`), which loads a program from inside a guest
+    through `/dev/ernic-p4` and checks the result of an ordinary libibverbs
+    write. The lane publishes a `p4cvt` fp16-to-fp8 conversion trend at
+    4 KiB and 64 KiB.
 * **Server options.** `-L` / `--log-level` and `ERNIC_LOG_LEVEL` select the
   log verbosity (`none`, `error`, `warn`, `info`, `debug`). `-G` /
   `--socket-group GROUP` (a name or number) lets that group connect to the
@@ -698,7 +698,7 @@
     guests, patched to address the peer by RoCE GID rather than LID and
     limited to `ernic_rdma_tutorial_ops` operations (default 10000). It is
     `--tags tutorial`, part of `functional` in `ci-site.yml`, and runs in
-    the two-VM job of `system-tests.yml`.
+    the two-VM job of `ernic-system-tests.yml`.
   * The `ionic-patches` CI job checks that every driver patch still applies
     to the pinned `IONIC_KERNEL_REF`.
 * **Nix outputs for a NixOS guest.** `nixosModules.ernic-guest` (enable
@@ -731,6 +731,17 @@
 
 ### Changed
 
+* The GitHub workflows and composite actions are named `ernic-*`, the
+  names they keep in rocm-systems, where they share `.github/` with other
+  projects': `build-and-test.yml` is `ernic-build-and-test.yml`,
+  `.github/actions/apt-install` is `.github/actions/ernic-apt-install`,
+  and so on, except that `pr-security-scan.yml` and
+  `weekly-security-scan.yml` are `ernic-security-scan-pr.yml` and
+  `ernic-security-scan-weekly.yml`. Use the new file names with
+  `gh workflow run` and in links to a workflow's runs or status badge;
+  runs from before the rename stay under the old workflows.
+  `tests/test_nested_checkout.sh` fails if a workflow or action isn't
+  named `ernic-*`.
 * When a QP that sent or received RDMA WRITEs across the TCP mesh is
   destroyed, the server logs, at `info`, how many WRITEs it queued for
   other nodes, how many of those were acknowledged, and how many from
@@ -859,17 +870,17 @@
   launch owns its QEMU: `vm-stop` cancels the launch and waits for it to
   stop QEMU, and so does stopping `vm-launch` itself with `SIGINT`,
   `SIGTERM` or `SIGHUP`.
-* The system-test lanes (`system-tests.yml`, `nvmeof-lane.yml`,
-  `s3-lane.yml` and `p4-lane.yml`) boot their guests with
-  `ci/boot-guest.sh`, as `ernicctl vm-launch` does, rather than their own
-  QEMU command lines. So CI now tests the device behind a PCIe root port,
-  where deployments put it, rather than on the root bus, and the guests'
-  SSH is forwarded from 127.0.0.1 only. The lanes log in with a key made
-  for the job, which the helper authorizes, rather than the one published
-  with the guest image. QEMU's own log is now `/tmp/ernic-vmN/qemu.log` in
-  the jobs' log artifacts. The jobs' containers run with `--init`, so a
-  QEMU or server that exits is reaped rather than left a zombie that
-  `kill -0` takes for a running process.
+* The system-test lanes (`ernic-system-tests.yml`,
+  `ernic-nvmeof-lane.yml`, `ernic-s3-lane.yml` and `ernic-p4-lane.yml`)
+  boot their guests with `ci/boot-guest.sh`, as `ernicctl vm-launch` does,
+  rather than their own QEMU command lines. So CI now tests the device
+  behind a PCIe root port, where deployments put it, rather than on the
+  root bus, and the guests' SSH is forwarded from 127.0.0.1 only. The
+  lanes log in with a key made for the job, which the helper authorizes,
+  rather than the one published with the guest image. QEMU's own log is
+  now `/tmp/ernic-vmN/qemu.log` in the jobs' log artifacts. The jobs'
+  containers run with `--init`, so a QEMU or server that exits is reaped
+  rather than left a zombie that `kill -0` takes for a running process.
 * The libvfio-user commit CI builds the server against is pinned once,
   in `ci/images/builder/pins.env`, rather than in each of eight
   workflows, and a pull request that changes it runs the checks that
@@ -1343,8 +1354,8 @@
 * **The self-hosted CI**, whose lab runner was retired: the
   `self-hosted-ci.yml` workflow and its harness, `ci/runner/`, `ci/jobs/`,
   `ci/lib/common.sh` and `ci/doctor.sh`. The VM tests run in
-  `system-tests.yml` and the lanes it calls; to run one by hand, provision
-  the guests as in `docs/testing.rst` and run its Ansible play.
+  `ernic-system-tests.yml` and the lanes it calls; to run one by hand,
+  provision the guests as in `docs/testing.rst` and run its Ansible play.
   `ci/report/gen-report.py` now reports only the perf CSVs: it no longer
   reads shell check results (`*.jsonl`), Ansible JUnit results, or
   `CI_TESTED_SHA`, `CI_TESTED_REF` and `CI_VM_ACCEL`, and its

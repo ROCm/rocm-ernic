@@ -25,7 +25,7 @@ on:
       # is the only consumer of the capability bit the series adds, so a
       # change to either should re-run the checks on both.
       - 'drivers/ernic_p4/**'
-      - '.github/workflows/driver-build.yml'
+      - '.github/workflows/ernic-driver-build.yml'
   workflow_dispatch:
 
 permissions:
@@ -43,7 +43,7 @@ jobs:
   # exists and that every patch still applies to it -- the modules themselves
   # need kernel >= 6.18 headers, which hosted runners do not have.  Compiling
   # and loading them is the VM lane's job, in the SRQ steps of
-  # .github/workflows/system-tests.yml.
+  # .github/workflows/ernic-system-tests.yml.
   #
   # Three series are checked, because there are three.  The patch at the top
   # of ansible/files/patches is what the shipping driver is built from, pinned

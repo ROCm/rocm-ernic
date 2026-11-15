@@ -116,7 +116,8 @@ ernic_add_test_program(test_rdma_cm
 # Built here, never registered with CTest, for the reason the comment
 # further down gives for test_data_transfer and test_rdma_cm: they need a
 # real RDMA device, and on a host without one they exit 77, which CTest
-# scores as a pass. They run for real in the guest, from system-tests.yml.
+# scores as a pass. They run for real in the guest, from
+# ernic-system-tests.yml.
 #
 # Building them is still worth it. Until they were added here they were in
 # no target at all, so a syntax or type error in any of them surfaced only
@@ -956,8 +957,8 @@ ernic_add_unit_test(ernic-device-tuple-unit test_ernic_device
 # returned 77 and CTest reported the skip as a pass, so they looked like
 # coverage while testing nothing. They are built (test_data_transfer is the
 # loopback config step's TEST_BIN) and are run for real inside the VM by the
-# loopback job in system-tests.yml, where a device is guaranteed and exit 77
-# is treated as a failure.
+# loopback job in ernic-system-tests.yml, where a device is guaranteed and
+# exit 77 is treated as a failure.
 
 # Guest DMA range check unit test (table-driven)
 ernic_add_unit_test(dma-range-unit test_dma_range TIMEOUT 30)

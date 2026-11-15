@@ -1,7 +1,7 @@
 # CI images
 
 The images CI runs in are defined here and published to GHCR
-by `.github/workflows/ci-images.yml`:
+by `.github/workflows/ernic-ci-images.yml`:
 
 | Directory | Image | What it is |
 | --- | --- | --- |
@@ -10,11 +10,11 @@ by `.github/workflows/ci-images.yml`:
 
 Every VM lane runs in `ci-builder`, under the tag its
 `container:` `image:` line names, and boots the guest
-`ci/guest-image.env` names. `system-tests.yml` calls
-`ci-images.yml` first, which checks those tags are this
-tree's and publishes each image that isn't published yet. So
-a pull request that changes an image runs the lanes with the
-new one.
+`ci/guest-image.env` names. `ernic-system-tests.yml` calls
+`ernic-ci-images.yml` first, which checks those tags are
+this tree's and publishes each image that isn't published
+yet. So a pull request that changes an image runs the lanes
+with the new one.
 
 The builder's default user is `ci` (uid 1001), not root.
 Anything needing root asks for it: the VM lanes, which are
@@ -90,31 +90,32 @@ project is the checkout, and only those named `ernic-*` when
 it's a directory in a larger one, as in rocm-systems.
 
 Both checks run on every pull request, in
-`guest-image-pin.yml`, which has no `paths:` filter, after
-the tests of the scripts themselves; `ci-images.yml` runs
-`image-tag.sh --check` again before it publishes anything.
+`ernic-guest-image-pin.yml`, which has no `paths:` filter,
+after the tests of the scripts themselves;
+`ernic-ci-images.yml` runs `image-tag.sh --check` again
+before it publishes anything.
 
 Every lane names the image in `ghcr.io/rocm/rocm-ernic`,
-while `ci-images.yml` publishes to the running repository's
-owner. So a run in a fork whose builder isn't already
-published by `ROCm/rocm-ernic` publishes it to the fork, and
-its lanes, looking in `ROCm`'s registry, fail.
+while `ernic-ci-images.yml` publishes to the running
+repository's owner. So a run in a fork whose builder isn't
+already published by `ROCm/rocm-ernic` publishes it to the
+fork, and its lanes, looking in `ROCm`'s registry, fail.
 
 To rebuild an image whose definition hasn't changed, for
 Ubuntu's updates, or the guest's newer cloud image, bump
 `REBUILD` in its `pins.env`.
 
 A pull request from a fork gets a read-only token, so it
-can't publish an image; if it changes one, `ci-images.yml`
-fails and says so, and a maintainer pushes the branch to
-`ROCm/rocm-ernic` instead.
+can't publish an image; if it changes one,
+`ernic-ci-images.yml` fails and says so, and a maintainer
+pushes the branch to `ROCm/rocm-ernic` instead.
 
 ## Pruning
 
 Each tag stays in GHCR as a version of the image's package,
 and so does each registry cache a build replaced, untagged.
-`.github/workflows/ci-images-prune.yml` deletes the ones
-nothing needs every Monday, with `prune-images.sh`.
+`.github/workflows/ernic-ci-images-prune.yml` deletes the
+ones nothing needs every Monday, with `prune-images.sh`.
 
 The images it prunes are those `ci/guest-image.env` names in
 `ghcr.io/rocm/rocm-ernic`, as `PREFIX_IMAGE` or
@@ -169,10 +170,11 @@ that the guest's `KERNEL_REF` must equal `IONIC_KERNEL_REF`,
 so they change together. The
 builder's `LIBVFIO_USER_REPO` and `LIBVFIO_USER_COMMIT` are
 also what every other CI build compiles the server against
-(`build-and-test.yml`, `clang-tidy.yml`, `codeql.yml`,
-`iwyu.yml`, `nightly.yml`, `release.yml`, `service-test.yml`
-and `thread-safety.yml` source the file), so a libvfio-user
-bump moves them all.
+(`ernic-build-and-test.yml`, `ernic-clang-tidy.yml`,
+`ernic-codeql.yml`, `ernic-iwyu.yml`, `ernic-nightly.yml`,
+`ernic-release.yml`, `ernic-service-test.yml` and
+`ernic-thread-safety.yml` source the file), so a
+libvfio-user bump moves them all.
 
 ## Building locally
 

@@ -27,7 +27,7 @@ on:
       - 'ansible/files/**'
       - 'CMakeLists.txt'
       - 'cmake/**'
-      - '.github/workflows/build-and-test.yml'
+      - '.github/workflows/ernic-build-and-test.yml'
       # LIBVFIO_USER_COMMIT, which this builds against
       - 'ci/images/builder/pins.env'
   push:
@@ -150,7 +150,7 @@ jobs:
         uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: /var/cache/apt/archives
-          key: apt-${{ matrix.os }}-${{ matrix.compiler }}-${{ matrix.build_type }}-build-and-test-${{ hashFiles('.github/workflows/build-and-test.yml') }}
+          key: apt-${{ matrix.os }}-${{ matrix.compiler }}-${{ matrix.build_type }}-build-and-test-${{ hashFiles('.github/workflows/ernic-build-and-test.yml') }}
           restore-keys: apt-${{ matrix.os }}-${{ matrix.compiler }}-${{ matrix.build_type }}-build-and-test-
 
       # build-essential, cmake, ninja-build and pkg-config are preinstalled
@@ -668,7 +668,7 @@ jobs:
           git -C ../badges add coverage.json
           git -C ../badges commit --quiet \
             -m "Coverage badge from ${GITHUB_SHA}" \
-            -m "Published by build-and-test.yml. [skip ci]" \
+            -m "Published by ernic-build-and-test.yml. [skip ci]" \
             -m "Source-Commit: ${GITHUB_SHA}"
           git -C ../badges push --quiet \
             --force-with-lease="refs/heads/badges:${lease}" \

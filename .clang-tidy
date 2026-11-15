@@ -13,7 +13,7 @@
 # picks up the checks that a newer clang-tidy adds to them.
 #
 # This needs clang-tidy 19 or later, for ExcludeHeaderFilterRegex. CI
-# (clang-tidy.yml) uses upstream clang-tidy 23.
+# (ernic-clang-tidy.yml) uses upstream clang-tidy 23.
 #
 # Some checks have more than one name (aliases), so a check that's turned
 # off is listed under each of its names in the enabled groups. Each alias
@@ -55,7 +55,7 @@ Checks:
   # Not wanted: checks that contradict rocm-ernic's conventions or
   # tooling
 
-  # IWYU checks the includes (iwyu.yml), as in hipObject
+  # IWYU checks the includes (ernic-iwyu.yml), as in hipObject
   - -misc-include-cleaner
   # It wants C11's Annex K functions, such as memcpy_s(), which glibc
   # doesn't have and rocm-ernic won't use

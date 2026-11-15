@@ -19,7 +19,7 @@ on:
     paths:
       # LIBVFIO_USER_COMMIT, which this builds against
       - 'ci/images/builder/pins.env'
-      - '.github/workflows/nightly.yml'
+      - '.github/workflows/ernic-nightly.yml'
       - 'cmake/ErnicInstall.cmake'
       - 'cmake/ErnicPackage.cmake'
       - 'tests/package/**'
@@ -157,8 +157,8 @@ jobs:
       # ERNIC_BUNDLE_VFIO_USER in cmake/ErnicInstall.cmake). It's built
       # into a directory of its own, so the build can't find a copy
       # anywhere else, and so dpkg-shlibdeps has to find the packages'
-      # copy. Keep the pinned commit in step with build-and-test.yml, which
-      # says why it is this one.
+      # copy. Keep the pinned commit in step with ernic-build-and-test.yml,
+      # which says why it is this one.
       #
       # Only the library is built: its tests don't build with Ubuntu
       # 26.04's cmocka. It's optimized, with debug information, but without

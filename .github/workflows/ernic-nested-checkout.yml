@@ -4,10 +4,10 @@
 #
 # The project in a directory of a larger repository, as it will be in
 # rocm-systems (emulation/ernic/), with its workflows and actions at the
-# top, named ernic-*, beside another project's. tests/test_nested_checkout.sh
-# checks that the image pin checks and the embedded shell check look at
-# the project's files and only those, and that the project configures and
-# builds there. It needs ShellCheck and PyYAML, which the Build and Test
+# top, beside another project's. tests/test_nested_checkout.sh checks
+# that every workflow and action is named ernic-*, that the image pin
+# checks and the embedded shell check look at the project's files and
+# only those, and that the project configures and builds there. It needs ShellCheck and PyYAML, which the Build and Test
 # workflow doesn't install, and builds the project a second time, so it's
 # a workflow of its own rather than a CTest test.
 name: rocm-ernic - Nested checkout
@@ -50,7 +50,7 @@ jobs:
       # preinstalled on the hosted image. libjson-c-dev is for
       # -DERNIC_BUILD_P4=ON, below.
       - name: Install system dependencies
-        uses: $/.github/actions/apt-install
+        uses: $/.github/actions/ernic-apt-install
         with:
           packages: >-
             libibverbs-dev
@@ -72,7 +72,7 @@ jobs:
           key: libvfio-user-${{ hashFiles('ci/images/builder/pins.env') }}-ubuntu-26.04
 
       # The pin is LIBVFIO_USER_COMMIT in ci/images/builder/pins.env;
-      # build-and-test.yml says why only the library is built
+      # ernic-build-and-test.yml says why only the library is built
       - name: Clone and build libvfio-user
         if: steps.cache-libvfio-user.outputs.cache-hit != 'true'
         run: |

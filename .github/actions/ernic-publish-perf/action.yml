@@ -6,11 +6,12 @@ description: >-
   to rebuild.
 
 # One copy of the publish handoff for every lane that measures
-# something.  It used to be pasted into nvmeof-lane.yml and
-# system-tests.yml, which is how `gh: command not found` came to sit in
-# both at once: the container image these jobs run in has no GitHub
-# CLI, so the Pages dispatch failed on a run that had otherwise
-# published perfectly and left the site showing the previous numbers.
+# something.  It used to be pasted into ernic-nvmeof-lane.yml and
+# ernic-system-tests.yml, which is how `gh: command not found` came
+# to sit in both at once: the container image these jobs run in has
+# no GitHub CLI, so the Pages dispatch failed on a run that had
+# otherwise published perfectly and left the site showing the
+# previous numbers.
 #
 # Nothing here may fail the calling job.  By the time this runs the
 # lane has already measured everything it was asked to; a trend that
@@ -37,7 +38,7 @@ inputs:
   token:
     description: >-
       Token with contents: write (to push gh-pages) and
-      actions: write (to dispatch docs-deploy).
+      actions: write (to dispatch ernic-docs-deploy).
     required: true
 
 runs:
@@ -189,7 +190,7 @@ runs:
         import json, os, sys, urllib.error, urllib.request
         req = urllib.request.Request(
             "https://api.github.com/repos/%s/actions/workflows/"
-            "docs-deploy.yml/dispatches" % os.environ["GITHUB_REPOSITORY"],
+            "ernic-docs-deploy.yml/dispatches" % os.environ["GITHUB_REPOSITORY"],
             data=json.dumps({"ref": "develop"}).encode(),
             headers={
                 "Authorization": "Bearer " + os.environ["GH_TOKEN"],
@@ -207,7 +208,7 @@ runs:
             sys.exit(1)
         PY
         then
-          echo "docs-deploy dispatched; Pages will rebuild"
+          echo "ernic-docs-deploy dispatched; Pages will rebuild"
         else
-          echo "::warning::could not dispatch docs-deploy; Pages is stale"
+          echo "::warning::could not dispatch ernic-docs-deploy; Pages is stale"
         fi

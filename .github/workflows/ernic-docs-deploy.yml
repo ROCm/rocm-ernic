@@ -36,7 +36,7 @@ on:
       - 'cmake/ErnicDocumentation.cmake'
       - 'ci/pages.env'
       - 'ci/pages-subdir.sh'
-      - '.github/workflows/docs-deploy.yml'
+      - '.github/workflows/ernic-docs-deploy.yml'
 
 # Serialise deploys.  Unlike the pull request workflows this does NOT
 # cancel in progress: a half-finished deploy would leave gh-pages in
@@ -162,7 +162,7 @@ jobs:
           fi
           git -C ../gh-pages commit \
             -m "docs: publish site from ${GITHUB_SHA}" \
-            -m "Built by docs-deploy.yml. [skip ci]"
+            -m "Built by ernic-docs-deploy.yml. [skip ci]"
 
           if git -C ../gh-pages push origin HEAD:gh-pages; then
             echo "published"

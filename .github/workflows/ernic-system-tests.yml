@@ -35,21 +35,21 @@ on:
       # ci/guest-image.env a repin matched no path, so bumping the guest
       # image ran no VM lane.
       - 'ci/**'
-      - '.github/workflows/system-tests.yml'
+      - '.github/workflows/ernic-system-tests.yml'
       # Publishes the builder image every job here runs in
-      - '.github/workflows/ci-images.yml'
+      - '.github/workflows/ernic-ci-images.yml'
       # Both the nvmeof and the nvmeof-kv jobs' body: one file, two
       # modes.
-      - '.github/workflows/nvmeof-lane.yml'
-      - '.github/workflows/s3-lane.yml'       # the s3 job's body
-      - '.github/workflows/p4-lane.yml'       # the p4 job's body
+      - '.github/workflows/ernic-nvmeof-lane.yml'
+      - '.github/workflows/ernic-s3-lane.yml'       # the s3 job's body
+      - '.github/workflows/ernic-p4-lane.yml'       # the p4 job's body
       # The P4 lane is the only thing that exercises these end to end,
       # and each is useless without the others: the engine, the patch
       # that creates the device, and the module that binds to it.
       - 'src/p4/**'
       - 'ansible/files/patches/p4/**'
       - 'drivers/ernic_p4/**'
-      - '.github/actions/fetch-guest-vm/**'
+      - '.github/actions/ernic-fetch-guest-vm/**'
   schedule:
     # 04:23 UTC.  Off the hour on purpose -- the top of the hour is
     # when every cron on GitHub fires at once and queue times spike.
@@ -89,10 +89,10 @@ env:
   ERNIC_TAP_PREFIX: ernic-tap
   # The guest qcow2 ships as an ORAS artifact -- 1.6 GB zstd rather than
   # the 5.75 GB raw the FROM-scratch payload image carried, and no skopeo.
-  # Both jobs pull it through .github/actions/fetch-guest-vm.  The builder
-  # image carries no guest at all: guest building moved out to its own
-  # repository, one per flavour, so there is nothing to fall back to if
-  # this pull fails.
+  # Both jobs pull it through .github/actions/ernic-fetch-guest-vm.  The
+  # builder image carries no guest at all: guest building moved out to its
+  # own repository, one per flavour, so there is nothing to fall back to
+  # if this pull fails.
   #
   # Pin the date-prefixed tag.  Neither `latest-qcow2` nor the bare
   # `vm.<release>-<flavour>-qm.<sha>-qcow2` is immutable: the latter names
@@ -109,7 +109,7 @@ jobs:
     permissions:
       contents: read
       packages: write
-    uses: $/.github/workflows/ci-images.yml
+    uses: $/.github/workflows/ernic-ci-images.yml
 
   system-test-loopback-vm:
     name: Loopback Backend System Tests
@@ -210,7 +210,7 @@ jobs:
 
     - name: Fetch the guest VM image
       id: guest_image
-      uses: $/.github/actions/fetch-guest-vm
+      uses: $/.github/actions/ernic-fetch-guest-vm
       with:
         tag: ${{ env.GUEST_ARTIFACT_TAG }}
 
@@ -1437,7 +1437,7 @@ jobs:
     name: NVMe-oF Backend System Tests
     # The lane body lives in its own reusable workflow because it is
     # long enough to be worth reading on its own; see
-    # .github/workflows/nvmeof-lane.yml.
+    # .github/workflows/ernic-nvmeof-lane.yml.
     #
     # Write lives on the calling job, not in the reusable workflow, so
     # a pull request run cannot inherit it: the expression below is
@@ -1450,7 +1450,7 @@ jobs:
       # other workflows, so Pages would otherwise never rebuild.
       actions: write
     needs: images
-    uses: $/.github/workflows/nvmeof-lane.yml
+    uses: $/.github/workflows/ernic-nvmeof-lane.yml
     with:
       # The same rule the two-VM lane publishes under, so the three
       # badges are fed on identical terms: never from a pull request,
@@ -1476,7 +1476,7 @@ jobs:
       # other workflows, so Pages would otherwise never rebuild.
       actions: write
     needs: images
-    uses: $/.github/workflows/nvmeof-lane.yml
+    uses: $/.github/workflows/ernic-nvmeof-lane.yml
     with:
       mode: mixed
       # The same rule every other publishing lane uses, so the badges
@@ -1493,7 +1493,7 @@ jobs:
     # Single Server".
     name: S3 Backend System Tests
     # The lane body lives in its own reusable workflow; see
-    # .github/workflows/s3-lane.yml.
+    # .github/workflows/ernic-s3-lane.yml.
     #
     # Write lives on the calling job, not in the reusable workflow, so
     # a pull request run cannot inherit it.
@@ -1504,7 +1504,7 @@ jobs:
       # other workflows, so Pages would otherwise never rebuild.
       actions: write
     needs: images
-    uses: $/.github/workflows/s3-lane.yml
+    uses: $/.github/workflows/ernic-s3-lane.yml
     with:
       # The same rule the other publishing lanes use, so every badge is
       # fed on identical terms: never from a pull request, and a manual
@@ -1524,7 +1524,7 @@ jobs:
       # other workflows, so Pages would otherwise never rebuild.
       actions: write
     needs: images
-    uses: $/.github/workflows/p4-lane.yml
+    uses: $/.github/workflows/ernic-p4-lane.yml
     with:
       # The same rule every publishing lane uses, so each series is fed
       # on identical terms: never from a pull request, and a manual run
@@ -1656,7 +1656,7 @@ jobs:
 
     - name: Fetch the guest VM image
       id: guest_image
-      uses: $/.github/actions/fetch-guest-vm
+      uses: $/.github/actions/ernic-fetch-guest-vm
       with:
         tag: ${{ env.GUEST_ARTIFACT_TAG }}
 
@@ -2600,7 +2600,7 @@ jobs:
         github.ref == 'refs/heads/develop' &&
         github.event_name != 'pull_request' &&
         (github.event_name != 'workflow_dispatch' || inputs.publish)
-      uses: $/.github/actions/publish-perf
+      uses: $/.github/actions/ernic-publish-perf
       with:
         results: ${{ env.PERF_RESULTS }}
         subject: RDMA and TCP

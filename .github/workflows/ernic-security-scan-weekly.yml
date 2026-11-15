@@ -3,7 +3,7 @@
 #
 # Weekly security scan: runs on a fixed cadence and pushes SARIF findings
 # to the repository's code-scanning Security tab. Complements
-# `pr-security-scan.yml`, which scans only what changed in a PR and
+# `ernic-security-scan-pr.yml`, which scans only what changed in a PR and
 # uploads reviewer-readable artifacts for in-review browsing.
 
 name: Security scan (Weekly)

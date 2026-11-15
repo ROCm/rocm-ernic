@@ -8,8 +8,9 @@
 # Prints PAGES_SUBDIR from ci/pages.env, the project's directory on the
 # gh-pages branch, or nothing for the branch root. Fails, printing nothing,
 # unless the file has exactly one PAGES_SUBDIR line and its value has the
-# form pages.env describes. docs-deploy.yml and .github/actions/publish-perf
-# both read the setting through this, so they agree on where they write.
+# form pages.env describes. ernic-docs-deploy.yml and
+# .github/actions/ernic-publish-perf both read the setting through this, so
+# they agree on where they write.
 
 set -euo pipefail
 

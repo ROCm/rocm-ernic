@@ -186,7 +186,7 @@ The nightly packages are made like this, installed under
 
 ``cpack`` needs ``dpkg-shlibdeps``, from ``dpkg-dev``, and
 ``file`` to find the packages' dependencies. The nightly build
-workflow, ``.github/workflows/nightly.yml``, publishes the
+workflow, ``.github/workflows/ernic-nightly.yml``, publishes the
 packages for each supported Ubuntu release as the ``nightly``
 prerelease, once they've installed and run in a clean container.
 

@@ -13,7 +13,7 @@ on:
       - '**.h'
       # The root one, and drivers/ernic_p4's kernel style
       - '**/.clang-format'
-      - '.github/workflows/clang-format.yml'
+      - '.github/workflows/ernic-clang-format.yml'
   workflow_dispatch:
 
 permissions:

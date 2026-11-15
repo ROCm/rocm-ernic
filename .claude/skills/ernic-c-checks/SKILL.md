@@ -45,8 +45,8 @@ locally.
 
 Needs clang-tidy 19+ and the same-version Clang (it rejects GCC's
 options), in its own build directory. It runs as part of the build. CI
-([clang-tidy.yml](../../../.github/workflows/clang-tidy.yml)) uses
-clang-tidy 23 and checks Debug and Release (`NDEBUG` and
+([ernic-clang-tidy.yml](../../../.github/workflows/ernic-clang-tidy.yml))
+uses clang-tidy 23 and checks Debug and Release (`NDEBUG` and
 `_FORTIFY_SOURCE` change the analysis); locally, Debug is enough:
 
 ```bash
@@ -65,8 +65,8 @@ Every clang build, CI's clang 18 included, fails on a broken function
 annotation. Only clang 23 checks fields' annotations and the lock order
 in C. Build with it when a change touches a lock, a guarded field, or an
 annotation;
-[thread-safety.yml](../../../.github/workflows/thread-safety.yml) does
-the same, failing only on these warnings:
+[ernic-thread-safety.yml](../../../.github/workflows/ernic-thread-safety.yml)
+does the same, failing only on these warnings:
 
 ```bash
 cmake -B build-clang23 -G Ninja -DCMAKE_C_COMPILER=clang-23 \
@@ -83,8 +83,8 @@ Run it when a change touches `#include`s. Install it with
 rejects options it doesn't know, such as GCC 15's
 `-fzero-init-padding-bits`. It skips up-to-date files, so a rebuild
 checks only what changed. To check every file as CI
-([iwyu.yml](../../../.github/workflows/iwyu.yml)) does, start from an
-empty build directory:
+([ernic-iwyu.yml](../../../.github/workflows/ernic-iwyu.yml)) does,
+start from an empty build directory:
 
 ```bash
 cmake -B build-iwyu -G Ninja -DCMAKE_C_COMPILER=clang-19 \
@@ -115,7 +115,7 @@ where `<inttypes.h>` is included. Ignore the wrong ones:
 ## Coverage
 
 Line coverage of `src/` must not fall below `MIN_LINE_COVERAGE` in
-[build-and-test.yml](../../../.github/workflows/build-and-test.yml),
+[ernic-build-and-test.yml](../../../.github/workflows/ernic-build-and-test.yml),
 which CI's coverage leg checks on every PR. Measure it when a change adds
 error paths or a lot of code and `src/` is near the floor. Use Clang and
 Debug, as CI does, so the lines match the source:
@@ -140,7 +140,7 @@ start over. CI also counts the loopback configurations
 
 PRs labelled `run-static` also get clang-tidy, cppcheck, flawfinder, and
 the Clang static analyzer, via `nix/analysis/`
-([static-analysis.yml](../../../.github/workflows/static-analysis.yml)).
+([ernic-static-analysis.yml](../../../.github/workflows/ernic-static-analysis.yml)).
 It never fails, but read its findings for files you touched. Its
 clang-tidy checks differ from `.clang-tidy`, so it doesn't replace the
 check above.

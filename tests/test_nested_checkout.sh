@@ -3,8 +3,10 @@
 # The project in a directory of a larger repository, as it will be in
 # rocm-systems: a copy of the files git tracks in SOURCE_DIR, put in
 # emulation/ernic/ of a scratch repository, with its workflows and actions
-# moved to .github/ at the top and named ernic-*, beside another project
-# whose files and workflows every check would refuse. Checks that
+# moved to .github/ at the top, beside another project whose files and
+# workflows every check would refuse. Checks that
+#   - every workflow and action is named ernic-*, as they must be in
+#     rocm-systems, where all its projects share .github/;
 #   - tools/check-guest-image-tag.sh, ci/images/image-tag.sh --check and
 #     tools/check-embedded-shell.py pass, run from outside the repository,
 #     so they ignore the other project;
@@ -72,14 +74,13 @@ git -C "$SRC" ls-files -z |
     done |
     tar -C "$SRC" --null -T - -cf - | tar -C "$DIR" -xf -
 
-# The workflows and actions, at the top and named ernic-*
+# The workflows and actions, at the top, where they share .github/ with
+# every other project's, so each must be named ernic-*
 mv "$DIR/.github" "$TOP/.github"
 for f in "$TOP"/.github/workflows/* "$TOP"/.github/actions/*; do
-    name=${f##*/}
-    if [[ $name != ernic-* ]]; then
-        mv "$f" "${f%/*}/ernic-$name"
-    fi
+    [[ ${f##*/} == ernic-* ]] || fail "${f#"$TOP/"} isn't named ernic-*"
 done
+pass "every workflow and action is named ernic-*"
 
 # Another project's files, which hold what each check refuses: a guest
 # tag, a stale builder in a workflow's image: line, and shell with

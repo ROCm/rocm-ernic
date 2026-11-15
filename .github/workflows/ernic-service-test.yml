@@ -12,7 +12,7 @@ on:
       - 'prometheus/ernic-exporter'
       - 'prometheus/ernic-exporter.service'
       - 'cmake/ErnicInstall.cmake'
-      - '.github/workflows/service-test.yml'
+      - '.github/workflows/ernic-service-test.yml'
       # LIBVFIO_USER_COMMIT, which this builds against
       - 'ci/images/builder/pins.env'
   workflow_dispatch:
@@ -156,8 +156,8 @@ jobs:
     - name: Clone and build libvfio-user
       run: |
         # The pin is LIBVFIO_USER_COMMIT in ci/images/builder/pins.env;
-        # build-and-test.yml says why it is this one and why only the
-        # library is built.
+        # ernic-build-and-test.yml says why it is this one and why only
+        # the library is built.
         . ci/images/builder/pins.env
         git clone "$LIBVFIO_USER_REPO" /tmp/libvfio-user
         cd /tmp/libvfio-user

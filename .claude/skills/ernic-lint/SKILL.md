@@ -15,7 +15,8 @@ isn't in CI at all.
 
 ShellCheck 0.11.0, default checks only (no `--list-optional`), over every
 `*.sh`, `*.sh.in`, and extension-less executable with a shell shebang, as
-[shellcheck.yml](../../../.github/workflows/shellcheck.yml) does:
+[ernic-shellcheck.yml](../../../.github/workflows/ernic-shellcheck.yml)
+does:
 
 ```bash
 git ls-files | while IFS= read -r f; do
@@ -49,7 +50,8 @@ AGENTS.md says how to write a heredoc so it gets checked.
 ## CMake
 
 cmakelint with [`.cmakelintrc`](../../../.cmakelintrc), as
-[cmakelint.yml](../../../.github/workflows/cmakelint.yml) does:
+[ernic-cmakelint.yml](../../../.github/workflows/ernic-cmakelint.yml)
+does:
 
 ```bash
 git ls-files -z -- 'CMakeLists.txt' '*/CMakeLists.txt' '*.cmake' |
@@ -61,10 +63,10 @@ git ls-files -z -- 'CMakeLists.txt' '*/CMakeLists.txt' '*.cmake' |
 black, pylint, and vermin over every `*.py` and extension-less
 python-shebang script, except `nix/analysis/triage/`. pylint needs
 `prometheus/requirements-exporter.txt` and PyYAML installed. CI
-([pylint.yml](../../../.github/workflows/pylint.yml)) runs black and
-pylint under Python 3.12, and they miss most uses of newer Python than
-3.10. vermin (`pip install vermin`) catches those, printing
-`Target versions not met` on a violation.
+([ernic-pylint.yml](../../../.github/workflows/ernic-pylint.yml)) runs
+black and pylint under Python 3.12, and they miss most uses of newer
+Python than 3.10. vermin (`pip install vermin`) catches those,
+printing `Target versions not met` on a violation.
 
 ```bash
 git ls-files -- ':!:nix/analysis/triage/' |
@@ -85,11 +87,11 @@ xargs -d '\n' vermin -t=3.10- --violations --no-tips < /tmp/python-files
 
 - codespell with [`.codespellrc`](../../../.codespellrc), over the whole
   tree: `codespell` (CI:
-  [codespell.yml](../../../.github/workflows/codespell.yml)).
+  [ernic-codespell.yml](../../../.github/workflows/ernic-codespell.yml)).
 - doc8: `doc8 docs/ --max-line-length 80`.
 - The docs must build without a Sphinx warning. This needs Doxygen, but
   not a C compiler or the C dependencies (CI:
-  [docs-check.yml](../../../.github/workflows/docs-check.yml)):
+  [ernic-docs-check.yml](../../../.github/workflows/ernic-docs-check.yml)):
 
   ```bash
   cmake -B build-docs -DERNIC_DOCS_ONLY=ON -DERNIC_BUILD_DOCS=ON \
@@ -102,5 +104,5 @@ xargs -d '\n' vermin -t=3.10- --violations --no-tips < /tmp/python-files
 ansible-lint with `--strict`, so warnings fail, and
 `ansible-test sanity`, both on `ansible/`. The exact commands, their
 requirements, and the pinned ansible-lint version are in
-[ansible-collection.yml](../../../.github/workflows/ansible-collection.yml).
+[ernic-ansible-collection.yml](../../../.github/workflows/ernic-ansible-collection.yml).
 Use that version: others report different problems.

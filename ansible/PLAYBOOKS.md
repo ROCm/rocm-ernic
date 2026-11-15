@@ -201,10 +201,11 @@ used to live in `playbooks/vm-fetch.yml`, which 0.2.0
 removed.
 
 The hosted jobs do not run that script -- they pull through
-`.github/actions/fetch-guest-vm` and carry their own inline
-copy of the badge comparison in the `Read VM info` step of
-`.github/workflows/system-tests.yml`. Deleting either copy
-drops coverage of a path the other does not reach.
+`.github/actions/ernic-fetch-guest-vm` and carry their own
+inline copy of the badge comparison in the `Read VM info`
+step of `.github/workflows/ernic-system-tests.yml`. Deleting
+either copy drops coverage of a path the other does not
+reach.
 
 `group_vars/all.yml` holds the site configuration for this
 repo.

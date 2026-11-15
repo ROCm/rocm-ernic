@@ -838,7 +838,8 @@ Because ``ernic_guest_setup`` applies the base series first, listing
 ``patches/srq`` in its ``ernic_guest_ionic_extra_patches`` fails. No role
 builds the SRQ and P4 series together.
 
-To give a guest P4 (``.github/workflows/p4-lane.yml`` does each step):
+To give a guest P4 (``.github/workflows/ernic-p4-lane.yml`` does each
+step):
 
 #. Build and load P4-capable ionic modules: run ``ernic_guest_setup``
    with the P4 series listed in ``ernic_guest_ionic_extra_patches``,

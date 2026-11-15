@@ -47,8 +47,8 @@ issues: https://github.com/ROCm/rocm-ernic/issues
 # own test automation, so build_ignore -- not a subdirectory --
 # is what keeps repo-local files out of the collection artifact.
 # Anything new added here ships to consumers unless listed. The
-# build job in .github/workflows/ansible-collection.yml asserts
-# the artifact contents to catch that.
+# build job in .github/workflows/ernic-ansible-collection.yml
+# asserts the artifact contents to catch that.
 build_ignore:
   - "*.tar.gz"
   - "roles/*/tests"
@@ -78,5 +78,5 @@ build_ignore:
   # build scripts in it.  It applies to a "type: git" install, so it
   # would reach every consumer.  There is no way to anchor a pattern at
   # the root, so the denylist cannot express "top level only"; the
-  # build job in .github/workflows/ansible-collection.yml asserts the
-  # artifact's contents in both directions instead.
+  # build job in .github/workflows/ernic-ansible-collection.yml asserts
+  # the artifact's contents in both directions instead.

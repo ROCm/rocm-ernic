@@ -8,8 +8,8 @@
 # Requests human-readable reports only: findings are uploaded as a build
 # artifact and printed to the job summary, never to the Security tab, so
 # fork PRs (which never receive elevated tokens) behave identically to
-# same-repo PRs. See the scheduled counterpart (weekly-security-scan.yml)
-# for the SARIF / code-scanning upload.
+# same-repo PRs. See the scheduled counterpart
+# (ernic-security-scan-weekly.yml) for the SARIF / code-scanning upload.
 
 name: Security scan (PR)
 

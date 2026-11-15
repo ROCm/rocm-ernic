@@ -20,7 +20,7 @@ on:
       - 'src/ionic/ionic_emu_stats.c'
       - 'tools/gen-counter-docs.py'
       - 'cmake/ErnicDocumentation.cmake'
-      - '.github/workflows/docs-check.yml'
+      - '.github/workflows/ernic-docs-check.yml'
 
 permissions:
   contents: read

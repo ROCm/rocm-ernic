@@ -24,7 +24,7 @@ on:
     paths:
       - 'ci/images/prune-images.sh'
       - 'tests/test_prune_images.sh'
-      - '.github/workflows/ci-images-prune.yml'
+      - '.github/workflows/ernic-ci-images-prune.yml'
   workflow_dispatch:
     inputs:
       delete:

@@ -12,7 +12,7 @@ on:
       - '**.cmake'
       - '**/CMakeLists.txt'
       - '.cmakelintrc'
-      - '.github/workflows/cmakelint.yml'
+      - '.github/workflows/ernic-cmakelint.yml'
   workflow_dispatch:
 
 permissions:

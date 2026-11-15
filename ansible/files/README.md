@@ -55,7 +55,7 @@ patterns are matched with `fnmatch` against the path relative to the
 collection root — where `*` crosses `/`, so a pattern as innocuous as
 `*.sh` would drop `scripts/` from the artifact and from a `type: git`
 install alike. The build job in
-[`ansible-collection.yml`](../../.github/workflows/ansible-collection.yml)
+[`ernic-ansible-collection.yml`](../../.github/workflows/ernic-ansible-collection.yml)
 therefore asserts that this tree is present, complete and executable in the
 built tarball. A collection that silently stopped shipping it would put
 every consumer back to a guest reporting `max_srq = 0`.

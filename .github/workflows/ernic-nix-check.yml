@@ -21,7 +21,7 @@ on:
       - 'flake.nix'
       - 'flake.lock'
       - 'nix/**'
-      - '.github/workflows/nix-check.yml'
+      - '.github/workflows/ernic-nix-check.yml'
   workflow_dispatch:
 
 permissions:

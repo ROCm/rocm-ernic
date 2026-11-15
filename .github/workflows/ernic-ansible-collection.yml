@@ -16,7 +16,7 @@ name: rocm-ernic - Ansible Collection
       - develop
     paths:
       - 'ansible/**'
-      - '.github/workflows/ansible-collection.yml'
+      - '.github/workflows/ernic-ansible-collection.yml'
 
 # Read-only: nothing here writes to the repo.  actions: read is for
 # actions/download-artifact, which fetches the built collection

@@ -13,7 +13,7 @@ on:
       - 'service/ernicctl'
       - 'prometheus/ernic-exporter'
       - 'prometheus/requirements-exporter.txt'
-      - '.github/workflows/pylint.yml'
+      - '.github/workflows/ernic-pylint.yml'
   workflow_dispatch:
 
 permissions:

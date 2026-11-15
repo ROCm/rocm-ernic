@@ -63,10 +63,10 @@ html_title = f"rocm-ernic {version}"
 # here, on the understanding that it was how README.md's shields
 # reached a stable URL. It was not: the shields point at
 # perf/badge-*.json on gh-pages, written directly by
-# .github/actions/publish-perf, and the _static/ copies were built
-# from whatever was committed to develop -- the "no data" placeholders,
-# permanently, with no badge-s3.json at all once the S3 lane was
-# added. Nothing read them.
+# .github/actions/ernic-publish-perf, and the _static/ copies were
+# built from whatever was committed to develop -- the "no data"
+# placeholders, permanently, with no badge-s3.json at all once the S3
+# lane was added. Nothing read them.
 #
 # The charts do not need this either: publish-perf.py includes them
 # with `.. raw:: html :file: perf-history/chart-*.html`, resolved

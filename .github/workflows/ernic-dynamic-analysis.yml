@@ -88,8 +88,8 @@ jobs:
     # -- where `select` is skipped and its outputs are empty --
     # fromJSON('') fails to expand the matrix and the job lands as `cancelled`
     # with zero steps, which the PR check list renders as a red X on every
-    # single pull request. fuzz.yml and static-analysis.yml avoid this by
-    # putting their condition directly on a single job.
+    # single pull request. ernic-fuzz.yml and ernic-static-analysis.yml avoid
+    # this by putting their condition directly on a single job.
     if: needs.select.result == 'success' && needs.select.outputs.tools != ''
     runs-on: ubuntu-26.04
     # Non-merge-blocking: informational only, never gates a PR.

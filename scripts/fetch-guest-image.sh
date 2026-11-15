@@ -8,7 +8,8 @@
 #
 # Pulls the prebuilt guest qcow2 and its metadata from the ORAS artifact
 # registry, for use by hand.  It lands the same bytes in the same layout
-# as .github/actions/fetch-guest-vm, which does this for the hosted jobs.
+# as .github/actions/ernic-fetch-guest-vm, which does this for the
+# hosted jobs.
 #
 # The image is the CI guest, defined in ci/images/guest/, and by default
 # the one ci/guest-image.env pins.  It has no password and no key: boot

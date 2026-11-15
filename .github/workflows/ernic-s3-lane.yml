@@ -3,12 +3,12 @@
 # SPDX-License-Identifier: MIT
 name: rocm-ernic - S3 Lane
 
-# The S3-over-RDMA system-test lane, factored out of system-tests.yml
-# the way the NVMe-oF one is, because it is long enough to be worth
-# reading on its own.
+# The S3-over-RDMA system-test lane, factored out of
+# ernic-system-tests.yml the way the NVMe-oF one is, because it is
+# long enough to be worth reading on its own.
 #
 # Caller:
-#   .github/workflows/system-tests.yml
+#   .github/workflows/ernic-system-tests.yml
 #
 # There is deliberately no `permissions:` block here: a reusable
 # workflow runs with the CALLING job's token, so the scopes are the
@@ -41,11 +41,11 @@ jobs:
     timeout-minutes: 60
     container:
       # ci/images/image-tag.sh --write builder keeps the tag; see the
-      # loopback job in system-tests.yml.
+      # loopback job in ernic-system-tests.yml.
       image: ghcr.io/rocm/rocm-ernic/ci-builder:qemu11.1.1-vfu.5b9c722-901926273c32
       # --user root, since the image's default user is ci, and --init,
       # which makes PID 1 an init that reaps orphans: see the loopback
-      # job in system-tests.yml.
+      # job in ernic-system-tests.yml.
       options: --user root --device /dev/kvm --init
     # One guest, one server, no TAP and no peer: the instance runs the
     # object store and terminates the HTTP control plane on the
@@ -130,7 +130,7 @@ jobs:
 
     - name: Fetch the guest VM image
       id: guest_image
-      uses: $/.github/actions/fetch-guest-vm
+      uses: $/.github/actions/ernic-fetch-guest-vm
       with:
         tag: ${{ env.GUEST_ARTIFACT_TAG }}
 
@@ -690,7 +690,7 @@ jobs:
         inputs.publish &&
         success() &&
         github.ref == 'refs/heads/develop'
-      uses: $/.github/actions/publish-perf
+      uses: $/.github/actions/ernic-publish-perf
       with:
         results: ${{ env.S3_RESULTS }}
         subject: S3 over RDMA
