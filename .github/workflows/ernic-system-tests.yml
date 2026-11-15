@@ -344,11 +344,11 @@ jobs:
           --backend loopback \
           --cmb \
           --verbose > /tmp/vfu_server.log 2>&1 &
-        
+
         SERVER_PID=$!
         echo "SERVER_PID=$SERVER_PID" >> "$GITHUB_ENV"
         echo "Server PID: $SERVER_PID"
-        
+
         # Wait for socket and verify server is running
         for i in {1..30}; do
           # Check if server process is still running
@@ -359,7 +359,7 @@ jobs:
             cat /tmp/vfu_server.log
             exit 1
           fi
-          
+
           # Check if socket exists and is a socket file
           if [ -S /tmp/vfio-user-rocm-ernic.sock ]; then
             echo "✓ Server started (PID: $SERVER_PID)"
@@ -367,7 +367,7 @@ jobs:
             ls -la /tmp/vfio-user-rocm-ernic.sock
             exit 0
           fi
-          
+
           # Show progress every 5 seconds
           if [ $((i % 5)) -eq 0 ]; then
             echo "Waiting for socket... (attempt $i/30)"
@@ -379,7 +379,7 @@ jobs:
           fi
           sleep 1
         done
-        
+
         echo "✗ Server failed to create socket after 30 seconds"
         echo "Server PID $SERVER_PID status: $(kill -0 $SERVER_PID 2>/dev/null && echo 'running' || echo 'dead')"
         echo "Socket exists: $([ -e /tmp/vfio-user-rocm-ernic.sock ] && echo 'yes' || echo 'no')"
@@ -391,7 +391,7 @@ jobs:
         echo "=== Server log ==="
         cat /tmp/vfu_server.log
         exit 1
-    
+
     - name: Make the job's SSH key
       shell: bash
       run: |
@@ -678,7 +678,7 @@ jobs:
           -e ernic_guest_agent=false \
           -e ernic_set_hostname=false \
           -e ernic_configure_nic=false
-    
+
     - name: Verify RDMA device with running server
       shell: bash
       run: |
@@ -1415,12 +1415,12 @@ jobs:
         if [ -n "$QEMU_PID" ]; then
           kill "$QEMU_PID" 2>/dev/null || true
         fi
-        
+
         # Stop server
         if [ -n "$SERVER_PID" ]; then
           kill "$SERVER_PID" 2>/dev/null || true
         fi
-        
+
         # Clean up
         rm -f /tmp/vfio-user-rocm-ernic*.sock
         echo "✓ Cleanup complete"
@@ -1772,7 +1772,7 @@ jobs:
         echo "vm_disk_1=$VM_DISK_1" >> "$GITHUB_OUTPUT"
         echo "vm_disk_2=$VM_DISK_2" >> "$GITHUB_OUTPUT"
         echo "✓ overlays created over $BASE"
-    
+
     - name: Make the job's SSH key
       shell: bash
       run: |
@@ -1924,11 +1924,11 @@ jobs:
           --tap "${ERNIC_TAP_PREFIX}1" \
           --mac 02:a0:d1:00:00:01 \
           --verbose > /tmp/server1.log 2>&1 &
-        
+
         SERVER1_PID=$!
         echo "SERVER1_PID=$SERVER1_PID" >> "$GITHUB_ENV"
         echo "Server 1 PID: $SERVER1_PID"
-        
+
         # Wait for socket and verify server is running
         for i in {1..30}; do
           # Check if server process is still running
@@ -1939,7 +1939,7 @@ jobs:
             cat /tmp/server1.log
             exit 1
           fi
-          
+
           # Check if socket exists and is a socket file
           if [ -S /tmp/vfio-user-server1.sock ]; then
             echo "✓ Server 1 started (PID: $SERVER1_PID)"
@@ -1947,7 +1947,7 @@ jobs:
             ls -la /tmp/vfio-user-server1.sock
             exit 0
           fi
-          
+
           # Show progress every 5 seconds
           if [ $((i % 5)) -eq 0 ]; then
             echo "Waiting for socket... (attempt $i/30)"
@@ -1959,7 +1959,7 @@ jobs:
           fi
           sleep 1
         done
-        
+
         echo "✗ Server 1 failed to create socket after 30 seconds"
         echo "Server 1 PID $SERVER1_PID status: $(kill -0 $SERVER1_PID 2>/dev/null && echo 'running' || echo 'dead')"
         echo "Socket exists: $([ -e /tmp/vfio-user-server1.sock ] && echo 'yes' || echo 'no')"
@@ -1971,7 +1971,7 @@ jobs:
         echo "=== Server 1 log ==="
         cat /tmp/server1.log
         exit 1
-    
+
     - name: Wait for TCP server 1 to be ready
       shell: bash
       run: |
@@ -2017,7 +2017,7 @@ jobs:
         # Manager is listening on 0.0.0.0, so localhost will work
         MANAGER_HOST="localhost"
         echo "Connecting to manager at: $MANAGER_HOST:${{ env.TCP_PORT }}"
-        
+
         # Remove any existing socket
         rm -f /tmp/vfio-user-server2.sock
 
@@ -2032,11 +2032,11 @@ jobs:
           --tap "${ERNIC_TAP_PREFIX}2" \
           --mac 02:a0:d1:00:00:02 \
           --verbose > /tmp/server2.log 2>&1 &
-        
+
         SERVER2_PID=$!
         echo "SERVER2_PID=$SERVER2_PID" >> "$GITHUB_ENV"
         echo "Server 2 PID: $SERVER2_PID"
-        
+
         # Wait for socket and verify server is running
         for i in {1..30}; do
           # Check if server process is still running
@@ -2047,7 +2047,7 @@ jobs:
             cat /tmp/server2.log
           exit 1
         fi
-        
+
           # Check if socket exists and is a socket file
           if [ -S /tmp/vfio-user-server2.sock ]; then
             echo "✓ Server 2 started (PID: $SERVER2_PID)"
@@ -2055,7 +2055,7 @@ jobs:
             ls -la /tmp/vfio-user-server2.sock
             exit 0
           fi
-          
+
           # Show progress every 5 seconds
           if [ $((i % 5)) -eq 0 ]; then
             echo "Waiting for socket... (attempt $i/30)"
@@ -2067,7 +2067,7 @@ jobs:
           fi
           sleep 1
         done
-        
+
         echo "✗ Server 2 failed to create socket after 30 seconds"
         echo "Server 2 PID $SERVER2_PID status: $(kill -0 $SERVER2_PID 2>/dev/null && echo 'running' || echo 'dead')"
         echo "Socket exists: $([ -e /tmp/vfio-user-server2.sock ] && echo 'yes' || echo 'no')"
@@ -2166,7 +2166,7 @@ jobs:
       shell: bash
       run: |
         echo "=== Verifying server sockets are ready ==="
-        
+
         # Verify both servers are still running
         if ! ps -p "$SERVER1_PID" > /dev/null; then
           echo "✗ Server 1 (manager) has stopped"
@@ -2181,7 +2181,7 @@ jobs:
           exit 1
         fi
         echo "✓ Both servers are running"
-        
+
         # Wait for server 1 to be ready (device realized)
         echo "Waiting for server 1 to be ready..."
         SERVER1_READY=0
@@ -2199,7 +2199,7 @@ jobs:
           tail -30 /tmp/server1.log
           exit 1
         fi
-        
+
         # Wait for server 2 to be ready (device realized)
         echo "Waiting for server 2 to be ready..."
         SERVER2_READY=0
@@ -2217,7 +2217,7 @@ jobs:
           tail -30 /tmp/server2.log
           exit 1
         fi
-        
+
         # Verify sockets exist
         if [ ! -S /tmp/vfio-user-server1.sock ]; then
           echo "✗ Server 1 socket not found"
@@ -2227,7 +2227,7 @@ jobs:
           echo "✗ Server 2 socket not found"
           exit 1
         fi
-        
+
         echo "✓ All server sockets verified and ready for VM connections"
 
     - name: Boot the VMs
@@ -2624,9 +2624,9 @@ jobs:
         # Force kill if needed
         pkill -9 qemu-system-x86_64 2>/dev/null || true
         pkill -9 rocm-ernic 2>/dev/null || true
-        
+
         echo "✓ Cleanup complete"
-  
+
     - name: Upload test logs
       if: always()
       uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2

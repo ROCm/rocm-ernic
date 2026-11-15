@@ -77,11 +77,11 @@ test_config() {
     local socket_path="${SOCKET_BASE}-${config//[:\/=]/_}.sock"
     local server_log="${socket_path}.log"
     local test_result=0
-    
+
     echo -e "${BLUE}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
     echo -e "${BLUE}Testing: ${config}${NC}"
     echo -e "${BLUE}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
-    
+
     # Start server
     echo "Starting server..."
     "${SERVER_WRAPPER[@]}" "$SERVER_BIN" \
@@ -89,7 +89,7 @@ test_config() {
         --backend "$config" \
         --verbose > "$server_log" 2>&1 &
     SERVER_PID=$!
-    
+
     # Wait for socket
     local socket_ready=0
     for _ in {1..10}; do
@@ -99,7 +99,7 @@ test_config() {
         fi
         sleep 0.5
     done
-    
+
     if [ $socket_ready -eq 0 ]; then
         echo -e "${RED}✗ Server failed to create socket${NC}"
         echo "Server log:"
@@ -108,9 +108,9 @@ test_config() {
         kill "$SERVER_PID" 2>/dev/null || true
         return 1
     fi
-    
+
     echo -e "${GREEN}✓ Server started (PID: $SERVER_PID)${NC}"
-    
+
     # Note: For loopback backend, we only verify server startup.
     # The loopback backend doesn't expose RDMA devices directly to the host
     # - they're only available inside VMs via vfio-user.
@@ -119,12 +119,12 @@ test_config() {
     echo -e "${YELLOW}  (RDMA device testing requires VM setup - see vm-integration-test job)${NC}"
     # Give server a moment to initialize
     sleep 2
-    
+
     # Stop server
     kill "$SERVER_PID" 2>/dev/null || true
     wait "$SERVER_PID" 2>/dev/null || true
     rm -f "$socket_path"
-    
+
     if [ $test_result -eq 0 ]; then
         echo -e "${GREEN}✓ Configuration test passed${NC}"
         PASSED_CONFIGS+=("$config")
