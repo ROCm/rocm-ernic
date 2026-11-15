@@ -291,11 +291,11 @@ jobs:
           --socket /tmp/vfio-user-rocm-ernic.sock \
           --backend "$BACKEND" \
           --verbose > /tmp/vfu_server.log 2>&1 &
-        
+
         SERVER_PID=$!
         echo "SERVER_PID=$SERVER_PID" >> "$GITHUB_ENV"
         echo "Server PID: $SERVER_PID"
-        
+
         # Wait for socket and verify server is running
         for i in {1..30}; do
           # Check if server process is still running
@@ -306,7 +306,7 @@ jobs:
             cat /tmp/vfu_server.log
             exit 1
           fi
-          
+
           # Check if socket exists and is a socket file
           if [ -S /tmp/vfio-user-rocm-ernic.sock ]; then
             echo "✓ Server started (PID: $SERVER_PID)"
@@ -314,7 +314,7 @@ jobs:
             ls -la /tmp/vfio-user-rocm-ernic.sock
             exit 0
           fi
-          
+
           # Show progress every 5 seconds
           if [ $((i % 5)) -eq 0 ]; then
             echo "Waiting for socket... (attempt $i/30)"
@@ -326,7 +326,7 @@ jobs:
           fi
           sleep 1
         done
-        
+
         echo "✗ Server failed to create socket after 30 seconds"
         echo "Server PID $SERVER_PID status: $(kill -0 $SERVER_PID 2>/dev/null && echo 'running' || echo 'dead')"
         echo "Socket exists: $([ -e /tmp/vfio-user-rocm-ernic.sock ] && echo 'yes' || echo 'no')"
@@ -338,7 +338,7 @@ jobs:
         echo "=== Server log ==="
         cat /tmp/vfu_server.log
         exit 1
-    
+
 
     - name: Make the job's SSH key
       shell: bash
@@ -633,7 +633,7 @@ jobs:
         # connect fails with a bare ENETUNREACH.  vm-register.yml
         # gives instance 1 the .10 address on ernic_nic_subnet, the
         # same segment the controller answers on.
-    
+
 
     - name: Verify the RDMA device and the running controller
       shell: bash

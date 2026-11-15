@@ -21,20 +21,20 @@ read -r -a SERVER_WRAPPER <<<"${ERNIC_TEST_SERVER_WRAPPER:-}"
 # shellcheck disable=SC2329  # called via trap, which ShellCheck misses when the script ends in exit
 cleanup() {
     local exit_code=$?
-    
+
     echo ""
     echo "=== Cleanup ==="
-    
+
     # Kill server if running
     if [ -n "$SERVER_PID" ]; then
         echo "Stopping server (PID $SERVER_PID)..."
         kill "$SERVER_PID" 2>/dev/null || true
         wait "$SERVER_PID" 2>/dev/null || true
     fi
-    
+
     # Remove socket and log
     rm -f "$SOCKET_PATH" "$SERVER_LOG"
-    
+
     echo "Cleanup complete"
     exit "$exit_code"
 }
@@ -84,7 +84,7 @@ while [ $ELAPSED -lt $TIMEOUT ]; do
         echo "✓ Server socket ready"
         break
     fi
-    
+
     # Check if server process is still running
     if ! kill -0 $SERVER_PID 2>/dev/null; then
         echo "✗ Server process died unexpectedly"
@@ -93,7 +93,7 @@ while [ $ELAPSED -lt $TIMEOUT ]; do
         cat "$SERVER_LOG"
         exit 1
     fi
-    
+
     sleep 0.5
     ELAPSED=$((ELAPSED + 1))
 done

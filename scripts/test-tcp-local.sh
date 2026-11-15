@@ -44,7 +44,7 @@ trap cleanup EXIT
 check_port() {
     local port=$1
     local pid=""
-    
+
     # Try different methods to find the process using the port
     if command -v lsof >/dev/null 2>&1; then
         pid=$(lsof -ti:"$port" 2>/dev/null || true)
@@ -53,7 +53,7 @@ check_port() {
     elif command -v netstat >/dev/null 2>&1; then
         pid=$(netstat -tlnp 2>/dev/null | grep ":$port " | grep -oP '[0-9]+/.*' | cut -d'/' -f1 | head -1 || true)
     fi
-    
+
     if [ -n "$pid" ]; then
         echo -e "${YELLOW}Port $port is in use by PID $pid, killing...${NC}"
         # lsof prints one PID per line, and more than one process can

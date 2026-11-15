@@ -145,7 +145,7 @@ jobs:
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      
+
       - name: Cache apt packages
         uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
@@ -236,7 +236,7 @@ jobs:
       - name: Reload ldconfig after cache restore
         if: steps.cache-libvfio-user.outputs.cache-hit == 'true'
         run: sudo ldconfig
-      
+
       - name: Configure project with CMake
         env:
           SANITIZER: ${{ matrix.sanitizer }}
@@ -302,7 +302,7 @@ jobs:
 
       - name: Build project
         run: cmake --build build
-      
+
       - name: Verify binaries exist
         run: |
           ls -lh build/rocm-ernic
@@ -311,7 +311,7 @@ jobs:
           file build/rocm-ernic
           file build/tests/test_pci_client
           file build/tests/test_data_transfer
-      
+
       - name: Check binary dependencies
         run: |
           echo "=== rocm-ernic dependencies ==="
@@ -322,7 +322,7 @@ jobs:
           echo ""
           echo "=== test_data_transfer dependencies ==="
           ldd build/tests/test_data_transfer
-      
+
       # Every registered test runs on a hosted runner now -- the three that
       # needed a real RDMA device moved into the VM system tests, so a
       # Skipped line here means something is wrong rather than absent.
