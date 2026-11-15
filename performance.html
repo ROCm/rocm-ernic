@@ -486,9 +486,9 @@ ansible-playbook<span class="w"> </span>playbooks/tcp-performance-tests.yml
 </pre></div>
 </div>
 <p>Both plays are driven for the published trend by the scheduled
-run of <code class="file docutils literal notranslate"><span class="pre">.github/workflows/system-tests.yml</span></code>, which hands
-the results to <code class="docutils literal notranslate"><span class="pre">ci/report/publish-perf.py</span></code>. That appends one
-record per run to <code class="docutils literal notranslate"><span class="pre">perf/history.jsonl</span></code> on the <code class="docutils literal notranslate"><span class="pre">gh-pages</span></code>
+run of <code class="file docutils literal notranslate"><span class="pre">.github/workflows/ernic-system-tests.yml</span></code>, which
+hands the results to <code class="docutils literal notranslate"><span class="pre">ci/report/publish-perf.py</span></code>. That appends
+one record per run to <code class="docutils literal notranslate"><span class="pre">perf/history.jsonl</span></code> on the <code class="docutils literal notranslate"><span class="pre">gh-pages</span></code>
 branch and refreshes the shields.io badges beside it; the charts
 and the trend tables are rendered from that record when the site
 is next built. Nothing CI writes lands on <code class="docutils literal notranslate"><span class="pre">develop</span></code>.</p>
@@ -498,11 +498,12 @@ sweeps with fio against an in-process NVMe-oF controller (see the
 <em>Performance</em> section of <a class="reference internal" href="nvmeof.html"><span class="doc">NVMe-oF Controller</span></a>). All three badges are fed
 by one scheduled run, and both publishing lanes hand off to the
 same composite action,
-<code class="file docutils literal notranslate"><span class="pre">.github/actions/publish-perf</span></code>. A GitHub runner has noisy neighbours
-and no fixed CPU, so these figures are comparable with each
-other over time but not with a dedicated machine’s. That is a
-deliberate trade: one class of machine keeps the trend line
-about the code rather than about which host answered.</p>
+<code class="file docutils literal notranslate"><span class="pre">.github/actions/ernic-publish-perf</span></code>. A GitHub runner has
+noisy neighbours and no fixed CPU, so these figures are
+comparable with each other over time but not with a dedicated
+machine’s. That is a deliberate trade: one class of machine keeps
+the trend line about the code rather than about which host
+answered.</p>
 <p>Records are tagged with the class they came from, and
 <a class="reference internal" href="perf-trends.html"><span class="doc">Performance trends</span></a> charts each class on its own axes, so the
 earlier self-hosted measurements remain readable alongside

@@ -758,12 +758,13 @@ copies the client in, builds it, runs it, and checks the
 store came back empty.</p>
 <p>The hosted lane runs the whole thing from scratch –
 build, unit tests, boot a guest, provision it, transfer –
-in <code class="file docutils literal notranslate"><span class="pre">.github/workflows/s3-lane.yml</span></code>. Like the NVMe-oF
-lane it is a reusable workflow with a single <code class="docutils literal notranslate"><span class="pre">publish</span></code>
-input, called by <code class="file docutils literal notranslate"><span class="pre">.github/workflows/system-tests.yml</span></code>:
-false on a pull request, true on a scheduled or dispatched
-run against <code class="docutils literal notranslate"><span class="pre">develop</span></code>. The steps are the same either way, so a
-green pull request and a scheduled run mean the same thing.</p>
+in <code class="file docutils literal notranslate"><span class="pre">.github/workflows/ernic-s3-lane.yml</span></code>. Like the
+NVMe-oF lane it is a reusable workflow with a single
+<code class="docutils literal notranslate"><span class="pre">publish</span></code> input, called by
+<code class="file docutils literal notranslate"><span class="pre">.github/workflows/ernic-system-tests.yml</span></code>: false on a
+pull request, true on a scheduled or dispatched run against
+<code class="docutils literal notranslate"><span class="pre">develop</span></code>. The steps are the same either way, so a green pull
+request and a scheduled run mean the same thing.</p>
 <p>The endpoint’s address, port and bucket are Ansible
 variables (<code class="docutils literal notranslate"><span class="pre">ernic_s3_addr</span></code>, <code class="docutils literal notranslate"><span class="pre">ernic_s3_port</span></code>,
 <code class="docutils literal notranslate"><span class="pre">ernic_s3_bucket</span></code> in
@@ -773,7 +774,7 @@ variables (<code class="docutils literal notranslate"><span class="pre">ernic_s3
 <section id="performance">
 <h2>Performance<a class="headerlink" href="#performance" title="Link to this heading">#</a></h2>
 <p>The scheduled run of
-<code class="file docutils literal notranslate"><span class="pre">.github/workflows/system-tests.yml</span></code> sweeps the client
+<code class="file docutils literal notranslate"><span class="pre">.github/workflows/ernic-system-tests.yml</span></code> sweeps the client
 across three object sizes and publishes what it measured, on
 the same terms and through the same code path as the RDMA,
 TCP/IP and NVMe-oF figures. The numbers land on the

@@ -1158,8 +1158,8 @@ operations, which take tens of minutes over the emulated NIC;
 <code class="docutils literal notranslate"><span class="pre">ernic_rdma_tutorial_ops</span></code> (default 10000) sets the count.
 <code class="docutils literal notranslate"><span class="pre">ernic_rdma_tutorial_timeout</span></code> bounds each process and
 <code class="docutils literal notranslate"><span class="pre">ernic_rdma_tutorial_port</span></code> picks the ports they connect on.</p>
-<p>The two-VM job in <code class="docutils literal notranslate"><span class="pre">system-tests.yml</span></code> runs it after the
-sanity play.</p>
+<p>The two-VM job in <code class="docutils literal notranslate"><span class="pre">ernic-system-tests.yml</span></code> runs it after
+the sanity play.</p>
 </section>
 <section id="the-guest-image">
 <span id="ansible-guest-image"></span><h3>The guest image<a class="headerlink" href="#the-guest-image" title="Link to this heading">#</a></h3>
@@ -1187,8 +1187,8 @@ host keys of its own.</p>
 metadata with <code class="docutils literal notranslate"><span class="pre">oras</span></code>, decompresses the qcow2 and runs
 <code class="docutils literal notranslate"><span class="pre">qemu-img</span> <span class="pre">check</span></code> over it. The download is skipped when the
 tag is already unpacked. It lands the same bytes in the same
-layout as <code class="docutils literal notranslate"><span class="pre">.github/actions/fetch-guest-vm</span></code>, which the
-hosted jobs use.</p>
+layout as <code class="docutils literal notranslate"><span class="pre">.github/actions/ernic-fetch-guest-vm</span></code>, which
+the hosted jobs use.</p>
 <p>It also checks the image’s <code class="docutils literal notranslate"><span class="pre">vm-info.json</span></code> against this
 checkout and refuses the image when they disagree. That
 happens between the metadata pull and the disk pull, so a
@@ -1216,9 +1216,9 @@ kernel nothing ships. Two independent
 implementations compare them: the fetch script, on the
 manual path, and an inline copy in the
 <code class="docutils literal notranslate"><span class="pre">Read</span> <span class="pre">VM</span> <span class="pre">info</span></code> step of the loopback job in
-<code class="docutils literal notranslate"><span class="pre">.github/workflows/system-tests.yml</span></code>, on every pull
+<code class="docutils literal notranslate"><span class="pre">.github/workflows/ernic-system-tests.yml</span></code>, on every pull
 request. The hosted jobs pull through
-<code class="docutils literal notranslate"><span class="pre">.github/actions/fetch-guest-vm</span></code>, not this script, so
+<code class="docutils literal notranslate"><span class="pre">.github/actions/ernic-fetch-guest-vm</span></code>, not this script, so
 neither copy is redundant.</p>
 <p>Four more properties are site expectations rather than
 repo-derivable facts, so the caller supplies them:
@@ -1286,7 +1286,7 @@ from the <code class="docutils literal notranslate"><span class="pre">ansible/</
 </section>
 <section id="guest-driver-ci">
 <h2>Guest Driver CI<a class="headerlink" href="#guest-driver-ci" title="Link to this heading">#</a></h2>
-<p><code class="docutils literal notranslate"><span class="pre">.github/workflows/driver-build.yml</span></code> covers the guest
+<p><code class="docutils literal notranslate"><span class="pre">.github/workflows/ernic-driver-build.yml</span></code> covers the guest
 driver. Its <code class="docutils literal notranslate"><span class="pre">ionic-patches</span></code> job reads
 <code class="docutils literal notranslate"><span class="pre">IONIC_KERNEL_REF</span></code> straight out
 of <code class="docutils literal notranslate"><span class="pre">cmake/ErnicKernelModule.cmake</span></code>, sparse-clones the two
@@ -1299,13 +1299,14 @@ themselves are not built there: they need headers matching
 that move between minor releases, so the guest kernel’s
 major.minor must equal the ref’s, and no hosted runner
 carries such a kernel.</p>
-<p><code class="docutils literal notranslate"><span class="pre">.github/workflows/system-tests.yml</span></code> runs its jobs in the
-CI builder image, <code class="docutils literal notranslate"><span class="pre">ghcr.io/rocm/rocm-ernic/ci-builder</span></code>,
-defined in <code class="docutils literal notranslate"><span class="pre">ci/images/builder/</span></code>. It first calls
-<code class="docutils literal notranslate"><span class="pre">ci-images.yml</span></code>, which publishes the image if this tree’s
-definition of it isn’t published yet, so a pull request that
-changes the builder runs every lane in the new image; see
-<a class="reference internal" href="#ci-images"><span class="std std-ref">CI images</span></a>.</p>
+<p><code class="docutils literal notranslate"><span class="pre">.github/workflows/ernic-system-tests.yml</span></code> runs its jobs
+in the CI builder image,
+<code class="docutils literal notranslate"><span class="pre">ghcr.io/rocm/rocm-ernic/ci-builder</span></code>, defined in
+<code class="docutils literal notranslate"><span class="pre">ci/images/builder/</span></code>. It first calls
+<code class="docutils literal notranslate"><span class="pre">ernic-ci-images.yml</span></code>, which publishes the image if this
+tree’s definition of it isn’t published yet, so a pull
+request that changes the builder runs every lane in the new
+image; see <a class="reference internal" href="#ci-images"><span class="std std-ref">CI images</span></a>.</p>
 <p>The workflow boots guests under
 KVM on hosted runners with <code class="docutils literal notranslate"><span class="pre">ci/boot-guest.sh</span></code>, as
 <code class="docutils literal notranslate"><span class="pre">ernicctl</span> <span class="pre">vm-launch</span></code> does, so the vfio-user device sits
@@ -1372,13 +1373,13 @@ image’s definition, run</p>
 tree’s, or if the guest’s kernel isn’t <code class="docutils literal notranslate"><span class="pre">IONIC_KERNEL_REF</span></code>,
 and <code class="docutils literal notranslate"><span class="pre">tools/check-guest-image-tag.sh</span></code>, which fails if a tag
 appears anywhere else (the <code class="docutils literal notranslate"><span class="pre">Image</span> <span class="pre">pins</span></code> workflow).</p>
-<p><code class="docutils literal notranslate"><span class="pre">ci-images.yml</span></code>, which <code class="docutils literal notranslate"><span class="pre">system-tests.yml</span></code> calls before
-its lanes, publishes an image whose tag the registry hasn’t
-got, with <code class="docutils literal notranslate"><span class="pre">ci/images/ensure-image.sh</span></code>. That builds it,
-runs the image’s <code class="docutils literal notranslate"><span class="pre">check.sh</span></code>, and pushes it only if it
-passes. The builder’s check runs inside it; the guest’s
-boots it with <code class="docutils literal notranslate"><span class="pre">ci/boot-guest.sh</span></code>, as the lanes do, and
-checks the seal holds: only the boot’s key logs in, the
+<p><code class="docutils literal notranslate"><span class="pre">ernic-ci-images.yml</span></code>, which <code class="docutils literal notranslate"><span class="pre">ernic-system-tests.yml</span></code>
+calls before its lanes, publishes an image whose tag the
+registry hasn’t got, with <code class="docutils literal notranslate"><span class="pre">ci/images/ensure-image.sh</span></code>.
+That builds it, runs the image’s <code class="docutils literal notranslate"><span class="pre">check.sh</span></code>, and pushes it
+only if it passes. The builder’s check runs inside it; the
+guest’s boots it with <code class="docutils literal notranslate"><span class="pre">ci/boot-guest.sh</span></code>, as the lanes do,
+and checks the seal holds: only the boot’s key logs in, the
 password is locked, and the guest made its own host keys.
 So a pull request that changes an image publishes it and
 runs every lane with it. A pull request from a fork can’t
@@ -1402,7 +1403,7 @@ being <code class="docutils literal notranslate"><span class="pre">BUILDER_TAG</
 </pre></div>
 </div>
 <p><code class="docutils literal notranslate"><span class="pre">ci/images/README.md</span></code> says what Docker needs as well.</p>
-<p><code class="docutils literal notranslate"><span class="pre">ci-images-prune.yml</span></code> deletes the versions nothing
+<p><code class="docutils literal notranslate"><span class="pre">ernic-ci-images-prune.yml</span></code> deletes the versions nothing
 needs every Monday, with <code class="docutils literal notranslate"><span class="pre">ci/images/prune-images.sh</span></code>. It
 keeps the tags develop’s lockfile pins, the 10 newest, and
 anything under 30 days old, tagged otherwise (such as the
@@ -1425,8 +1426,10 @@ rocm-systems, they read only the workflows and actions in
 its <code class="docutils literal notranslate"><span class="pre">.github/</span></code> named <code class="docutils literal notranslate"><span class="pre">ernic-*</span></code>.
 <code class="docutils literal notranslate"><span class="pre">tests/test_nested_checkout.sh</span></code> copies the tree into
 <code class="docutils literal notranslate"><span class="pre">emulation/ernic/</span></code> of a scratch repository, beside another
-project, and checks that the three look at the project’s
-files and only those, and that the project builds there. It
+project, and checks that every workflow and action is named
+<code class="docutils literal notranslate"><span class="pre">ernic-*</span></code>, as they must be once they share rocm-systems’
+<code class="docutils literal notranslate"><span class="pre">.github/</span></code>, that the three look at the project’s files and
+only those, and that the project builds there. It
 needs ShellCheck and PyYAML, so it isn’t a CTest test; the
 <code class="docutils literal notranslate"><span class="pre">Nested</span> <span class="pre">checkout</span></code> workflow runs it:</p>
 <div class="highlight-bash notranslate"><div class="highlight"><pre><span></span>tests/test_nested_checkout.sh<span class="w"> </span>.<span class="w"> </span>-G<span class="w"> </span>Ninja<span class="w"> </span><span class="se">\</span>

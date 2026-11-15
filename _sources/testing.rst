@@ -807,8 +807,8 @@ operations, which take tens of minutes over the emulated NIC;
 ``ernic_rdma_tutorial_timeout`` bounds each process and
 ``ernic_rdma_tutorial_port`` picks the ports they connect on.
 
-The two-VM job in ``system-tests.yml`` runs it after the
-sanity play.
+The two-VM job in ``ernic-system-tests.yml`` runs it after
+the sanity play.
 
 .. _ansible-guest-image:
 
@@ -841,8 +841,8 @@ host keys of its own.
 metadata with ``oras``, decompresses the qcow2 and runs
 ``qemu-img check`` over it. The download is skipped when the
 tag is already unpacked. It lands the same bytes in the same
-layout as ``.github/actions/fetch-guest-vm``, which the
-hosted jobs use.
+layout as ``.github/actions/ernic-fetch-guest-vm``, which
+the hosted jobs use.
 
 It also checks the image's ``vm-info.json`` against this
 checkout and refuses the image when they disagree. That
@@ -873,9 +873,9 @@ kernel nothing ships. Two independent
 implementations compare them: the fetch script, on the
 manual path, and an inline copy in the
 ``Read VM info`` step of the loopback job in
-``.github/workflows/system-tests.yml``, on every pull
+``.github/workflows/ernic-system-tests.yml``, on every pull
 request. The hosted jobs pull through
-``.github/actions/fetch-guest-vm``, not this script, so
+``.github/actions/ernic-fetch-guest-vm``, not this script, so
 neither copy is redundant.
 
 Four more properties are site expectations rather than
@@ -956,7 +956,7 @@ from the ``ansible/`` directory.
 Guest Driver CI
 ---------------
 
-``.github/workflows/driver-build.yml`` covers the guest
+``.github/workflows/ernic-driver-build.yml`` covers the guest
 driver. Its ``ionic-patches`` job reads
 ``IONIC_KERNEL_REF`` straight out
 of ``cmake/ErnicKernelModule.cmake``, sparse-clones the two
@@ -970,13 +970,14 @@ that move between minor releases, so the guest kernel's
 major.minor must equal the ref's, and no hosted runner
 carries such a kernel.
 
-``.github/workflows/system-tests.yml`` runs its jobs in the
-CI builder image, ``ghcr.io/rocm/rocm-ernic/ci-builder``,
-defined in ``ci/images/builder/``. It first calls
-``ci-images.yml``, which publishes the image if this tree's
-definition of it isn't published yet, so a pull request that
-changes the builder runs every lane in the new image; see
-:ref:`ci-images`.
+``.github/workflows/ernic-system-tests.yml`` runs its jobs
+in the CI builder image,
+``ghcr.io/rocm/rocm-ernic/ci-builder``, defined in
+``ci/images/builder/``. It first calls
+``ernic-ci-images.yml``, which publishes the image if this
+tree's definition of it isn't published yet, so a pull
+request that changes the builder runs every lane in the new
+image; see :ref:`ci-images`.
 
 The workflow boots guests under
 KVM on hosted runners with ``ci/boot-guest.sh``, as
@@ -1054,13 +1055,13 @@ tree's, or if the guest's kernel isn't ``IONIC_KERNEL_REF``,
 and ``tools/check-guest-image-tag.sh``, which fails if a tag
 appears anywhere else (the ``Image pins`` workflow).
 
-``ci-images.yml``, which ``system-tests.yml`` calls before
-its lanes, publishes an image whose tag the registry hasn't
-got, with ``ci/images/ensure-image.sh``. That builds it,
-runs the image's ``check.sh``, and pushes it only if it
-passes. The builder's check runs inside it; the guest's
-boots it with ``ci/boot-guest.sh``, as the lanes do, and
-checks the seal holds: only the boot's key logs in, the
+``ernic-ci-images.yml``, which ``ernic-system-tests.yml``
+calls before its lanes, publishes an image whose tag the
+registry hasn't got, with ``ci/images/ensure-image.sh``.
+That builds it, runs the image's ``check.sh``, and pushes it
+only if it passes. The builder's check runs inside it; the
+guest's boots it with ``ci/boot-guest.sh``, as the lanes do,
+and checks the seal holds: only the boot's key logs in, the
 password is locked, and the guest made its own host keys.
 So a pull request that changes an image publishes it and
 runs every lane with it. A pull request from a fork can't
@@ -1090,7 +1091,7 @@ being ``BUILDER_TAG`` in ``ci/guest-image.env``:
 
 ``ci/images/README.md`` says what Docker needs as well.
 
-``ci-images-prune.yml`` deletes the versions nothing
+``ernic-ci-images-prune.yml`` deletes the versions nothing
 needs every Monday, with ``ci/images/prune-images.sh``. It
 keeps the tags develop's lockfile pins, the 10 newest, and
 anything under 30 days old, tagged otherwise (such as the
@@ -1115,8 +1116,10 @@ rocm-systems, they read only the workflows and actions in
 its ``.github/`` named ``ernic-*``.
 ``tests/test_nested_checkout.sh`` copies the tree into
 ``emulation/ernic/`` of a scratch repository, beside another
-project, and checks that the three look at the project's
-files and only those, and that the project builds there. It
+project, and checks that every workflow and action is named
+``ernic-*``, as they must be once they share rocm-systems'
+``.github/``, that the three look at the project's files and
+only those, and that the project builds there. It
 needs ShellCheck and PyYAML, so it isn't a CTest test; the
 ``Nested checkout`` workflow runs it:
 

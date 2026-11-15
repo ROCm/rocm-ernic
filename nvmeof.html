@@ -797,12 +797,12 @@ ansible-playbook<span class="w"> </span>ci-site.yml<span class="w"> </span>--tag
 </div>
 <p>The hosted lane runs the whole thing from scratch –
 build, boot a guest, provision it, connect – in
-<code class="file docutils literal notranslate"><span class="pre">.github/workflows/nvmeof-lane.yml</span></code>, which is the
+<code class="file docutils literal notranslate"><span class="pre">.github/workflows/ernic-nvmeof-lane.yml</span></code>, which is the
 cheapest end-to-end RDMA test in the matrix precisely
 because it needs only one VM. That lane is a reusable
 workflow with a single <code class="docutils literal notranslate"><span class="pre">publish</span></code> input, called by
-<code class="file docutils literal notranslate"><span class="pre">.github/workflows/system-tests.yml</span></code>: false on a pull
-request, true on a scheduled or dispatched run against
+<code class="file docutils literal notranslate"><span class="pre">.github/workflows/ernic-system-tests.yml</span></code>: false on a
+pull request, true on a scheduled or dispatched run against
 <code class="docutils literal notranslate"><span class="pre">develop</span></code>. The steps are the same either way, so a green pull
 request and a scheduled run mean the same thing.</p>
 <p>The controller’s address, port and NQN are Ansible
@@ -828,7 +828,7 @@ falling short of the ceiling is reported rather than failed.</p>
 <section id="performance">
 <h2>Performance<a class="headerlink" href="#performance" title="Link to this heading">#</a></h2>
 <p>The scheduled run of
-<code class="file docutils literal notranslate"><span class="pre">.github/workflows/system-tests.yml</span></code> sweeps fio
+<code class="file docutils literal notranslate"><span class="pre">.github/workflows/ernic-system-tests.yml</span></code> sweeps fio
 across three block sizes against the connected namespace
 and publishes what it measured, on the same terms and
 through the same code path as the RDMA and TCP/IP

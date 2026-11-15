@@ -1173,7 +1173,8 @@ base series or the SRQ series.</p></li>
 <p>Because <code class="docutils literal notranslate"><span class="pre">ernic_guest_setup</span></code> applies the base series first, listing
 <code class="docutils literal notranslate"><span class="pre">patches/srq</span></code> in its <code class="docutils literal notranslate"><span class="pre">ernic_guest_ionic_extra_patches</span></code> fails. No role
 builds the SRQ and P4 series together.</p>
-<p>To give a guest P4 (<code class="docutils literal notranslate"><span class="pre">.github/workflows/p4-lane.yml</span></code> does each step):</p>
+<p>To give a guest P4 (<code class="docutils literal notranslate"><span class="pre">.github/workflows/ernic-p4-lane.yml</span></code> does each
+step):</p>
 <ol class="arabic">
 <li><p>Build and load P4-capable ionic modules: run <code class="docutils literal notranslate"><span class="pre">ernic_guest_setup</span></code>
 with the P4 series listed in <code class="docutils literal notranslate"><span class="pre">ernic_guest_ionic_extra_patches</span></code>,</p>
