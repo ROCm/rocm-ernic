@@ -25,7 +25,12 @@ workflows' run: blocks, but neither sees:
 This pulls each of those out, checks it with ShellCheck in the dialect it
 runs under, and reports findings against the file and line they came from.
 
-Run from the repository root:
+The project is the directory above this script's, and needn't be the top
+of its git checkout: in rocm-systems it's emulation/ernic/. What's checked
+is the project and, in .github/ at the top of the checkout, its workflows
+and actions: all of them when the project is the checkout, and only those
+named ernic-* when the checkout holds others' too. Paths in findings are
+relative to the top of the checkout. Run it from anywhere:
 
     tools/check-embedded-shell.py           # check everything
     tools/check-embedded-shell.py --list    # list what it found
@@ -68,9 +73,48 @@ EXCLUDED_CHECKS = "SC1091,SC2050,SC2154,SC2157,SC2194"
 # Maps a (line, column) in a snippet, both 1-based, to its file.
 Locator = Callable[[int, int], "tuple[int, int]"]
 
+PROJECT_DIR = pathlib.Path(__file__).resolve().parent.parent
+
 
 class CheckError(Exception):
     """Something couldn't be checked; the message says what."""
+
+
+@dataclasses.dataclass
+class Project:
+    """Where the project's files are, from the top of its git checkout."""
+
+    top: str
+    prefix: str  # its directory, ending in /, or "" if it's the checkout
+
+    @property
+    def ours(self) -> str:
+        """What the project's workflows' and actions' names start with."""
+        return "ernic-" if self.prefix else ""
+
+    def pathspecs(self) -> list[str]:
+        """The project's files: its directory, workflows and actions."""
+        if not self.prefix:
+            return ["."]
+        return [self.prefix, ".github/workflows/ernic-*", ".github/actions/ernic-*"]
+
+
+def find_project() -> Project:
+    """Find the project's git checkout."""
+    try:
+        # No shell, and the arguments are this script's own. git is found
+        # on PATH, so the script also runs on NixOS.
+        out = subprocess.run(  # nosec B603 B607
+            ["git", "rev-parse", "--show-toplevel", "--show-prefix"],
+            cwd=PROJECT_DIR,
+            check=True,
+            capture_output=True,
+            text=True,
+        ).stdout
+    except (OSError, subprocess.CalledProcessError) as err:
+        raise CheckError(f"{PROJECT_DIR} isn't in a git checkout") from err
+    top, prefix = out.split("\n")[:2]
+    return Project(top, prefix)
 
 
 @dataclasses.dataclass
@@ -236,8 +280,9 @@ def scalar_locator(node: yaml.ScalarNode, lines: list[str]) -> Locator:
 
 
 def git_files(*patterns: str) -> list[str]:
-    """Tracked files matching the pathspecs."""
-    # No shell, and the pathspecs are literals in this script, after "--".
+    """Tracked files matching the pathspecs, from the top of the checkout."""
+    # No shell, and the pathspecs are this script's, made from literals and
+    # the project's directory, after "--".
     # git is found on PATH, so the script also runs on NixOS.
     out = subprocess.run(  # nosec B603 B607
         ["git", "ls-files", "-z", "--", *patterns],
@@ -248,10 +293,10 @@ def git_files(*patterns: str) -> list[str]:
     return [f for f in out.split("\0") if f and os.path.isfile(f)]
 
 
-def shell_scripts() -> list[str]:
+def shell_scripts(project: Project) -> list[str]:
     """The files the ShellCheck workflow checks; see the ernic-lint skill."""
     found = []
-    for f in git_files():
+    for f in git_files(*project.pathspecs()):
         name = f.rsplit("/", 1)[-1]
         if f.endswith((".sh", ".sh.in")):
             found.append(f)
@@ -271,7 +316,7 @@ def dialect(shell: str | None, default: str) -> str | None:
     return word if word in ("bash", "sh") else None
 
 
-def from_scripts() -> list[Snippet]:
+def from_scripts(project: Project) -> list[Snippet]:
     """Whole scripts, checked here only for the heredocs inside them."""
     return [
         Snippet(
@@ -281,7 +326,7 @@ def from_scripts() -> list[Snippet]:
             pathlib.Path(path).read_text(encoding="utf-8"),
             lambda line, col: (line, col),
         )
-        for path in shell_scripts()
+        for path in shell_scripts(project)
     ]
 
 
@@ -302,14 +347,17 @@ def run_step(
     )
 
 
-def from_workflows() -> tuple[list[Snippet], list[Snippet]]:
+def from_workflows(project: Project) -> tuple[list[Snippet], list[Snippet]]:
     """The run: blocks of the workflows.
 
     Returns the blocks GitHub runs with sh, which are checked here, and
     every bash or sh block, which is searched for heredocs.
     """
     as_sh, every = [], []
-    for path in git_files(".github/workflows/*.yml", ".github/workflows/*.yaml"):
+    for path in git_files(
+        f".github/workflows/{project.ours}*.yml",
+        f".github/workflows/{project.ours}*.yaml",
+    ):
         root, lines = read_yaml(path)
         wf_shell = get_str(get(get(root, "defaults"), "run"), "shell")
         jobs = get(root, "jobs")
@@ -337,12 +385,11 @@ def from_workflows() -> tuple[list[Snippet], list[Snippet]]:
     return as_sh, every
 
 
-def from_actions() -> list[Snippet]:
+def from_actions(project: Project) -> list[Snippet]:
     """The run: steps of the composite actions."""
     snippets = []
-    for path in git_files(
-        ".github/actions/*/action.yml", ".github/actions/*/action.yaml"
-    ):
+    actions = f".github/actions/{project.ours}*"
+    for path in git_files(f"{actions}/action.yml", f"{actions}/action.yaml"):
         root, lines = read_yaml(path)
         for step in items(get(get(root, "runs"), "steps")):
             shell = dialect(get_str(step, "shell"), "bash")
@@ -381,10 +428,11 @@ def ansible_task(path: str, lines: list[str], task: yaml.Node) -> list[Snippet]:
     return snippets
 
 
-def from_ansible() -> list[Snippet]:
+def from_ansible(project: Project) -> list[Snippet]:
     """The shell: and raw: tasks of the Ansible collection."""
     snippets = []
-    for path in git_files("ansible/*.yml", "ansible/*.yaml"):
+    ansible = f"{project.prefix}ansible/*"
+    for path in git_files(f"{ansible}.yml", f"{ansible}.yaml"):
         root, lines = read_yaml(path)
         todo = [root]
         while todo:
@@ -811,11 +859,14 @@ def main() -> int:
     )
     args = parser.parse_args()
     try:
-        as_sh, workflow_blocks = from_workflows()
-        actions = from_actions()
-        ansible = from_ansible()
+        project = find_project()
+        # Every path from here on is relative to the top of the checkout.
+        os.chdir(project.top)
+        as_sh, workflow_blocks = from_workflows(project)
+        actions = from_actions(project)
+        ansible = from_ansible(project)
         checked = as_sh + actions + ansible
-        for container in from_scripts() + workflow_blocks + actions + ansible:
+        for container in from_scripts(project) + workflow_blocks + actions + ansible:
             checked.extend(heredocs(container))
         if args.list:
             for s in checked:

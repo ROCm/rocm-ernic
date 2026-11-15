@@ -15,20 +15,29 @@
 # Only files git tracks are searched, which is everything CI sees; build
 # trees and notes in a working copy aren't pins.
 #
-# Run from the repository root:
+# The project is the directory above this script's, and needn't be the
+# top of its git checkout: in rocm-systems it's emulation/ernic/. What's
+# searched is the project and, in .github/ at the top of the checkout,
+# its workflows and actions: all of them when the project is the
+# checkout, and only those named ernic-* when the checkout holds others'
+# too. Paths in messages are relative to the top of the checkout. Run it
+# from anywhere:
 #
 #   tools/check-guest-image-tag.sh
 set -euo pipefail
 
 PIN_FILE="ci/guest-image.env"
 
-if [ ! -f "${PIN_FILE}" ]; then
-    echo "error: ${PIN_FILE} not found; run from the repository root" >&2
+PROJECT_DIR=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd -P)
+SELF="tools/$(basename -- "${BASH_SOURCE[0]}")"
+
+if [ ! -f "${PROJECT_DIR}/${PIN_FILE}" ]; then
+    echo "error: ${PIN_FILE} not found in ${PROJECT_DIR}" >&2
     exit 2
 fi
 
 # shellcheck source=/dev/null
-. "${PIN_FILE}"
+. "${PROJECT_DIR}/${PIN_FILE}"
 
 for key in GUEST_ARTIFACT_TAG BUILDER_IMAGE BUILDER_TAG; do
     if [ -z "${!key:-}" ]; then
@@ -48,17 +57,32 @@ PATTERN='[a-z]+-k[0-9]+(\.[0-9]+)+-[0-9a-f]{12}'
 PATTERN+='|qemu([0-9]+(\.[0-9]+)+|\.[0-9a-f]{7})-vfu\.[0-9a-f]{7}-[0-9a-f]{12}'
 PATTERN+='|[0-9]{8}\.g[0-9a-f]{7,}-vm\.[a-z0-9.-]+-qcow2'
 
+# The top of the checkout, and the project's path from there, with a
+# trailing /, or nothing if it's the top
+if ! top=$(git -C "${PROJECT_DIR}" rev-parse --show-toplevel 2>/dev/null) ||
+    ! prefix=$(git -C "${PROJECT_DIR}" rev-parse --show-prefix); then
+    echo "error: ${PROJECT_DIR} isn't in a git checkout" >&2
+    exit 2
+fi
+if [ -z "${prefix}" ]; then
+    search=(.)
+    ours=""
+else
+    search=("${prefix}" ".github/workflows/ernic-*" ".github/actions/ernic-*")
+    ours=ernic-
+fi
+
 # Excluded by path, not by name, so a copy at some-lane/guest-image.env --
 # the stray most likely to be created, since a new lane copies the file it
 # already knows the name of -- is still caught. Same for this script: only
 # this path is the checker, anything else matching the pattern is a stray.
-SELF="${BASH_SOURCE[0]#./}"
 # git grep exits 1 for no match, and above that for an error
 status=0
-stray=$(git grep -nE "${PATTERN}" -- . \
-    ":(exclude)${PIN_FILE}" ":(exclude)${SELF}") || status=$?
+stray=$(git -C "${top}" grep -nE "${PATTERN}" -- "${search[@]}" \
+    ":(exclude)${prefix}${PIN_FILE}" ":(exclude)${prefix}${SELF}") ||
+    status=$?
 if [ "${status}" -gt 1 ]; then
-    echo "error: git grep failed; run from a git checkout" >&2
+    echo "error: git grep failed" >&2
     exit 2
 fi
 
@@ -72,7 +96,7 @@ while IFS= read -r line; do
     [ -n "${line}" ] || continue
     file=${line%%:*}
     text=${line#*:*:}
-    if [[ ${file} == .github/workflows/* && ${text} =~ ${pin_re} &&
+    if [[ ${file} == .github/workflows/"${ours}"* && ${text} =~ ${pin_re} &&
         ${BASH_REMATCH[1]} == "${BUILDER_IMAGE}:${BUILDER_TAG}" ]]; then
         continue
     fi

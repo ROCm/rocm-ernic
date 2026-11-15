@@ -1108,6 +1108,23 @@ the details, see ``ci/images/README.md``. Likewise,
 ``ernicctl vm-launch`` and ``vm-stop`` through it, against
 stand-ins for QEMU and ``ssh``, so no guest boots.
 
+``image-tag.sh``, ``tools/check-guest-image-tag.sh`` and
+``tools/check-embedded-shell.py`` don't need the project to
+be the top of its git checkout. In a larger one, as in
+rocm-systems, they read only the workflows and actions in
+its ``.github/`` named ``ernic-*``.
+``tests/test_nested_checkout.sh`` copies the tree into
+``emulation/ernic/`` of a scratch repository, beside another
+project, and checks that the three look at the project's
+files and only those, and that the project builds there. It
+needs ShellCheck and PyYAML, so it isn't a CTest test; the
+``Nested checkout`` workflow runs it:
+
+.. code-block:: bash
+
+   tests/test_nested_checkout.sh . -G Ninja \
+     -DCMAKE_PREFIX_PATH="$HOME/.local"
+
 Adding New Tests
 ----------------
 

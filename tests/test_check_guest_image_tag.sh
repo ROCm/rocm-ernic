@@ -4,7 +4,10 @@
 # lockfile and a lane workflow: that it passes a tree whose guest and
 # builder tags appear only in ci/guest-image.env and in workflow image:
 # lines naming the pinned builder, and fails one with a tag anywhere
-# else, naming the file and line.
+# else, naming the file and line. All of it twice: with the project at
+# the top of the repository, and in emulation/ernic/ of a repository
+# holding another project, as in rocm-systems, where only the project and
+# the workflows and actions named ernic-* are its.
 #
 # Copyright (C) Advanced Micro Devices, Inc.
 # SPDX-License-Identifier: GPL-2.0-or-later
@@ -52,17 +55,28 @@ BUILDER_PREFIX=qemu11.1.1-vfu.5b9c722-
 BUILDER_TAG=${BUILDER_PREFIX}0123456789ab
 OTHER_TAG=${BUILDER_PREFIX}ba9876543210
 
-REPO="$WORK/repo"
-mkdir -p "$REPO/ci" "$REPO/tools" "$REPO/.github/workflows" "$REPO/docs"
-cp "$SRC" "$REPO/tools/check-guest-image-tag.sh"
-cat >"$REPO/ci/guest-image.env" <<EOF
+# Make $REPO, a git repository holding the project in $REPO/$PROJ, with
+# its lockfile, its check, a doc, and a lane workflow,
+# .github/workflows/$LANE, all committed.
+#   $1  the project's directory in the repository, ending in /, or
+#       nothing for the top. In a directory, the lane is named ernic-*,
+#       and another project's files and workflow hold tags of their own.
+make_repo() {
+    REPO="$WORK/repo"
+    PROJ=$1
+    LANE=.github/workflows/${PROJ:+ernic-}lane.yml
+    rm -rf "$REPO"
+    mkdir -p "$REPO/${PROJ}ci" "$REPO/${PROJ}tools" "$REPO/${PROJ}docs" \
+        "$REPO/.github/workflows"
+    cp "$SRC" "$REPO/${PROJ}tools/check-guest-image-tag.sh"
+    cat >"$REPO/${PROJ}ci/guest-image.env" <<EOF
 # The lockfile
 GUEST_ARTIFACT_REPO=ghcr.io/rocm/rocm-ernic/guest-ionic
 GUEST_ARTIFACT_TAG=$GUEST_TAG
 BUILDER_IMAGE=$BUILDER
 BUILDER_TAG=$BUILDER_TAG
 EOF
-cat >"$REPO/.github/workflows/lane.yml" <<EOF
+    cat >"$REPO/$LANE" <<EOF
 jobs:
   a:
     container:
@@ -71,25 +85,37 @@ jobs:
     container:
         image:   $BUILDER:$BUILDER_TAG
 EOF
-cat >"$REPO/docs/ci.md" <<'EOF'
+    cat >"$REPO/${PROJ}docs/ci.md" <<'EOF'
 The lanes run in the builder ci/guest-image.env pins.
 EOF
-git -C "$REPO" init -q
-git -C "$REPO" add -A
-git -C "$REPO" -c user.name=test -c user.email=test@example.com \
-    commit -q -m pins
+    if [[ -n $PROJ ]]; then
+        mkdir -p "$REPO/other" "$REPO/.github/actions/other"
+        echo "pull $GUEST_TAG" >"$REPO/other/notes.md"
+        cat >"$REPO/.github/workflows/other.yml" <<EOF
+jobs:
+  a:
+    container:
+      image: $BUILDER:$OTHER_TAG
+EOF
+        echo "# builder $BUILDER_TAG" >"$REPO/.github/actions/other/action.yml"
+    fi
+    git -C "$REPO" init -q
+    git -C "$REPO" add -A
+    git -C "$REPO" -c user.name=test -c user.email=test@example.com \
+        commit -q -m pins
+}
 
-# Run the check from the repository root, its output in $WORK/out and
+# Run the check from outside the repository, its output in $WORK/out and
 # $WORK/err, and its exit status in $STATUS.
 check() {
     STATUS=0
-    (cd "$REPO" && tools/check-guest-image-tag.sh) \
+    (cd "$WORK" && "$REPO/${PROJ}tools/check-guest-image-tag.sh") \
         >"$WORK/out" 2>"$WORK/err" || STATUS=$?
 }
 
 # Check that the check fails, naming a line, then undo the change.
 #   $1  what the change is, for the message
-#   $2  the FILE:LINE it should name
+#   $2  the FILE:LINE it should name, from the top of the repository
 #   $3  a command making the change, run in $REPO
 fails_with() {
     (cd "$REPO" && eval "$3")
@@ -101,43 +127,6 @@ fails_with() {
     git -C "$REPO" reset -q --hard
     git -C "$REPO" clean -q -fd
 }
-
-check
-[[ $STATUS -eq 0 ]] || fail "a clean tree failed: $(cat "$WORK/err")"
-grep -qF "builder: $BUILDER:$BUILDER_TAG" "$WORK/out" ||
-    fail "it didn't print the pins: $(cat "$WORK/out")"
-pass "tags only in the lockfile and the lanes' image: lines pass"
-
-fails_with "a guest tag in another file" docs/ci.md:2 \
-    "echo 'pull $GUEST_TAG' >> docs/ci.md"
-fails_with "a Docker Hub guest tag" docs/ci.md:2 \
-    "echo 'pull $OLD_GUEST_TAG' >> docs/ci.md"
-fails_with "a copy of the lockfile" some-lane/guest-image.env:3 \
-    "mkdir some-lane && cp ci/guest-image.env some-lane/"
-fails_with "a builder tag in another file" docs/ci.md:2 \
-    "echo 'builder $BUILDER_TAG' >> docs/ci.md"
-pass "a tag outside the lockfile fails"
-
-fails_with "an image: line naming another builder tag" \
-    .github/workflows/lane.yml:4 \
-    "sed -i '4s/$BUILDER_TAG/$OTHER_TAG/' .github/workflows/lane.yml"
-fails_with "the pinned builder in a comment" .github/workflows/lane.yml:8 \
-    "echo '      # image: $BUILDER:$BUILDER_TAG' >> .github/workflows/lane.yml"
-fails_with "the pinned builder in another key" .github/workflows/lane.yml:8 \
-    "echo '      options: $BUILDER:$BUILDER_TAG' >> .github/workflows/lane.yml"
-fails_with "the pinned builder's tag under another image" \
-    .github/workflows/lane.yml:8 \
-    "echo '      image: docker.io/x/ci-builder:$BUILDER_TAG' >> \
-        .github/workflows/lane.yml"
-fails_with "an image: line outside the workflows" docs/ci.md:2 \
-    "echo 'image: $BUILDER:$BUILDER_TAG' >> docs/ci.md"
-pass "only a workflow's image: line naming the pinned builder is allowed"
-
-echo "pull $GUEST_TAG" >"$REPO/notes.md"
-check
-[[ $STATUS -eq 0 ]] || fail "an untracked file failed: $(cat "$WORK/err")"
-rm "$REPO/notes.md"
-pass "untracked files aren't searched"
 
 # Check that a broken setup fails with status 2, saying why.
 #   $1  what's broken, for the message
@@ -152,19 +141,77 @@ setup_fails() {
     git -C "$REPO" reset -q --hard
 }
 
-for key in GUEST_ARTIFACT_TAG BUILDER_IMAGE BUILDER_TAG; do
-    setup_fails "no $key" "does not define $key" \
-        "sed -i '/^$key=/d' ci/guest-image.env"
-done
-setup_fails "no lockfile" "not found" "rm ci/guest-image.env"
+for proj in "" emulation/ernic/; do
+    make_repo "$proj"
+    where="the project at ${PROJ:-the top}"
+    lock=${PROJ}ci/guest-image.env
+    doc=${PROJ}docs/ci.md
 
-# Not even a checkout around it, wherever TMPDIR is
-mv "$REPO/.git" "$WORK/dot-git"
-GIT_CEILING_DIRECTORIES=$WORK check
-[[ $STATUS -eq 2 ]] ||
-    fail "outside a checkout: exit status $STATUS, not 2: $(cat "$WORK/err")"
-grep -qF "git grep failed" "$WORK/err" ||
-    fail "outside a checkout: $(cat "$WORK/err")"
-pass "a missing lockfile, pin or git checkout fails with status 2"
+    check
+    [[ $STATUS -eq 0 ]] || fail "$where: a clean tree failed: $(cat "$WORK/err")"
+    grep -qF "builder: $BUILDER:$BUILDER_TAG" "$WORK/out" ||
+        fail "$where: it didn't print the pins: $(cat "$WORK/out")"
+    pass "$where: tags only in the lockfile and the lanes' image: lines pass"
+
+    fails_with "a guest tag in another file" "$doc:2" \
+        "echo 'pull $GUEST_TAG' >> $doc"
+    fails_with "a Docker Hub guest tag" "$doc:2" \
+        "echo 'pull $OLD_GUEST_TAG' >> $doc"
+    fails_with "a copy of the lockfile" "${PROJ}some-lane/guest-image.env:3" \
+        "mkdir ${PROJ}some-lane && cp $lock ${PROJ}some-lane/"
+    fails_with "a builder tag in another file" "$doc:2" \
+        "echo 'builder $BUILDER_TAG' >> $doc"
+    pass "$where: a tag outside the lockfile fails"
+
+    fails_with "an image: line naming another builder tag" "$LANE:4" \
+        "sed -i '4s/$BUILDER_TAG/$OTHER_TAG/' $LANE"
+    fails_with "the pinned builder in a comment" "$LANE:8" \
+        "echo '      # image: $BUILDER:$BUILDER_TAG' >> $LANE"
+    fails_with "the pinned builder in another key" "$LANE:8" \
+        "echo '      options: $BUILDER:$BUILDER_TAG' >> $LANE"
+    fails_with "the pinned builder's tag under another image" "$LANE:8" \
+        "echo '      image: docker.io/x/ci-builder:$BUILDER_TAG' >> $LANE"
+    fails_with "an image: line outside the workflows" "$doc:2" \
+        "echo 'image: $BUILDER:$BUILDER_TAG' >> $doc"
+    pass "$where: only a workflow's image: line naming the pinned builder" \
+        "is allowed"
+
+    if [[ -n $PROJ ]]; then
+        fails_with "a tag in one of the project's actions" \
+            .github/actions/ernic-x/action.yml:1 \
+            "mkdir .github/actions/ernic-x &&
+                echo '# $GUEST_TAG' > .github/actions/ernic-x/action.yml"
+        fails_with "an image: line in a workflow GitHub doesn't run" \
+            "$PROJ.github/workflows/lane.yml:4" \
+            "mkdir -p $PROJ.github/workflows &&
+                cp $LANE $PROJ.github/workflows/lane.yml"
+        pass "$where: the project's own workflows and actions are searched," \
+            "and only those"
+    fi
+
+    echo "pull $GUEST_TAG" >"$REPO/${PROJ}notes.md"
+    check
+    [[ $STATUS -eq 0 ]] ||
+        fail "$where: an untracked file failed: $(cat "$WORK/err")"
+    rm "$REPO/${PROJ}notes.md"
+    pass "$where: untracked files aren't searched"
+
+    for key in GUEST_ARTIFACT_TAG BUILDER_IMAGE BUILDER_TAG; do
+        setup_fails "$where: no $key" "does not define $key" \
+            "sed -i '/^$key=/d' $lock"
+    done
+    setup_fails "$where: no lockfile" "not found" "rm $lock"
+
+    # Not even a checkout around it, wherever TMPDIR is
+    mv "$REPO/.git" "$WORK/dot-git"
+    GIT_CEILING_DIRECTORIES=$WORK check
+    [[ $STATUS -eq 2 ]] ||
+        fail "$where: outside a checkout: exit status $STATUS, not 2:" \
+            "$(cat "$WORK/err")"
+    grep -qF "isn't in a git checkout" "$WORK/err" ||
+        fail "$where: outside a checkout: $(cat "$WORK/err")"
+    rm -rf "$WORK/dot-git"
+    pass "$where: a missing lockfile, pin or git checkout fails with status 2"
+done
 
 echo "All guest image pin check tests passed."

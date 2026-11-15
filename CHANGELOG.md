@@ -193,6 +193,20 @@
   checks `tools/check-guest-image-tag.sh`. Without an image named,
   `image-tag.sh --check` and `--write` cover every image under
   `ci/images/`, and fail on one the script doesn't know.
+* `ci/images/image-tag.sh`, `tools/check-guest-image-tag.sh` and
+  `tools/check-embedded-shell.py` run from any directory, and work with
+  the project in a directory of a larger git repository, as it will be in
+  rocm-systems. They read the workflows and actions in `.github/` at the
+  top of the checkout, only those named `ernic-*` when the project isn't
+  the top, and name files by their paths from the top. The
+  `fetch-guest-vm` action takes the project's directory as `project_dir`,
+  and the lanes find `ci/boot-guest.sh`, `scripts/qemu-vm-diagnose.sh` and
+  the project for Ansible in the directory their steps run in, not
+  `$GITHUB_WORKSPACE`. The new `Nested checkout` workflow
+  (`nested-checkout.yml`) runs `tests/test_nested_checkout.sh`, which
+  copies the tree into `emulation/ernic/` of a scratch repository beside
+  another project, checks that the three look at the project's files and
+  only those, and builds it there.
 * The `CI image pruning` workflow (`ci-images-prune.yml`) deletes the
   versions of the CI images in GHCR that nothing needs, every Monday,
   with `ci/images/prune-images.sh`. It keeps the tags develop's
