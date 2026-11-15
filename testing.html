@@ -1418,6 +1418,21 @@ the details, see <code class="docutils literal notranslate"><span class="pre">ci
 <code class="docutils literal notranslate"><span class="pre">ernic-boot-guest</span></code> checks <code class="docutils literal notranslate"><span class="pre">ci/boot-guest.sh</span></code>, and
 <code class="docutils literal notranslate"><span class="pre">ernicctl</span> <span class="pre">vm-launch</span></code> and <code class="docutils literal notranslate"><span class="pre">vm-stop</span></code> through it, against
 stand-ins for QEMU and <code class="docutils literal notranslate"><span class="pre">ssh</span></code>, so no guest boots.</p>
+<p><code class="docutils literal notranslate"><span class="pre">image-tag.sh</span></code>, <code class="docutils literal notranslate"><span class="pre">tools/check-guest-image-tag.sh</span></code> and
+<code class="docutils literal notranslate"><span class="pre">tools/check-embedded-shell.py</span></code> don’t need the project to
+be the top of its git checkout. In a larger one, as in
+rocm-systems, they read only the workflows and actions in
+its <code class="docutils literal notranslate"><span class="pre">.github/</span></code> named <code class="docutils literal notranslate"><span class="pre">ernic-*</span></code>.
+<code class="docutils literal notranslate"><span class="pre">tests/test_nested_checkout.sh</span></code> copies the tree into
+<code class="docutils literal notranslate"><span class="pre">emulation/ernic/</span></code> of a scratch repository, beside another
+project, and checks that the three look at the project’s
+files and only those, and that the project builds there. It
+needs ShellCheck and PyYAML, so it isn’t a CTest test; the
+<code class="docutils literal notranslate"><span class="pre">Nested</span> <span class="pre">checkout</span></code> workflow runs it:</p>
+<div class="highlight-bash notranslate"><div class="highlight"><pre><span></span>tests/test_nested_checkout.sh<span class="w"> </span>.<span class="w"> </span>-G<span class="w"> </span>Ninja<span class="w"> </span><span class="se">\</span>
+<span class="w">  </span>-DCMAKE_PREFIX_PATH<span class="o">=</span><span class="s2">"</span><span class="nv">$HOME</span><span class="s2">/.local"</span>
+</pre></div>
+</div>
 </section>
 </section>
 <section id="adding-new-tests">
