@@ -28,6 +28,7 @@
 #include <inttypes.h>
 #include <pthread.h>
 #include <sched.h>
+#include <stdarg.h>
 #include <stdatomic.h>
 #include <stdbool.h>
 #include <stddef.h>
@@ -173,11 +174,21 @@ void vfu_sgl_mark_dirty(vfu_ctx_t *vfu_ctx, dma_sg_t *sgl, size_t cnt)
     (void)cnt;
 }
 
+/* The last line logged, for the rows that check what a QP's destruction
+ * logs */
+static char g_last_log[256];
+
 void vfu_log(vfu_ctx_t *vfu_ctx, int level, const char *fmt, ...)
 {
+    va_list ap;
+
     (void)vfu_ctx;
     (void)level;
-    (void)fmt;
+    va_start(ap, fmt);
+    /* A line too long for the buffer is cut short, which the rows that
+     * read it would report as the wrong line */
+    (void)vsnprintf(g_last_log, sizeof(g_last_log), fmt, ap);
+    va_end(ap);
 }
 
 /* ---- The mesh: everything sent is kept, to be fed back in -------------- */
@@ -3880,6 +3891,77 @@ static const char *cmb_doorbell_run(struct ionic_datapath *dp)
     return cq_has_error(dp) ? "the WRITE completed in error" : NULL;
 }
 
+/*
+ * The WRITEs a QP sent to another node, those acknowledged, and those that
+ * landed on it from another node, which its destruction logs.  The data path
+ * is both ends: QP_A's peer is QP_B "on node 1", so QP_A counts what it sent
+ * and QP_B what landed.
+ */
+static const char *write_counts_run(struct ionic_datapath *dp)
+{
+    struct wqe bad = WRITE_OK;
+    char want[sizeof(g_last_log)];
+
+    bad.rkey = BAD_KEY;
+    remote(dp, QP_B);
+    post_send(dp, QP_A, &WRITE_OK);
+    post_send(dp, QP_A, &WRITE_OK);
+    pump(dp);
+    post_send(dp, QP_A, &READ_OK);
+    post_send(dp, QP_A, &SEND64);
+    pump(dp);
+    post_send(dp, QP_A, &bad);
+    pump(dp);
+
+    if (dp->qp[QP_A].writes_sent != 3 || dp->qp[QP_A].writes_acked != 2 ||
+        dp->qp[QP_A].writes_landed != 0) {
+        return "QP_A didn't count 3 WRITEs sent, 2 acknowledged and none "
+               "landed";
+    }
+    if (dp->qp[QP_B].writes_sent != 0 || dp->qp[QP_B].writes_acked != 0 ||
+        dp->qp[QP_B].writes_landed != 2) {
+        return "QP_B didn't count 2 WRITEs landed and none sent";
+    }
+
+    g_last_log[0] = '\0';
+    ionic_datapath_unregister_qp(dp, QP_C);
+    if (g_last_log[0] != '\0') {
+        return "a QP that moved no WRITEs logged its counts";
+    }
+    ionic_datapath_unregister_qp(dp, QP_A);
+    (void)snprintf(want, sizeof(want),
+                   "ionic_datapath: QP %u sent 3 RDMA WRITEs to other nodes "
+                   "(2 acknowledged), and 0 from other nodes landed",
+                   QP_A);
+    if (strcmp(g_last_log, want) != 0) {
+        return "QP_A's destruction didn't log its counts";
+    }
+
+    /* A QP registered under QP_A's id starts from zero */
+    register_qp(dp, QP_A, CQ_ID);
+    return dp->qp[QP_A].writes_sent == 0 && dp->qp[QP_A].writes_acked == 0
+               ? NULL
+               : "a new QP_A inherited the old one's counts";
+}
+
+static void check_write_counts(void)
+{
+    struct ionic_datapath *dp = setup();
+    const char *why =
+        dp ? write_counts_run(dp) : "could not create a data path";
+
+    ionic_datapath_destroy(dp);
+    printf("%s positive: two remote WRITEs, a READ, a SEND, then a WRITE to "
+           "an unregistered rkey; expected: the sender counts 3 WRITEs sent "
+           "and 2 acknowledged, the receiving QP 2 landed, and destroying "
+           "the sender logs its counts\n",
+           why ? "FAIL" : "ok  ");
+    if (why) {
+        printf("     %s\n", why);
+        failures++;
+    }
+}
+
 static void check_cmb_doorbell(void)
 {
     struct ionic_datapath *dp = setup();
@@ -3914,6 +3996,7 @@ int main(void)
     check_cmb_bounds();
     check_cmb_cleared_on_destroy();
     check_cmb_doorbell();
+    check_write_counts();
     for (size_t i = 0; i < sizeof(cases) / sizeof(cases[0]); i++) {
         run_case(&cases[i]);
     }

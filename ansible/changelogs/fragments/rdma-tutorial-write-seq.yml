@@ -1,0 +1,16 @@
+# Copyright (c) Advanced Micro Devices, Inc. All rights reserved.
+#
+# SPDX-License-Identifier: MIT
+
+---
+minor_changes:
+  - >-
+    ``tutorial-tests.yml``'s RDMA write example numbers its messages, in
+    the first and last 8 bytes of each, and fails at once, naming the
+    number it expected and the one it got, when a message arrives twice or
+    out of turn, rather than wait out ``ernic_rdma_tutorial_timeout``.  A
+    side that the timeout does stop says how many messages it had
+    received.  ``playbooks/files/rdma-tutorial/write.patch`` makes the
+    change; the example now needs one message in flight and a message size
+    that is a multiple of 8 and at least 16, which the play's 64 and 1
+    are.
