@@ -3907,11 +3907,22 @@ static const char *write_counts_run(struct ionic_datapath *dp)
     post_send(dp, QP_A, &WRITE_OK);
     post_send(dp, QP_A, &WRITE_OK);
     pump(dp);
+    /* A receive for the SEND, which would otherwise hold back what follows
+     * it on QP_B */
+    post_recv(dp, QP_B, 64);
     post_send(dp, QP_A, &READ_OK);
     post_send(dp, QP_A, &SEND64);
     pump(dp);
+    if (cq_has_error(dp)) {
+        return "a WRITE, the READ or the SEND completed in error";
+    }
     post_send(dp, QP_A, &bad);
     pump(dp);
+    if (g_nwire != 0 ||
+        dp->qp[QP_A].rdma[IONIC_DP_REQ_RX_REMOTE_ACCESS_ERR] != 1 ||
+        !cq_has_error(dp)) {
+        return "the WRITE to an unregistered rkey wasn't refused";
+    }
 
     if (dp->qp[QP_A].writes_sent != 3 || dp->qp[QP_A].writes_acked != 2 ||
         dp->qp[QP_A].writes_landed != 0) {

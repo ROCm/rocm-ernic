@@ -140,7 +140,7 @@ index 7219cc5..7505e20 100644
      duration   = (double)((end.tv_sec - start.tv_sec) * 1000000 + 
  			  (end.tv_usec - start.tv_usec));
 diff --git a/ib.c b/ib.c
-index 638bcdf..cc7cdf0 100644
+index 638bcdf..ee58c34 100644
 --- a/ib.c
 +++ b/ib.c
 @@ -1,10 +1,15 @@
@@ -186,7 +186,7 @@ index 638bcdf..cc7cdf0 100644
  	ret = ibv_modify_qp(qp, &qp_attr,
  			    IBV_QP_STATE | IBV_QP_AV |
  			    IBV_QP_PATH_MTU | IBV_QP_DEST_QPN |
-@@ -172,3 +182,106 @@ int post_write_unsignaled (uint32_t req_size, uint32_t lkey, uint64_t wr_id,
+@@ -172,3 +182,109 @@ int post_write_unsignaled (uint32_t req_size, uint32_t lkey, uint64_t wr_id,
      ret = ibv_post_send (qp, &send_wr, &bad_send_wr);
      return ret;
  }
@@ -208,8 +208,9 @@ index 638bcdf..cc7cdf0 100644
 +/*
 + * Wait for the message at msg, then check that it is number want. Both of
 + * its ends must have landed, since the order a WRITE's bytes land in isn't
-+ * defined. Ends that both name another message are reported at once; ends
-+ * that disagree get 100 ms to finish landing first.
++ * defined. Ends that both name another message are reported at once. Ends
++ * that disagree, one of them perhaps not landed yet, get 100 ms to finish
++ * landing first.
 + */
 +int seq_wait (volatile char *msg, int msg_size, uint64_t want)
 +{
@@ -217,8 +218,10 @@ index 638bcdf..cc7cdf0 100644
 +    uint64_t         head = 0, tail = 0;
 +    struct timespec  since, now;
 +
-+    while ((head = seq_word (msg)) == 0 || (tail = seq_word (end)) == 0) {
-+    }
++    do {
++	head = seq_word (msg);
++	tail = seq_word (end);
++    } while (head == 0 && tail == 0);
 +
 +    clock_gettime (CLOCK_MONOTONIC, &since);
 +    while ((head != want || tail != want) && head != tail) {
