@@ -32,6 +32,13 @@
 # ionic sources for: its KERNEL_REF must be IONIC_KERNEL_REF, in
 # cmake/ErnicKernelModule.cmake.
 #
+# The project is two directories above this script, and needn't be the
+# top of its git checkout: in rocm-systems it's emulation/ernic/. The
+# workflows are those in .github/workflows/ at the top of the checkout:
+# all of them when the project is the checkout, and only those named
+# ernic-* when the checkout holds others' too. Paths in messages are
+# relative to the top of the checkout.
+#
 # Usage: image-tag.sh [--ref] NAME
 #        image-tag.sh (--check | --write) [NAME]
 #   NAME     an image's directory under ci/images/ (builder, guest);
@@ -48,10 +55,9 @@
 set -euo pipefail
 
 PROG=$(basename -- "$0")
-IMAGES_DIR=$(cd -- "$(dirname -- "$0")" && pwd)
-REPO_ROOT=$(cd -- "$IMAGES_DIR/../.." && pwd)
-LOCKFILE=$REPO_ROOT/ci/guest-image.env
-WORKFLOWS=$REPO_ROOT/.github/workflows
+IMAGES_DIR=$(cd -- "$(dirname -- "$0")" && pwd -P)
+PROJECT_DIR=$(cd -- "$IMAGES_DIR/../.." && pwd -P)
+LOCKFILE=$PROJECT_DIR/ci/guest-image.env
 DEFAULT_REGISTRY=ghcr.io/rocm/rocm-ernic
 
 die() {
@@ -198,6 +204,12 @@ case $MODE in
         ;;
     check | write)
         [[ -f $LOCKFILE ]] || die "$LOCKFILE is missing"
+        TOP=$(git rev-parse --show-toplevel) ||
+            die "can't find the top of $IMAGES_DIR's git checkout"
+        TOP=$(cd -- "$TOP" && pwd -P)
+        # The project's workflows: all of them, or only its own
+        ours=""
+        [[ $PROJECT_DIR == "$TOP" ]] || ours=ernic-
         want_image="$DEFAULT_REGISTRY/$IMAGE"
         # What the lockfile must say, KEY=VALUE, and whether the
         # workflows' image: lines name the image too
@@ -259,7 +271,7 @@ case $MODE in
             die "$LOCKFILE must set $list and $last once each"
         fi
         if $lock_stale; then
-            stale+=("${LOCKFILE#"$REPO_ROOT/"}")
+            stale+=("${LOCKFILE#"$TOP/"}")
             if [[ $MODE == write ]]; then
                 # Rewritten in place, so it keeps its mode
                 printf '%s\n' "${LINES[@]}" >"$LOCKFILE"
@@ -273,7 +285,8 @@ case $MODE in
         shopt -s nullglob
         workflows=()
         if $WORKFLOW_PINS; then
-            workflows=("$WORKFLOWS"/*.yml "$WORKFLOWS"/*.yaml)
+            workflows=("$TOP/.github/workflows/$ours"*.yml
+                "$TOP/.github/workflows/$ours"*.yaml)
         fi
         for wf in "${workflows[@]}"; do
             mapfile -t LINES <"$wf"
@@ -284,7 +297,7 @@ case $MODE in
                 ref=${BASH_REMATCH[2]}
                 if [[ $ref == "$want_image:"* &&
                     $ref != "$want_image:$TAG" ]]; then
-                    stale+=("${wf#"$REPO_ROOT/"}:$((i + 1))")
+                    stale+=("${wf#"$TOP/"}:$((i + 1))")
                     LINES[i]="$indent$want_image:$TAG"
                     changed=true
                 fi
@@ -303,7 +316,7 @@ case $MODE in
             # The lanes build the ionic sources at IONIC_KERNEL_REF into
             # the guest, against its kernel's headers
             if [[ $NAME == guest ]]; then
-                cmake=$REPO_ROOT/cmake/ErnicKernelModule.cmake
+                cmake=$PROJECT_DIR/cmake/ErnicKernelModule.cmake
                 [[ -f $cmake ]] || die "$cmake is missing"
                 ionic_ref=$(sed -n \
                     's/^set(IONIC_KERNEL_REF "\([^"]*\)".*/\1/p' "$cmake")

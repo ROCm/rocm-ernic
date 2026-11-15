@@ -121,7 +121,7 @@ jobs:
       # contents.  ci/images/image-tag.sh --write builder keeps this line,
       # and every other like it, equal to the tree's tag, and the images
       # job, which checks that, publishes it before this job starts.
-      image: ghcr.io/rocm/rocm-ernic/ci-builder:qemu11.1.1-vfu.5b9c722-4b1ea0f67493
+      image: ghcr.io/rocm/rocm-ernic/ci-builder:qemu11.1.1-vfu.5b9c722-901926273c32
       # --user root, since the image's default user is ci, and this job
       # is written to run as root.
       #
@@ -306,7 +306,7 @@ jobs:
         # triggers, so a second copy would buy nothing.
         README_KVER="$(sed -n \
           's/.*CI%20guest%20kernel-\([0-9][0-9.]*\)-.*/\1/p' \
-          "$GITHUB_WORKSPACE/README.md")"
+          README.md)"
         if [ "$README_KVER" != "${KERNEL_RELEASE%%-*}" ]; then
           echo "✗ README.md advertises CI guest kernel '${README_KVER:-none}',"
           echo "  but $GUEST_ARTIFACT_TAG ships $KERNEL_RELEASE."
@@ -445,6 +445,8 @@ jobs:
         VM_INFO_USER: ${{ steps.vm_info.outputs.vm_user }}
       run: |
         echo "=== Booting the VM ==="
+        # The project's directory, which needn't be the workspace
+        PROJECT_ROOT="$PWD"
         SSH_PORT=2222
         VM_OUT=/tmp/ernic-vm1
         echo "SSH_PORT=$SSH_PORT" >> "$GITHUB_ENV"
@@ -458,7 +460,7 @@ jobs:
         # leaves a guest that never answers running, so
         # qemu-vm-diagnose.sh can examine it.
         status=0
-        "${GITHUB_WORKSPACE}/ci/boot-guest.sh" \
+        "$PROJECT_ROOT/ci/boot-guest.sh" \
           --disk "$VM_INFO_DISK" \
           --name gh-loopback-vm1 \
           --ssh-port "$SSH_PORT" \
@@ -488,7 +490,7 @@ jobs:
             ssh -vvv -F "$SSH_CONFIG" -o ConnectTimeout=5 \
               -p "$SSH_PORT" "${VM_INFO_USER}@localhost" true 2>&1 | tail -40 || true
 
-            "${GITHUB_WORKSPACE}/scripts/qemu-vm-diagnose.sh" \
+            "$PROJECT_ROOT/scripts/qemu-vm-diagnose.sh" \
               --label VM \
               --ssh-port "$SSH_PORT" \
               --qmp /tmp/qmp.sock \
@@ -1551,7 +1553,7 @@ jobs:
       PERF_CSV_DIR: /tmp/ernic-ci-results/perf-csv
     container:
       # The tag, and --user root: see the loopback job.
-      image: ghcr.io/rocm/rocm-ernic/ci-builder:qemu11.1.1-vfu.5b9c722-4b1ea0f67493
+      image: ghcr.io/rocm/rocm-ernic/ci-builder:qemu11.1.1-vfu.5b9c722-901926273c32
       #
       # GitHub-hosted Linux runners expose /dev/kvm; pass it through so the
       # guests run accelerated instead of under TCG.
@@ -2236,6 +2238,8 @@ jobs:
         COPY_VM_DISK_2: ${{ steps.copy_vm_disk.outputs.vm_disk_2 }}
       run: |
         echo "=== Booting both VMs ==="
+        # The project's directory, which needn't be the workspace
+        PROJECT_ROOT="$PWD"
 
         # ci/boot-guest.sh is what ernicctl vm-launch runs, so this boots
         # the guests the way a deployment does: the vfio-user device
@@ -2251,7 +2255,7 @@ jobs:
         # --shared-backing, because both overlays share one base.
         boot_vm() {
           local n="$1" disk="$2"
-          "${GITHUB_WORKSPACE}/ci/boot-guest.sh" \
+          "$PROJECT_ROOT/ci/boot-guest.sh" \
             --disk "$disk" \
             --name "gh-tcp-vm$n" \
             --ssh-port "$((2221 + n))" \
@@ -2308,7 +2312,7 @@ jobs:
             ssh -vvv -F "$SSH_CONFIG" -o ConnectTimeout=5 \
               -p "$port" "${VM_INFO_USER}@localhost" true 2>&1 | tail -40 || true
 
-            "${GITHUB_WORKSPACE}/scripts/qemu-vm-diagnose.sh" \
+            "$PROJECT_ROOT/scripts/qemu-vm-diagnose.sh" \
               --label "VM$n" --ssh-port "$port" --qmp "/tmp/qmp-vm$n.sock" \
               --console "/tmp/qemu-vm$n-console.log" \
               --qemu-log "/tmp/ernic-vm$n/qemu.log" --pid "$pid"
@@ -2522,10 +2526,11 @@ jobs:
         export ANSIBLE_HOST_KEY_CHECKING=false
         export ANSIBLE_PRIVATE_KEY_FILE="$SSH_KEY_PRIVATE"
         export ANSIBLE_ROLES_PATH="$PWD/ansible/roles"
+        PROJECT_ROOT="$PWD"
 
         cd ansible
         ansible-playbook ci-site.yml --tags tutorial \
-          -e ernic_project_root="$GITHUB_WORKSPACE" \
+          -e ernic_project_root="$PROJECT_ROOT" \
           -e ernic_run_dir=/tmp/ernic-ci \
           -e ernic_instances=2 \
           -e ernic_vm_ssh_base_port=2222 \
@@ -2554,6 +2559,7 @@ jobs:
         export ANSIBLE_HOST_KEY_CHECKING=false
         export ANSIBLE_PRIVATE_KEY_FILE="$SSH_KEY_PRIVATE"
         export ANSIBLE_ROLES_PATH="$PWD/ansible/roles"
+        PROJECT_ROOT="$PWD"
 
         cd ansible
         # ernic_project_root, explicitly: the group_vars default is
@@ -2563,7 +2569,7 @@ jobs:
         # performance-tests.yml cannot find free-perftest-port.sh or
         # find-rdma-device.sh.
         ansible-playbook ci-site.yml --tags perf \
-          -e ernic_project_root="$GITHUB_WORKSPACE" \
+          -e ernic_project_root="$PROJECT_ROOT" \
           -e ernic_run_dir=/tmp/ernic-ci \
           -e ernic_instances=2 \
           -e ernic_vm_ssh_base_port=2222 \

@@ -83,6 +83,12 @@ can't go unchecked. `tools/check-guest-image-tag.sh` fails
 if a builder tag appears anywhere else, or a workflow's
 `image:` line names another.
 
+Both run from any directory, and the project needn't be the
+top of its git checkout. The workflows they read are in
+`.github/` at the top of the checkout: all of them when the
+project is the checkout, and only those named `ernic-*` when
+it's a directory in a larger one, as in rocm-systems.
+
 Both checks run on every pull request, in
 `guest-image-pin.yml`, which has no `paths:` filter, after
 the tests of the scripts themselves; `ci-images.yml` runs

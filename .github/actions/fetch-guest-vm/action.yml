@@ -26,6 +26,13 @@ inputs:
       GUEST_ARTIFACT_INFO_TYPE in ci/guest-image.env.
     required: false
     default: ''
+  project_dir:
+    description: >-
+      The rocm-ernic project's directory, relative to the workspace, which
+      holds ci/guest-image.env. The workspace itself unless the project is
+      a directory in a larger repository, as in rocm-systems.
+    required: false
+    default: .
 
 outputs:
   output_dir:
@@ -42,6 +49,7 @@ runs:
       TAG: ${{ inputs.tag }}
       DEST: ${{ inputs.dest }}
       INFO_TYPE: ${{ inputs.info_artifact_type }}
+      PROJECT_DIR: ${{ inputs.project_dir }}
     run: |
       set -euo pipefail
 
@@ -49,7 +57,7 @@ runs:
       # every caller is what stops the three lanes drifting apart: a bump is
       # one edit, and a lane cannot keep testing an older guest because its
       # own copy was missed.
-      PIN="${GITHUB_WORKSPACE}/ci/guest-image.env"
+      PIN="${GITHUB_WORKSPACE}/${PROJECT_DIR}/ci/guest-image.env"
       if [ -z "${REPO}" ] || [ -z "${TAG}" ] || [ -z "${INFO_TYPE}" ]; then
         if [ ! -f "${PIN}" ]; then
           echo "::error::ci/guest-image.env not found at ${PIN}." \

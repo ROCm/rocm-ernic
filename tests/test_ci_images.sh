@@ -55,20 +55,24 @@ GUEST_ARTIFACT_USER=stale"
 # guest's kernel must be, and a lockfile and a workflow pinning a stale
 # builder and guest, all committed
 #   $1  where
+#   $2  the project's directory in it, ending in /, or nothing for the
+#       top. In a directory, as in rocm-systems, the workflow is named
+#       ernic-lane.yml, beside another project's pinning a stale builder.
 make_repo() {
-    mkdir -p "$1/ci" "$1/.github/workflows" "$1/cmake"
-    cp -R "$SRC" "$1/ci/images"
+    local proj=${2:-}
+    mkdir -p "$1/${proj}ci" "$1/.github/workflows" "$1/${proj}cmake"
+    cp -R "$SRC" "$1/${proj}ci/images"
     printf 'set(IONIC_KERNEL_REF "%s"\n    CACHE STRING "")\n' \
         "$(sed -n 's/^KERNEL_REF=//p' "$SRC/guest/pins.env")" \
-        >"$1/cmake/ErnicKernelModule.cmake"
-    cat >"$1/ci/guest-image.env" <<EOF
+        >"$1/${proj}cmake/ErnicKernelModule.cmake"
+    cat >"$1/${proj}ci/guest-image.env" <<EOF
 # The lockfile
 $STALE_GUEST
 
 BUILDER_IMAGE=ghcr.io/rocm/rocm-ernic/ci-builder
 BUILDER_TAG=stale
 EOF
-    cat >"$1/.github/workflows/lane.yml" <<'EOF'
+    cat >"$1/.github/workflows/${proj:+ernic-}lane.yml" <<'EOF'
 jobs:
   a:
     container:
@@ -85,6 +89,14 @@ jobs:
     container:
       image: docker.io/other/ci-builder:stale
 EOF
+    if [[ -n $proj ]]; then
+        cat >"$1/.github/workflows/other.yml" <<'EOF'
+jobs:
+  a:
+    container:
+      image: ghcr.io/rocm/rocm-ernic/ci-builder:stale
+EOF
+    fi
     git -C "$1" init -q
     git -C "$1" add -A
     git -C "$1" -c user.name=test -c user.email=test@example.com \
@@ -242,6 +254,33 @@ grep -qF "ci/guest-image.env" "$WORK/err" &&
     fail "--check named the lockfile, which was right: $(cat "$WORK/err")"
 git -C "$REPO" checkout -q -- .github ci/guest-image.env
 pass "--write pins the workflows' image: lines, and only those"
+
+# The project in a directory of a larger repository, run from outside it
+NESTED="$WORK/nested"
+make_repo "$NESTED" emulation/ernic/
+NESTED_SH="$NESTED/emulation/ernic/ci/images/image-tag.sh"
+[[ $("$NESTED_SH" builder) == "$TAG" ]] ||
+    fail "the tag depends on where the project is in its repository"
+if (cd "$WORK" && "$NESTED_SH" --check builder) 2>"$WORK/err"; then
+    fail "--check passed the project's workflow pinning a stale tag"
+fi
+for stale in emulation/ernic/ci/guest-image.env \
+    .github/workflows/ernic-lane.yml:4; do
+    grep -qF " $stale" "$WORK/err" ||
+        fail "--check didn't name $stale: $(cat "$WORK/err")"
+done
+grep -qF "other.yml" "$WORK/err" &&
+    fail "--check named another project's workflow: $(cat "$WORK/err")"
+(cd "$WORK" && "$NESTED_SH" --write builder) 2>/dev/null ||
+    fail "--write failed in a directory of a larger repository"
+grep -qF "image: ghcr.io/rocm/rocm-ernic/ci-builder:$TAG" \
+    "$NESTED/.github/workflows/ernic-lane.yml" ||
+    fail "--write didn't pin the project's workflow"
+git -C "$NESTED" diff --quiet -- .github/workflows/other.yml ||
+    fail "--write changed another project's workflow"
+"$NESTED_SH" --check builder 2>/dev/null ||
+    fail "--check failed right after --write in a larger repository"
+pass "in a directory of a larger repository, only its own workflows are pins"
 
 # Check that --check and --write refuse a lockfile, and --write leaves it
 # alone.

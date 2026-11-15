@@ -42,7 +42,7 @@ jobs:
     container:
       # ci/images/image-tag.sh --write builder keeps the tag; see the
       # loopback job in system-tests.yml.
-      image: ghcr.io/rocm/rocm-ernic/ci-builder:qemu11.1.1-vfu.5b9c722-4b1ea0f67493
+      image: ghcr.io/rocm/rocm-ernic/ci-builder:qemu11.1.1-vfu.5b9c722-901926273c32
       # --user root, since the image's default user is ci, and --init,
       # which makes PID 1 an init that reaps orphans: see the loopback
       # job in system-tests.yml.
@@ -327,6 +327,8 @@ jobs:
         VM_INFO_USER: ${{ steps.vm_info.outputs.vm_user }}
       run: |
         echo "=== Booting the VM ==="
+        # The project's directory, which needn't be the workspace
+        PROJECT_ROOT="$PWD"
         SSH_PORT=2222
         VM_OUT=/tmp/ernic-vm1
         echo "SSH_PORT=$SSH_PORT" >> "$GITHUB_ENV"
@@ -340,7 +342,7 @@ jobs:
         # leaves a guest that never answers running, so
         # qemu-vm-diagnose.sh can examine it.
         status=0
-        "${GITHUB_WORKSPACE}/ci/boot-guest.sh" \
+        "$PROJECT_ROOT/ci/boot-guest.sh" \
           --disk "$VM_INFO_DISK" \
           --name gh-s3-vm1 \
           --ssh-port "$SSH_PORT" \
@@ -370,7 +372,7 @@ jobs:
             ssh -vvv -F "$SSH_CONFIG" -o ConnectTimeout=5 \
               -p "$SSH_PORT" "${VM_INFO_USER}@localhost" true 2>&1 | tail -40 || true
 
-            "${GITHUB_WORKSPACE}/scripts/qemu-vm-diagnose.sh" \
+            "$PROJECT_ROOT/scripts/qemu-vm-diagnose.sh" \
               --label VM \
               --ssh-port "$SSH_PORT" \
               --qmp /tmp/qmp.sock \
