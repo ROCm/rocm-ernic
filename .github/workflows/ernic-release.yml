@@ -1,0 +1,206 @@
+# Copyright (c) Advanced Micro Devices, Inc. All rights reserved.
+#
+# SPDX-License-Identifier: MIT
+name: ernic - Release
+
+on:
+  workflow_dispatch:
+  push:
+    tags:
+      - 'v*'
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+# The release is installed under /usr/local, the prefix its files name
+# (see ernic_install_with_paths() in cmake/ErnicInstall.cmake), staged in
+# RELEASE_DESTDIR. INSTALL_PREFIX is where that puts it.
+env:
+  RELEASE_DESTDIR: /tmp/rocm-ernic-release
+  INSTALL_PREFIX: /tmp/rocm-ernic-release/usr/local
+
+jobs:
+  # Built on the oldest Ubuntu release that's supported, not the newest
+  # that the rest of CI uses: the server is linked against the glibc of
+  # the release it's built on, so a server built on 26.04 wouldn't run
+  # on 24.04.
+  build:
+    name: Build release assets
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    permissions:
+      contents: read
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+    steps:
+      - name: Check out code
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Detect release architecture
+        id: arch
+        run: |
+          echo "deb_arch=$(dpkg --print-architecture)" >> "${GITHUB_OUTPUT}"
+
+      # build-essential, cmake, ninja-build and pkg-config are preinstalled
+      # on the hosted image.
+      - name: Install system dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            libibverbs-dev \
+            librdmacm-dev
+
+      # Built from source on every run rather than restored from
+      # actions/cache: the release links against this library, and a
+      # cache entry written by another workflow run is not something a
+      # published release should trust.
+      - name: Clone and build libvfio-user
+        run: |
+          sudo apt-get install -y meson libjson-c-dev
+          . ci/images/builder/pins.env
+          git clone "$LIBVFIO_USER_REPO" /tmp/libvfio-user
+          cd /tmp/libvfio-user
+          git checkout "$LIBVFIO_USER_COMMIT"
+          meson setup build --prefix=/usr -Dwarning_level=0
+          ninja -C build
+          sudo ninja -C build install
+          sudo ldconfig
+
+      - name: Read and validate release version
+        id: version
+        run: |
+          version=$(python3 - <<'EOF'
+          import pathlib, re
+          text = pathlib.Path("CMakeLists.txt").read_text()
+          parts = {}
+          for key in ("MAJOR", "MINOR", "PATCH"):
+              m = re.search(rf"set\(ROCM_ERNIC_VERSION_{key}\s+(\d+)\)", text)
+              if not m:
+                  raise SystemExit(f"missing ROCM_ERNIC_VERSION_{key}")
+              parts[key] = m.group(1)
+          print("{MAJOR}.{MINOR}.{PATCH}".format(**parts))
+          EOF
+          )
+          echo "version=${version}" >> "${GITHUB_OUTPUT}"
+          if [[ "${GITHUB_REF_TYPE}" == "tag" ]]; then
+            tag="${GITHUB_REF_NAME#v}"
+            if [[ "${tag}" != "${version}" ]]; then
+              echo "::error::tag ${GITHUB_REF_NAME} does not match version ${version} in CMakeLists.txt"
+              exit 1
+            fi
+          fi
+
+      - name: Configure project
+        run: |
+          cmake -B build -G Ninja \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DCMAKE_INSTALL_PREFIX=/usr/local \
+            -DERNIC_INSTALL_SERVICE=ON \
+            -DERNIC_WERROR=ON
+
+      - name: Build project
+        run: cmake --build build
+
+      - name: Install release tree
+        run: DESTDIR="${RELEASE_DESTDIR}" cmake --install build
+
+      - name: Verify installed release payload
+        run: |
+          check_path() {
+            if [ ! -e "${INSTALL_PREFIX}/$1" ]; then
+              echo "::error::missing installed path ${INSTALL_PREFIX}/$1"
+              exit 1
+            fi
+          }
+          for path in \
+            bin/rocm-ernic \
+            bin/ernicctl \
+            libexec/rocm-ernic/rocm-ernic-launcher \
+            libexec/rocm-ernic/rocm-ernic-driver-pack \
+            libexec/rocm-ernic/rocm-ernic-boot-guest \
+            lib/systemd/system/rocm-ernic.service \
+            lib/systemd/system/rocm-ernic-driver-pack.service \
+            etc/rocm-ernic/rocm-ernic.env \
+            share/rocm-ernic/patches \
+            share/rocm-ernic/setup-ionic-dkms.sh \
+            share/rocm-ernic/fetch-ionic-sources.sh; do
+            check_path "${path}"
+          done
+          file "${INSTALL_PREFIX}/bin/rocm-ernic"
+          python3 "${INSTALL_PREFIX}/bin/ernicctl" --help
+
+      - name: Create release archives
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
+          DEB_ARCH: ${{ steps.arch.outputs.deb_arch }}
+        run: |
+          set -euo pipefail
+          version="${VERSION}"
+          arch="${DEB_ARCH}"
+          mkdir -p dist
+          cat > /tmp/rocm-ernic-release-files.txt <<'EOF'
+          bin/rocm-ernic
+          libexec/rocm-ernic
+          lib/systemd/system/rocm-ernic.service
+          lib/systemd/system/rocm-ernic-driver-pack.service
+          etc/rocm-ernic
+          share/rocm-ernic
+          EOF
+          cat > /tmp/ernicctl-release-files.txt <<'EOF'
+          bin/ernicctl
+          EOF
+          tar --sort=name --mtime='UTC 1970-01-01' \
+            --format=posix \
+            --owner=0 --group=0 --numeric-owner \
+            -C "${INSTALL_PREFIX}" \
+            -cf - -T /tmp/rocm-ernic-release-files.txt \
+            | gzip -n > "dist/rocm-ernic-${version}-linux-${arch}.tar.gz"
+          tar --sort=name --mtime='UTC 1970-01-01' \
+            --format=posix \
+            --owner=0 --group=0 --numeric-owner \
+            -C "${INSTALL_PREFIX}" \
+            -cf - -T /tmp/ernicctl-release-files.txt \
+            | gzip -n > "dist/ernicctl-${version}-linux-${arch}.tar.gz"
+          sha256sum dist/*.tar.gz > "dist/SHA256SUMS-${version}.txt"
+          ls -lh dist
+
+      - name: Upload release assets
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: release-assets
+          path: dist/*
+          retention-days: 7
+
+  publish:
+    name: Publish GitHub release
+    needs: build
+    if: >-
+      github.ref_type == 'tag' &&
+      github.ref_name == format('v{0}', needs.build.outputs.version)
+    runs-on: ubuntu-26.04
+    timeout-minutes: 15
+    permissions:
+      contents: write
+    steps:
+      - name: Download release assets
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: release-assets
+          path: dist
+
+      # --repo is required: this job does not check the repository
+      # out, so gh has no git remote to infer it from.
+      - name: Create GitHub release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          VERSION: ${{ needs.build.outputs.version }}
+        run: |
+          gh release create "${GITHUB_REF_NAME}" dist/* \
+            --repo "${GITHUB_REPOSITORY}" \
+            --title "rocm-ernic ${VERSION}" \
+            --latest \
+            --generate-notes \
+            --verify-tag

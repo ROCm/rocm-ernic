@@ -450,7 +450,7 @@ def build_page(history, docs_dir):
     """Write perf-trends.rst plus the HTML fragment it includes.
 
     The charts live in a separate .html file rather than inline
-    ``.. raw:: html`` blocks.  docs-check runs
+    ``.. raw:: html`` blocks.  ernic-docs-check runs
     ``doc8 docs/ --max-line-length 80``, and SVG path data is
     nowhere near 80 columns; doc8 only scans .rst, so keeping
     the markup out of the .rst is what lets both coexist.
@@ -586,11 +586,11 @@ def _table_lines(chart, history):
 # README badges: shields.io "endpoint" schema
 # (https://shields.io/badges/endpoint-badge). One JSON file per
 # transport. These are written into docs/perf-history/ and pushed
-# to perf/ on gh-pages by .github/actions/publish-perf, which is
-# the URL README.md points at. They do not travel with the Sphinx
-# build: a shield fed from the site would only be as fresh as the
-# last docs deploy, and would read whatever placeholder was
-# committed to develop until one ran.
+# to perf/ on gh-pages by .github/actions/ernic-publish-perf,
+# which is the URL README.md points at. They do not travel with
+# the Sphinx build: a shield fed from the site would only be as
+# fresh as the last docs deploy, and would read whatever
+# placeholder was committed to develop until one ran.
 def _fmt_rate(value, unit):
     # iperf3 across the emulated TAP bridge sustains single-digit
     # MB/s, and a fixed "%.2f GB/s" renders that as "0.00 GB/s" --

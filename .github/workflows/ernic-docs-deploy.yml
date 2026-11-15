@@ -1,0 +1,179 @@
+# Copyright (c) Advanced Micro Devices, Inc. All rights reserved.
+#
+# SPDX-License-Identifier: MIT
+
+# Build the Sphinx documentation and publish it to the gh-pages branch.
+#
+# Prerequisites (one-time, requires repo-admin access):
+#   Settings > Pages > Source = "Deploy from a branch", gh-pages / (root)
+#
+# gh-pages holds the site in the directory ci/pages.env names (the
+# branch root while it's empty) and the performance record in that
+# directory's perf/.  Only the perf lanes write perf/; only this workflow
+# writes the rest of the directory, and nothing here writes outside it,
+# so other projects can publish beside it on a shared gh-pages.  The
+# rsync below is what keeps the halves from clobbering each other.
+
+name: ernic - Docs Deploy
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - develop
+    paths:
+      - 'docs/**'
+      - 'src/**/*.h'
+      - 'service/**'
+      - 'requirements.txt'
+      # The counter lists under docs/generated/ are built from these by
+      # tools/gen-counter-docs.py, which the sphinx-html target runs.
+      # Without them a counter added to the device would change the
+      # site and never be published. src/**/*.h above already covers
+      # ionic_adminq_priv.h.
+      - 'src/ionic/ionic_emu_stats.c'
+      - 'tools/gen-counter-docs.py'
+      - 'cmake/ErnicDocumentation.cmake'
+      - 'ci/pages.env'
+      - 'ci/pages-subdir.sh'
+      - '.github/workflows/ernic-docs-deploy.yml'
+
+# Serialise deploys.  Unlike the pull request workflows this does NOT
+# cancel in progress: a half-finished deploy would leave gh-pages in
+# whatever state rsync had reached, so a superseded run queues behind
+# the current one and then publishes the newer docs.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    name: sphinx-build
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    permissions:
+      contents: write
+    steps:
+    - name: Check out code
+      uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      with:
+        # "Publish to gh-pages" pushes through origin with this token.
+        persist-credentials: true
+
+    - name: Install dependencies
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y doxygen
+
+    # Every step that reads or writes gh-pages works inside this
+    # directory, empty for the branch root.
+    - name: Read the site's directory on gh-pages
+      run: |
+        set -euo pipefail
+        subdir=$(ci/pages-subdir.sh)
+        echo "PAGES_SUBDIR=${subdir}" >> "$GITHUB_ENV"
+        echo "publishing to gh-pages:/${subdir}"
+
+    # docs/perf-history/history.jsonl is committed to develop as an
+    # empty placeholder so a local or PR build still renders a complete
+    # site.  The real record lives on gh-pages, written by the perf
+    # lanes, and has to be present *before* Sphinx runs: perf-trends is
+    # a page in the toctree, not an artifact of the build.
+    - name: Fetch the published performance history
+      run: |
+        set -euo pipefail
+        history="${PAGES_SUBDIR:+${PAGES_SUBDIR}/}perf/history.jsonl"
+        if git fetch --quiet --depth 1 origin gh-pages 2>/dev/null \
+           && git show "FETCH_HEAD:${history}" \
+                > docs/perf-history/history.jsonl 2>/dev/null; then
+          echo "using $(wc -l < docs/perf-history/history.jsonl) published runs"
+        else
+          echo "::notice::no published history on gh-pages; rendering the placeholder"
+        fi
+
+    - name: Render the trend page
+      run: |
+        python3 ci/report/publish-perf.py --render-only --docs-dir docs
+
+    - name: Configure docs-only build
+      run: |
+        cmake -S . -B build \
+          -DERNIC_DOCS_ONLY=ON \
+          -DERNIC_BUILD_DOCS=ON \
+          -DERNIC_DOCS_WERROR=ON
+
+    - name: Build documentation
+      run: cmake --build build --target sphinx-html
+
+    - name: Publish to gh-pages
+      run: |
+        set -euo pipefail
+
+        git config user.name  "rocm-ernic-ci"
+        git config user.email "rocm-ernic-ci@users.noreply.github.com"
+        git config commit.gpgSign false
+
+        git fetch --quiet origin gh-pages
+        git worktree add --quiet --detach ../gh-pages FETCH_HEAD
+
+        # The site's directory in the worktree, and as a pathspec, which
+        # git refuses if empty.
+        site="../gh-pages${PAGES_SUBDIR:+/${PAGES_SUBDIR}}"
+        pathspec="${PAGES_SUBDIR:-.}"
+
+        # sphinx.ext.githubpages emits .nojekyll, but Pages honours it
+        # only at the branch root, and a branch source without it runs
+        # Jekyll and strips _static/, which costs the whole site its CSS.
+        # At the root it's ours to keep, below.  In a subdirectory the
+        # root belongs to the branch's owners, so only say so.
+        if [ -n "$PAGES_SUBDIR" ] && [ ! -e ../gh-pages/.nojekyll ]; then
+          echo "::warning::gh-pages has no root .nojekyll; unless its" \
+               "_config.yml includes them, Jekyll drops _static/ and" \
+               "the other _ directories from ${PAGES_SUBDIR}/"
+        fi
+
+        # A perf lane can land a perf/ commit while this build runs --
+        # it is what dispatched us, moments earlier.  Concurrency only
+        # serialises this workflow against itself, so on a rejected
+        # push take their tip and re-apply the site on top.
+        for attempt in 1 2 3; do
+          # --exclude /perf/ is load-bearing: --delete would otherwise
+          # take the performance record with it on every site rebuild,
+          # and it is the one thing on this branch that cannot be
+          # regenerated.  The leading / anchors it to the site's
+          # directory, the transfer's root, where the record lives.
+          mkdir -p "$site"
+          rsync -a --delete \
+            --exclude '.git' \
+            --exclude '/perf/' \
+            build/docs/html/ "$site/"
+
+          if [ -z "$PAGES_SUBDIR" ]; then
+            touch ../gh-pages/.nojekyll
+          fi
+
+          git -C ../gh-pages add -A -- "$pathspec"
+          if git -C ../gh-pages diff --cached --quiet; then
+            echo "site unchanged"
+            exit 0
+          fi
+          git -C ../gh-pages commit \
+            -m "docs: publish site from ${GITHUB_SHA}" \
+            -m "Built by ernic-docs-deploy.yml. [skip ci]"
+
+          if git -C ../gh-pages push origin HEAD:gh-pages; then
+            echo "published"
+            exit 0
+          fi
+          echo "push rejected (attempt ${attempt}); refreshing and retrying"
+          sleep $((attempt * 5))
+          # Fetch in the worktree: FETCH_HEAD is per worktree, so a
+          # fetch in the main one leaves this one's unset.
+          git -C ../gh-pages fetch --quiet origin gh-pages
+          git -C ../gh-pages reset --hard FETCH_HEAD
+        done
+        echo "::error::could not push the site after 3 attempts"
+        exit 1

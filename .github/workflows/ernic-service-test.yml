@@ -1,0 +1,485 @@
+# Copyright (c) Advanced Micro Devices, Inc. All rights reserved.
+#
+# SPDX-License-Identifier: MIT
+name: ernic - Service Tooling Tests
+
+on:
+  pull_request:
+    branches: [ develop ]
+    paths:
+      - 'service/**'
+      - 'ci/boot-guest.sh'
+      - 'prometheus/ernic-exporter'
+      - 'prometheus/ernic-exporter.service'
+      - 'cmake/ErnicInstall.cmake'
+      - '.github/workflows/ernic-service-test.yml'
+      # LIBVFIO_USER_COMMIT, which this builds against
+      - 'ci/images/builder/pins.env'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  ernicctl-syntax:
+    name: ernicctl Python syntax and imports
+    runs-on: ubuntu-26.04
+    timeout-minutes: 10
+    steps:
+    - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      with:
+        persist-credentials: false
+
+    - name: Check Python syntax
+      run: python3 -m py_compile service/ernicctl
+
+    - name: Verify stdlib-only imports
+      run: |
+        echo "=== Checking for non-stdlib imports ==="
+        python3 scripts/check-stdlib-imports.py service/ernicctl
+
+    - name: Verify --help works
+      run: python3 service/ernicctl --help
+
+    - name: Verify subcommand help
+      run: |
+        for cmd in status start stop restart reload \
+                   logs stats add-instance \
+                   remove-instance attach detach \
+                   hot-reload driver-pack \
+                   driver-push vm-launch vm-stop \
+                   vm-list; do
+          echo "--- ernicctl ${cmd} --help ---"
+          python3 service/ernicctl "${cmd}" --help \
+            || true
+        done
+
+  bash-syntax:
+    name: Bash script syntax
+    runs-on: ubuntu-26.04
+    timeout-minutes: 10
+    steps:
+    - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      with:
+        persist-credentials: false
+
+    - name: Check bash syntax
+      run: |
+        bash -n service/rocm-ernic-launcher
+        echo "rocm-ernic-launcher: OK"
+        bash -n service/rocm-ernic-driver-pack
+        echo "rocm-ernic-driver-pack: OK"
+        bash -n service/vm-driver-install.sh.in
+        echo "vm-driver-install.sh.in: OK"
+        bash -n ci/boot-guest.sh
+        echo "boot-guest.sh: OK"
+
+    # shellcheck is preinstalled on the hosted image, so this job needs no
+    # apt work at all.
+    - name: Shellcheck service scripts
+      run: |
+        shellcheck \
+          service/rocm-ernic-launcher \
+          service/rocm-ernic-driver-pack \
+          service/vm-driver-install.sh.in \
+          ci/boot-guest.sh
+
+  systemd-unit-lint:
+    name: systemd unit file validation
+    runs-on: ubuntu-26.04
+    timeout-minutes: 10
+    steps:
+    - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      with:
+        persist-credentials: false
+
+    - name: Validate unit files
+      run: |
+        for unit in service/*.service; do
+          echo "--- Validating ${unit} ---"
+          systemd-analyze verify \
+            --man=no "${unit}" 2>&1 || true
+        done
+
+  env-file-check:
+    name: Environment file validation
+    runs-on: ubuntu-26.04
+    timeout-minutes: 10
+    steps:
+    - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      with:
+        persist-credentials: false
+
+    - name: Check env file is sourceable
+      run: |
+        set -a
+        # shellcheck disable=SC1091
+        source service/rocm-ernic.env
+        set +a
+        echo "ERNIC_BIN=${ERNIC_BIN}"
+        echo "ERNIC_INSTANCES=${ERNIC_INSTANCES}"
+        echo "ERNIC_TCP_PORT=${ERNIC_TCP_PORT}"
+        echo "All variables sourced successfully."
+
+    - name: Check no trailing whitespace
+      run: |
+        if grep -Pn '\s+$' service/rocm-ernic.env; then
+          echo "Trailing whitespace found."
+          exit 1
+        fi
+        echo "No trailing whitespace."
+
+  cmake-service-install:
+    name: CMake service install targets
+    runs-on: ubuntu-26.04
+    timeout-minutes: 15
+    steps:
+    - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      with:
+        persist-credentials: false
+
+    # cmake, ninja-build and pkg-config are preinstalled on the hosted
+    # image.  Unlike the other workflows the libvfio-user build below is
+    # not cached, so meson and libjson-c-dev are needed on every run.
+    - name: Install build dependencies
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y \
+          libibverbs-dev librdmacm-dev \
+          libjson-c-dev meson \
+          libcmocka-dev
+
+    - name: Clone and build libvfio-user
+      run: |
+        # The pin is LIBVFIO_USER_COMMIT in ci/images/builder/pins.env;
+        # ernic-build-and-test.yml says why it is this one and why only
+        # the library is built.
+        . ci/images/builder/pins.env
+        git clone "$LIBVFIO_USER_REPO" /tmp/libvfio-user
+        cd /tmp/libvfio-user
+        git checkout "$LIBVFIO_USER_COMMIT"
+        meson setup build --prefix=/usr \
+          -Dwarning_level=0
+        meson compile -C build vfio-user
+        sudo meson install -C build --no-rebuild \
+          --tags runtime,devel
+        sudo ldconfig
+
+    - name: Configure with service install
+      run: |
+        cmake -B build -G Ninja \
+          -DCMAKE_BUILD_TYPE=Debug \
+          -DCMAKE_INSTALL_PREFIX=/tmp/install-test \
+          -DERNIC_INSTALL_SERVICE=ON \
+          -DERNIC_WERROR=ON
+
+    - name: Build
+      run: cmake --build build
+
+    - name: Install
+      run: cmake --install build
+
+    - name: Verify installed files
+      run: |
+        echo "=== Checking installed files ==="
+        PREFIX="/tmp/install-test"
+
+        check_file() {
+          if [ -f "$1" ]; then
+            echo "OK: $1"
+          else
+            echo "MISSING: $1"
+            exit 1
+          fi
+        }
+
+        check_file "${PREFIX}/bin/rocm-ernic"
+        check_file "${PREFIX}/bin/ernicctl"
+        check_file \
+          "${PREFIX}/libexec/rocm-ernic/rocm-ernic-launcher"
+        check_file \
+          "${PREFIX}/libexec/rocm-ernic/rocm-ernic-driver-pack"
+        check_file \
+          "${PREFIX}/libexec/rocm-ernic/rocm-ernic-boot-guest"
+        check_file \
+          "${PREFIX}/etc/rocm-ernic/rocm-ernic.env"
+        check_file \
+          "${PREFIX}/share/rocm-ernic/vm-driver-install.sh.in"
+        check_file \
+          "${PREFIX}/lib/systemd/system/rocm-ernic.service"
+        check_file \
+          "${PREFIX}/lib/systemd/system/rocm-ernic-driver-pack.service"
+        check_file "${PREFIX}/bin/ernic-exporter"
+        check_file "${PREFIX}/lib/systemd/system/ernic-exporter.service"
+        check_file "${PREFIX}/share/doc/rocm-ernic/LICENSE.md"
+        check_file "${PREFIX}/share/doc/rocm-ernic/LICENSE_GPL.md"
+
+        echo ""
+        echo "=== Paths in the installed files ==="
+        # The files in service/ and prometheus/ name the paths of an install
+        # to /usr/local. The installed copies have to name this install's.
+        installed=(
+          "${PREFIX}/bin/ernicctl"
+          "${PREFIX}/bin/ernic-exporter"
+          "${PREFIX}/libexec/rocm-ernic/rocm-ernic-launcher"
+          "${PREFIX}/libexec/rocm-ernic/rocm-ernic-driver-pack"
+          "${PREFIX}/libexec/rocm-ernic/rocm-ernic-boot-guest"
+          "${PREFIX}/etc/rocm-ernic/rocm-ernic.env"
+          "${PREFIX}/lib/systemd/system/rocm-ernic.service"
+          "${PREFIX}/lib/systemd/system/rocm-ernic-driver-pack.service"
+          "${PREFIX}/lib/systemd/system/ernic-exporter.service"
+        )
+        if grep -Fn /usr/local/ "${installed[@]}"; then
+          echo "FAIL: installed files refer to /usr/local"
+          exit 1
+        fi
+        check_line() {
+          if grep -Fqx -- "$2" "$1"; then
+            echo "OK: $1: $2"
+          else
+            echo "MISSING: $1: $2"
+            exit 1
+          fi
+        }
+        check_line "${PREFIX}/lib/systemd/system/rocm-ernic.service" \
+          "ExecStart=${PREFIX}/libexec/rocm-ernic/rocm-ernic-launcher"
+        check_line "${PREFIX}/etc/rocm-ernic/rocm-ernic.env" \
+          "ERNIC_BIN=${PREFIX}/bin/rocm-ernic"
+        check_line "${PREFIX}/etc/rocm-ernic/rocm-ernic.env" \
+          "ERNIC_DRIVER_SOURCE=${PREFIX}/share/rocm-ernic/patches"
+        check_line "${PREFIX}/bin/ernicctl" \
+          "LAUNCHER = \"${PREFIX}/libexec/rocm-ernic/rocm-ernic-launcher\""
+        check_line "${PREFIX}/libexec/rocm-ernic/rocm-ernic-launcher" \
+          "ERNIC_BIN=\"\${ERNIC_BIN:-${PREFIX}/bin/rocm-ernic}\""
+
+        echo ""
+        echo "=== ionic driver files ==="
+        ls "${PREFIX}/share/rocm-ernic/patches/"
+        if ls "${PREFIX}/share/rocm-ernic/patches/"*.patch \
+          > /dev/null 2>&1; then
+          echo "OK: ionic driver patches installed"
+        else
+          echo "MISSING: ionic driver patches"
+          exit 1
+        fi
+        check_file "${PREFIX}/share/rocm-ernic/setup-ionic-dkms.sh"
+        check_file "${PREFIX}/share/rocm-ernic/fetch-ionic-sources.sh"
+        check_file "${PREFIX}/share/rocm-ernic/ionic-kernel-ref"
+
+        # The pin is captured at install time, so a stale or empty file
+        # here would silently build the guest from the wrong baseline.
+        PIN=$(sed -n 's/^set(IONIC_KERNEL_REF "\([^"]*\)".*/\1/p' \
+          cmake/ErnicKernelModule.cmake)
+        GOT=$(cat "${PREFIX}/share/rocm-ernic/ionic-kernel-ref")
+        if [ "$PIN" != "$GOT" ]; then
+          echo "MISMATCH: cmake pins ${PIN}, installed ref is ${GOT}"
+          exit 1
+        fi
+        echo "OK: installed ionic ref matches the cmake pin (${GOT})"
+
+        echo ""
+        echo "All service files installed correctly."
+
+  launcher-unit-test:
+    name: Launcher script unit tests
+    runs-on: ubuntu-26.04
+    timeout-minutes: 10
+    steps:
+    - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      with:
+        persist-credentials: false
+
+    - name: Test MAC generation
+      run: |
+        echo "=== Testing MAC generation ==="
+        # This and the next step source single functions cut out of the
+        # launcher, which the ShellCheck workflow checks as a whole.
+        # shellcheck source=/dev/null
+        source <(sed -n '/^gen_mac_deterministic()/,/^}/p' \
+          service/rocm-ernic-launcher)
+
+        MAC1=$(gen_mac_deterministic 1)
+        MAC2=$(gen_mac_deterministic 2)
+        MAC1B=$(gen_mac_deterministic 1)
+
+        echo "MAC for idx 1: ${MAC1}"
+        echo "MAC for idx 2: ${MAC2}"
+        echo "MAC for idx 1 again: ${MAC1B}"
+
+        if [ "${MAC1}" = "${MAC1B}" ]; then
+          echo "OK: Deterministic (same idx = same MAC)"
+        else
+          echo "FAIL: Same index gave different MACs"
+          exit 1
+        fi
+
+        if [ "${MAC1}" != "${MAC2}" ]; then
+          echo "OK: Different indices = different MACs"
+        else
+          echo "FAIL: Different indices gave same MAC"
+          exit 1
+        fi
+
+        # Check locally-administered bit is set
+        FIRST_BYTE="${MAC1%%:*}"
+        DECIMAL=$((16#${FIRST_BYTE}))
+        if [ $((DECIMAL & 0x02)) -ne 0 ]; then
+          echo "OK: Locally-administered bit set"
+        else
+          echo "FAIL: Locally-administered bit not set"
+          exit 1
+        fi
+
+        # Check multicast bit is clear
+        if [ $((DECIMAL & 0x01)) -eq 0 ]; then
+          echo "OK: Multicast bit clear (unicast)"
+        else
+          echo "FAIL: Multicast bit set"
+          exit 1
+        fi
+
+    - name: Test guest GID derivation
+      run: |
+        echo "=== Testing guest RoCE GID derivation ==="
+        # shellcheck source=/dev/null
+        source <(sed -n '/^gen_linklocal_from_mac()/,/^}/p' \
+          service/rocm-ernic-launcher)
+        # shellcheck source=/dev/null
+        source <(sed -n '/^get_gids_for_instance()/,/^}/p' \
+          service/rocm-ernic-launcher)
+
+        # Known-good vector, confirmed against a running fleet: a guest with
+        # this MAC autoconfigures exactly this link-local address, and it is
+        # what peers must match to route to that node.
+        GOT=$(gen_linklocal_from_mac 72:6f:63:6d:00:01)
+        if python3 -c "
+        import ipaddress, sys
+        sys.exit(0 if ipaddress.IPv6Address('${GOT}')
+                 == ipaddress.IPv6Address('fe80::706f:63ff:fe6d:1') else 1)"; then
+          echo "OK: EUI-64 derivation matches the observed guest address"
+        else
+          echo "FAIL: derived ${GOT}, expected fe80::706f:63ff:fe6d:1"
+          exit 1
+        fi
+
+        # The universal/local bit must be inverted, per RFC 4291 appendix A.
+        # Getting this backwards yields an address no guest ever assigns, and
+        # the only symptom is that every peer refuses to open QPs to it.
+        FLIPPED=$(gen_linklocal_from_mac 70:6f:63:6d:00:01)
+        if [ "${FLIPPED}" != "${GOT}" ]; then
+          echo "OK: U/L bit inverted, not copied"
+        else
+          echo "FAIL: MACs differing only in the U/L bit gave one address"
+          exit 1
+        fi
+
+        # Distinct instances must not collide.
+        if [ "$(gen_linklocal_from_mac 72:6f:63:6d:00:01)" \
+             != "$(gen_linklocal_from_mac 72:6f:63:6d:00:02)" ]; then
+          echo "OK: Different MACs = different GIDs"
+        else
+          echo "FAIL: Different MACs gave the same GID"
+          exit 1
+        fi
+
+        # An explicit ERNIC_GUEST_GIDS_<n> wins over the derived value, which
+        # is how a guest carrying a static address is reached.
+        export ERNIC_GUEST_GIDS_3="fe80::dead,192.168.100.13"
+        OVERRIDE=$(get_gids_for_instance 3 72:6f:63:6d:00:03)
+        if [ "${OVERRIDE}" = "fe80::dead,192.168.100.13" ]; then
+          echo "OK: Per-instance override honoured"
+        else
+          echo "FAIL: override ignored, got ${OVERRIDE}"
+          exit 1
+        fi
+
+        unset ERNIC_GUEST_GIDS_4
+        if [ "$(get_gids_for_instance 4 72:6f:63:6d:00:04)" \
+             = "$(gen_linklocal_from_mac 72:6f:63:6d:00:04)" ]; then
+          echo "OK: Falls back to the derived link-local when unset"
+        else
+          echo "FAIL: unset override did not fall back to the derived GID"
+          exit 1
+        fi
+
+    - name: Test hot-reload preserves guest GIDs
+      run: |
+        echo "=== Testing hot-reload GID preservation ==="
+        # A hot-reloaded instance must advertise the same addresses as the
+        # one it replaces. Peers route by matching them, so a restart that
+        # loses or guesses them is a node no peer can reach, and nothing
+        # downstream reports it.
+        python3 - <<'EOF'
+        import io, contextlib, sys, types
+
+        src = open("service/ernicctl").read()
+        mod = types.ModuleType("ernicctl")
+        mod.__dict__["__name__"] = "not_main"
+        exec(compile(src, "service/ernicctl", "exec"), mod.__dict__)
+        resolve = mod.guest_gids_for
+
+        got = resolve({"id": 1, "gids": "fe80::1,192.168.100.11"})
+        assert got == "fe80::1,192.168.100.11", got
+        print("OK: manifest value is used")
+
+        # A manifest written before GIDs were recorded still has the
+        # operator's explicit configuration to fall back on.
+        mod.CFG["ERNIC_GUEST_GIDS_2"] = "fe80::2"
+        assert resolve({"id": 2, "gids": ""}) == "fe80::2"
+        print("OK: falls back to ERNIC_GUEST_GIDS_<n>")
+
+        # With neither, refuse rather than start an unreachable server.
+        err = io.StringIO()
+        try:
+            with contextlib.redirect_stderr(err):
+                resolve({"id": 9, "gids": ""})
+        except SystemExit as exc:
+            assert exc.code != 0, exc.code
+            assert "No guest GIDs recorded" in err.getvalue()
+            print("OK: refuses when no addresses are known")
+        else:
+            print("FAIL: started an instance with no GIDs")
+            sys.exit(1)
+        EOF
+
+    - name: Test launcher --help
+      run: |
+        service/rocm-ernic-launcher --badarg 2>&1 \
+          | grep -q "Unknown action" \
+          && echo "OK: Unknown action handled"
+
+  ernicctl-status-offline:
+    name: ernicctl status without service
+    runs-on: ubuntu-26.04
+    timeout-minutes: 10
+    steps:
+    - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      with:
+        persist-credentials: false
+
+    - name: status with no manifest
+      run: |
+        output=$(python3 service/ernicctl status 2>&1)
+        echo "${output}"
+        echo "${output}" | grep -qi "no instances\|not.*running"
+        echo "OK: Graceful output when no manifest."
+
+    - name: vm-list with no manifest
+      run: |
+        output=$(python3 service/ernicctl vm-list 2>&1)
+        echo "${output}"
+        echo "${output}" | grep -qi "no vms\|not.*found\|no.*attached"
+        echo "OK: vm-list graceful without manifest."
+
+    - name: status --json with no manifest
+      run: |
+        python3 service/ernicctl status --json \
+          > /tmp/ernicctl-json.out 2>&1
+        cat /tmp/ernicctl-json.out
+        python3 -c "import json; d=json.load(open('/tmp/ernicctl-json.out')); \
+          assert d['instances'] == [], 'Expected empty instances list'; \
+          print('OK: JSON output is valid and empty.')"

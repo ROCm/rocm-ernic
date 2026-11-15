@@ -23,7 +23,7 @@
 # ships the tree over, and only the build runs on the guest -- which it
 # must, since setup-ionic-dkms.sh builds for the running kernel.
 # The 'Build the SRQ-capable ionic driver in the VM' step in
-# .github/workflows/system-tests.yml is the worked example.
+# .github/workflows/ernic-system-tests.yml is the worked example.
 #
 # The refs it builds are in roles/ernic_srq_dkms/defaults/main.yml, pinned as
 # SHAs because rdma/for-next is rebased.

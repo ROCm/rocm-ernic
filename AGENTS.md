@@ -67,8 +67,8 @@ ctest --test-dir build -j"$(nproc)" --output-on-failure
 ```
 
 - libvfio-user is built from source (CI pins its commit in
-  [build-and-test.yml](.github/workflows/build-and-test.yml)); pass its
-  prefix with `-DCMAKE_PREFIX_PATH`.
+  [ernic-build-and-test.yml](.github/workflows/ernic-build-and-test.yml));
+  pass its prefix with `-DCMAKE_PREFIX_PATH`.
 - **Name the build type**: CI never builds the default, RelWithDebInfo.
   Without `ERNIC_WERROR`, warnings don't fail the build.
 - `ERNIC_BUILD_P4` (needs json-c) builds `src/p4/` and its tests. CI's
@@ -92,7 +92,8 @@ workflow for their environment).
 - **Every registered test runs without a VM, RDMA hardware, or root**,
   so a skip means something is wrong, and a test that can't set up fails
   rather than skipping (exit 77). Multi-VM and hardware tests run in the
-  `system-tests` workflow and the `*-lane` workflows it calls.
+  `ernic-system-tests` workflow and the `ernic-*-lane` workflows it
+  calls.
 - Build a test program with `ernic_add_test_program()` and register it
   with `ernic_add_unit_test()`
   ([`ErnicTesting.cmake`](cmake/ErnicTesting.cmake)); don't give it
@@ -110,8 +111,8 @@ workflow for their environment).
   add `test_fmt.c` to the program's sources. A failure message, which
   may be cut short, uses `(void)snprintf()`.
 - **Coverage of `src/` must not fall below `MIN_LINE_COVERAGE`** in
-  build-and-test.yml, checked on every PR, so test new and changed code,
-  error paths included.
+  ernic-build-and-test.yml, checked on every PR, so test new and changed
+  code, error paths included.
 
 ## C code
 
@@ -344,9 +345,9 @@ server. Security beats speed and convenience.
   `ernic_set_linker_flags()`, PIE, full RELRO, and a non-executable
   stack.
 - **Fix security scan findings** from CodeQL
-  ([codeql.yml](.github/workflows/codeql.yml)) and the PR scan
-  ([pr-security-scan.yml](.github/workflows/pr-security-scan.yml)), add
-  none, and ask before dismissing one.
+  ([ernic-codeql.yml](.github/workflows/ernic-codeql.yml)) and the PR scan
+  ([ernic-security-scan-pr.yml](.github/workflows/ernic-security-scan-pr.yml)),
+  add none, and ask before dismissing one.
 
 ### Patterns the security scanners report
 
@@ -418,7 +419,7 @@ new general patterns here when a scanner reports one.
 - **`${{ }}` in a workflow `run:` block** (zizmor `template-injection`)
   for any value not fixed in the workflow, even one read from a repo
   file: it's pasted in before the shell parses it. Map it to `env:` and
-  use `"$NAME"`, as `driver-build.yml`'s fetch step does.
+  use `"$NAME"`, as `ernic-driver-build.yml`'s fetch step does.
 - **Standard-library XML parsing** (Bandit B314, entity expansion):
   parse with `xml.parsers.expat`, refusing a DOCTYPE from a
   `StartDoctypeDeclHandler` that raises; for a tree, feed its callbacks
@@ -537,7 +538,8 @@ The skills have the commands.
 - The docs build without a Sphinx warning, and pass doc8 at 80 columns.
 - The Ansible collection passes `ansible-lint --strict` and
   `ansible-test sanity`, at the versions
-  [ansible-collection.yml](.github/workflows/ansible-collection.yml) pins.
+  [ernic-ansible-collection.yml](.github/workflows/ernic-ansible-collection.yml)
+  pins.
 
 ## The QEMU fork in `src/pvrdma/`
 

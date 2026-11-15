@@ -416,12 +416,12 @@ group; run alone, the play finds no hosts and does nothing:
 
 The hosted lane runs the whole thing from scratch --
 build, boot a guest, provision it, connect -- in
-:file:`.github/workflows/nvmeof-lane.yml`, which is the
+:file:`.github/workflows/ernic-nvmeof-lane.yml`, which is the
 cheapest end-to-end RDMA test in the matrix precisely
 because it needs only one VM. That lane is a reusable
 workflow with a single ``publish`` input, called by
-:file:`.github/workflows/system-tests.yml`: false on a pull
-request, true on a scheduled or dispatched run against
+:file:`.github/workflows/ernic-system-tests.yml`: false on a
+pull request, true on a scheduled or dispatched run against
 ``develop``. The steps are the same either way, so a green pull
 request and a scheduled run mean the same thing.
 
@@ -450,7 +450,7 @@ Performance
 -----------
 
 The scheduled run of
-:file:`.github/workflows/system-tests.yml` sweeps fio
+:file:`.github/workflows/ernic-system-tests.yml` sweeps fio
 across three block sizes against the connected namespace
 and publishes what it measured, on the same terms and
 through the same code path as the RDMA and TCP/IP

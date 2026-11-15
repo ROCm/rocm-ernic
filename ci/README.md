@@ -16,22 +16,24 @@ This directory holds what the GitHub-hosted workflows in
   into a report, and `publish-perf.py`, which records the
   performance numbers and renders the trend page.
 - `iwyu/` -- the scripts that the IWYU workflow
-  (`.github/workflows/iwyu.yml`) runs.
+  (`.github/workflows/ernic-iwyu.yml`) runs.
 
-The VM lanes themselves are `system-tests.yml` and the
-`nvmeof-lane.yml`, `s3-lane.yml` and `p4-lane.yml` workflows
-it calls. They provision their guests and run their tests
-through `ansible/ci-site.yml`, so the test logic lives in
-the same Ansible plays a developer runs.
+The VM lanes themselves are `ernic-system-tests.yml` and the
+`ernic-nvmeof-lane.yml`, `ernic-s3-lane.yml` and
+`ernic-p4-lane.yml` workflows it calls. They provision their
+guests and run their tests through `ansible/ci-site.yml`, so
+the test logic lives in the same Ansible plays a developer
+runs.
 
 ## The guest image
 
 The guest disk is defined in `ci/images/guest/` and
 published to GHCR, as `ghcr.io/rocm/rocm-ernic/guest-ionic`,
-by `ci-images.yml`, which `system-tests.yml` calls before its
-lanes; see [`images/README.md`](images/README.md). It has no
-password and no SSH key: `ci/boot-guest.sh`, which every lane
-boots it with, authorizes a key made for the job.
+by `ernic-ci-images.yml`, which `ernic-system-tests.yml`
+calls before its lanes; see
+[`images/README.md`](images/README.md). It has no password
+and no SSH key: `ci/boot-guest.sh`, which every lane boots it
+with, authorizes a key made for the job.
 
 The tag, disk name and login account are pinned only in
 `ci/guest-image.env`, which the GitHub lanes and
@@ -41,7 +43,7 @@ guest's definition changes. `tools/check-guest-image-tag.sh`
 fails the build if a literal tag appears anywhere else.
 
 The hosted lanes pull it through
-`.github/actions/fetch-guest-vm`. By hand,
+`.github/actions/ernic-fetch-guest-vm`. By hand,
 `scripts/fetch-guest-image.sh` lands the same bytes in the
 same layout, and checks the image before it pulls the disk:
 it rejects an image whose kernel is below 6.18, skewed from
@@ -58,11 +60,11 @@ The scheduled run publishes its medians to the docs site at
 <https://rocm.github.io/rocm-ernic/>, under *Performance
 trends*.
 
-All the badges are fed on identical terms. `system-tests.yml`
+All the badges are fed on identical terms. `ernic-system-tests.yml`
 is the single entry point, and each of its publishing lanes --
 the two-VM one for `perftest`/`iperf3`, the NVMe-oF one for the
 fio sweep, and the NVMe Key Value, S3 and P4 ones -- hands off
-to the same composite action, `.github/actions/publish-perf`.
+to the same composite action, `.github/actions/ernic-publish-perf`.
 There is one copy of the commit, push and Pages-dispatch logic,
 so a bug in it is fixed once rather than per lane.
 
@@ -88,9 +90,9 @@ Set it to a directory, as on a `gh-pages` branch other projects
 share, and the workflows publish the site and `perf/` there
 instead, leaving the branch root and everything else on the branch
 alone, `.nojekyll` included: Pages honours it only at the root,
-which then belongs to the branch's owners. `docs-deploy.yml` and
-`.github/actions/publish-perf` both read the setting through
-`ci/pages-subdir.sh`, so they can't disagree about it.
+which then belongs to the branch's owners. `ernic-docs-deploy.yml`
+and `.github/actions/ernic-publish-perf` both read the setting
+through `ci/pages-subdir.sh`, so they can't disagree about it.
 
 ### Changing `PAGES_SUBDIR`
 
@@ -101,8 +103,8 @@ into `"no data"`, so publish-perf refuses to: it warns and
 publishes nothing until `perf/history.jsonl` exists there. To move
 the site, here or onto another repository's `gh-pages`:
 
-1. Stop the publishers: disable `system-tests.yml`, which runs
-   every publishing lane, and `docs-deploy.yml`
+1. Stop the publishers: disable `ernic-system-tests.yml`, which
+   runs every publishing lane, and `ernic-docs-deploy.yml`
    (`gh workflow disable`), then wait for their runs in progress to
    finish.
 2. In one `gh-pages` commit, copy `perf/history.jsonl` and
@@ -114,9 +116,9 @@ the site, here or onto another repository's `gh-pages`:
    location: the badge and page URLs in `README.md` and the docs,
    and the `git show origin/gh-pages:perf/history.jsonl` commands
    here and in `docs/perf-trends.rst`.
-4. Re-enable both workflows, run `docs-deploy.yml` by hand to
-   publish the site in its new place, then let `system-tests.yml`
-   publish again.
+4. Re-enable both workflows, run `ernic-docs-deploy.yml` by hand
+   to publish the site in its new place, then let
+   `ernic-system-tests.yml` publish again.
 
 The old directory is left as it was, and serves stale pages until
 it's removed or replaced with redirects.
@@ -129,9 +131,9 @@ run cannot disturb the site.
 
 That push is made with the job's own `GITHUB_TOKEN`, which
 GitHub's loop-prevention rule exempts from starting other workflow
-runs, so the lane then dispatches `docs-deploy.yml` explicitly
+runs, so the lane then dispatches `ernic-docs-deploy.yml` explicitly
 (`workflow_dispatch`, needs `actions: write`) to rebuild the site.
-`docs-deploy` fetches `perf/history.jsonl` back off `gh-pages`,
+`ernic-docs-deploy` fetches `perf/history.jsonl` back off `gh-pages`,
 renders the trend page from it (`publish-perf.py --render-only`),
 builds Sphinx and `rsync -a --delete --exclude /perf/`s the result
 into the site's directory on `gh-pages`. The exclusion is what keeps
@@ -182,11 +184,11 @@ bad sweep does not grey a badge out:
 
 | File | Metric | Written by |
 | --- | --- | --- |
-| `badge-rdma.json` | `ib_send_bw`, 1 MiB, peak GB/s | `system-tests.yml` |
-| `badge-tcp.json` | `iperf3`, sustained GB/s | `system-tests.yml` |
-| `badge-nvmeof.json` | fio randread, 4 KiB, IOPS | `system-tests.yml` |
-| `badge-s3.json` | S3 GET, 1 MiB, GB/s | `system-tests.yml` |
-| `badge-nvmekv.json` | KV Retrieve, 64 KiB, GB/s | `system-tests.yml` |
+| `badge-rdma.json` | `ib_send_bw`, 1 MiB, peak GB/s | `ernic-system-tests.yml` |
+| `badge-tcp.json` | `iperf3`, sustained GB/s | `ernic-system-tests.yml` |
+| `badge-nvmeof.json` | fio randread, 4 KiB, IOPS | `ernic-system-tests.yml` |
+| `badge-s3.json` | S3 GET, 1 MiB, GB/s | `ernic-system-tests.yml` |
+| `badge-nvmekv.json` | KV Retrieve, 64 KiB, GB/s | `ernic-system-tests.yml` |
 
 The lane copies them to `perf/` on `gh-pages`, so each badge is
 reachable at
@@ -202,12 +204,12 @@ shields.io renders an *error*, which looks far worse than a grey
 
 ### Publishing on demand
 
-Waiting for 04:23 UTC is optional. `system-tests.yml` takes a
+Waiting for 04:23 UTC is optional. `ernic-system-tests.yml` takes a
 `workflow_dispatch` with a `publish` boolean (default true), so a
 manual run against `develop` fills all five shields:
 
 ```bash
-gh workflow run system-tests.yml --ref develop
+gh workflow run ernic-system-tests.yml --ref develop
 ```
 
 Pass `-f publish=false` to exercise the sweeps without touching
@@ -226,10 +228,10 @@ the two queue instead.
 
 Only a green run on `develop` publishes. Pull request runs never
 do -- a pull request's numbers describe the pull request, not
-`develop` -- and on `system-tests.yml` they do not even sweep:
-the two perf plays are minutes of `perftest` and `iperf3` on top
-of a job that already runs the best part of an hour, for numbers
-that would be discarded.
+`develop` -- and on `ernic-system-tests.yml` they do not even
+sweep: the two perf plays are minutes of `perftest` and `iperf3`
+on top of a job that already runs the best part of an hour, for
+numbers that would be discarded.
 
 Charts are inline SVG with no JavaScript and no extra build
 dependency. Each message size gets its own panel and its own
@@ -260,7 +262,7 @@ report to the GitHub step summary. Failed measurements are
 shown as an incomplete sample count rather than dropped, so
 a run that silently stopped measuring is visible.
 
-The hosted lanes run it from `.github/actions/publish-perf`,
-and the `summary.json` it writes is what `publish-perf.py`
-records.
+The hosted lanes run it from
+`.github/actions/ernic-publish-perf`, and the `summary.json`
+it writes is what `publish-perf.py` records.
 

@@ -1,0 +1,69 @@
+# Copyright (c) Advanced Micro Devices, Inc. All rights reserved.
+#
+# SPDX-License-Identifier: MIT
+#
+# Keeps the Nix flake honest. The flake sits alongside the autotools /
+# CMake build rather than feeding it, so nothing else in CI would notice
+# if it stopped evaluating -- it would simply rot until someone tried to
+# use it.
+#
+# This deliberately stops at evaluation plus the dev shell and the
+# analysis-runners check, which tests the analysis scripts against fakes
+# without building the server. Building the analysis toolkit or the
+# cross/OCI targets pulls a very large closure and belongs in a scheduled
+# job, not on every pull request.
+name: ernic - Nix Check
+
+on:
+  pull_request:
+    branches: [ develop ]
+    paths:
+      - 'flake.nix'
+      - 'flake.lock'
+      - 'nix/**'
+      - '.github/workflows/ernic-nix-check.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: nix-check-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  flake-check:
+    name: nix flake check
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - name: Check out code
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Install Nix
+        uses: cachix/install-nix-action@75c75c31ebece974e48ebc36b4ad125bd97bd97b # v31.11.3
+        with:
+          extra_nix_config: |
+            experimental-features = nix-command flakes
+
+      - name: Show flake metadata
+        run: nix flake metadata
+
+      # Evaluation only. --no-build keeps this to a few minutes and still
+      # catches the failure mode that matters here: a flake that no longer
+      # evaluates after a nixpkgs bump or a refactor under nix/.
+      - name: Evaluate the flake
+        run: nix flake check --no-build --all-systems
+
+      - name: List exposed packages
+        run: nix flake show
+
+      - name: Test packaged launchers and module assertions
+        run: nix build .#checks.x86_64-linux.launchers .#checks.x86_64-linux.pair-launchers --no-link -L
+
+      # Runs nix/analysis/test_runners.py against a fake server and client;
+      # it does not build the server.
+      - name: Test the analysis runners
+        run: nix build .#checks.x86_64-linux.analysis-runners --no-link -L

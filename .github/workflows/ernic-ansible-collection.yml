@@ -1,0 +1,263 @@
+# Copyright (c) Advanced Micro Devices, Inc. All rights reserved.
+#
+# SPDX-License-Identifier: MIT
+#
+# Sanity-check, lint and build the rocm.ernic Ansible collection.
+#
+# The collection is not published to Galaxy; consumers install it
+# from a pinned git SHA (see ansible/PLAYBOOKS.md).
+
+name: ernic - Ansible Collection
+
+"on":
+  workflow_dispatch: {}
+  pull_request:
+    branches:
+      - develop
+    paths:
+      - 'ansible/**'
+      - '.github/workflows/ernic-ansible-collection.yml'
+
+# Read-only: nothing here writes to the repo.  actions: read is for
+# actions/download-artifact, which fetches the built collection
+# through the artifact API rather than the workspace.
+permissions:
+  contents: read
+  actions: read
+
+env:
+  COLLECTION_DIR: ansible
+
+jobs:
+  sanity:
+    name: Sanity tests
+    runs-on: ubuntu-26.04
+    timeout-minutes: 15
+    steps:
+      - name: Check out code
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Set up Python
+        uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
+        with:
+          python-version: "3.12"
+
+      - name: Install ansible-core
+        run: python3 -m pip install ansible-core
+
+      # Sanity runs against the built artifact, not the source
+      # directory. ansible/ holds the repo's own playbooks and
+      # scripts as well as the collection, and build_ignore --
+      # which keeps them out of the artifact -- has no effect on
+      # ansible-test. Testing the extracted tarball checks
+      # exactly what ships, with no second copy of the ignore
+      # list to drift. It also satisfies ansible-test's demand to
+      # run from a path ending in ansible_collections/<ns>/<name>.
+      - name: Build and extract the collection
+        run: |
+          ansible-galaxy collection build "${COLLECTION_DIR}" \
+            --force --output-path /tmp
+          mkdir -p /tmp/ac/ansible_collections/rocm/ernic
+          tar xzf /tmp/rocm-ernic-*.tar.gz \
+            -C /tmp/ac/ansible_collections/rocm/ernic
+
+      - name: Run sanity tests
+        working-directory: >-
+          /tmp/ac/ansible_collections/rocm/ernic
+        run: ansible-test sanity --python 3.12 -v
+
+  lint:
+    name: ansible-lint
+    runs-on: ubuntu-26.04
+    timeout-minutes: 15
+    steps:
+      - name: Check out code
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Set up Python
+        uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
+        with:
+          python-version: "3.12"
+
+      # Pinned because new releases add rules, and with --strict a
+      # new rule would fail every PR that touches ansible/ until
+      # someone fixes the findings. Bump it deliberately, in a
+      # change that fixes whatever the new version reports.
+      - name: Install ansible-lint
+        run: python3 -m pip install ansible-lint==26.10.1
+
+      # galaxy.ansible.com returns 504 often enough to redden a PR
+      # that changed nothing it touches, and only a repo admin can
+      # rerun a failed job, so a flake here blocks on someone with
+      # rights rather than on the author.
+      - name: Install collection dependencies
+        working-directory: ansible
+        run: |
+          for attempt in 1 2 3; do
+            if ansible-galaxy collection install -r requirements.yml; then
+              exit 0
+            fi
+            echo "::warning::galaxy install failed (attempt ${attempt}/3)"
+            sleep $((attempt * 20))
+          done
+          echo "::error::galaxy install failed after 3 attempts"
+          exit 1
+
+      # --strict fails on warnings as well as errors. A rule that
+      # can't be met belongs in skip_list in .ansible-lint, with
+      # the reason, not on its warn_list.
+      - name: Run ansible-lint
+        working-directory: ansible
+        run: ansible-lint --strict
+
+  build:
+    name: Build collection artifact
+    needs: [sanity, lint]
+    runs-on: ubuntu-26.04
+    timeout-minutes: 10
+    steps:
+      - name: Check out code
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Set up Python
+        uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
+        with:
+          python-version: "3.12"
+
+      # ansible-galaxy comes from the image's preinstalled ansible-core,
+      # and building a tarball is this job's only use of it.
+      - name: Build the collection
+        run: >-
+          ansible-galaxy collection build ${{ env.COLLECTION_DIR }}
+          --force --output-path .
+
+      # ansible/ is both the collection source and the repo's own
+      # test automation, so build_ignore is a denylist: a new file
+      # added there ships to every consumer of the collection unless
+      # somebody remembers to exclude it. Assert the contents
+      # instead of trusting that they did.
+      - name: Assert the artifact ships only collection content
+        run: |
+          unexpected=$(tar tzf ./*.tar.gz \
+            | grep -vE '^(roles|meta|changelogs|tests|files)/' \
+            | grep -vE '^(MANIFEST\.json|FILES\.json|LICENSE|README\.md|CHANGELOG\.rst)$' \
+            || true)
+          if [ -n "${unexpected}" ]; then
+            echo "::error::unexpected files in the collection artifact:"
+            echo "${unexpected}"
+            echo "Add them to build_ignore in ansible/galaxy.yml."
+            exit 1
+          fi
+
+      # The other direction, and the more dangerous one.  build_ignore is
+      # matched with fnmatch against the path relative to the collection
+      # root, and fnmatch's "*" crosses "/", so a pattern as innocuous as
+      # "*.sh" takes files/scripts/ out of the artifact -- and out of a
+      # "type: git" install, which is how the consumers of this collection
+      # install it.  A collection that silently stops shipping the SRQ
+      # inputs puts every one of them back to a guest reporting max_srq=0,
+      # and this job is the only place that can see it.
+      #
+      # Counts as well as names: a dropped or renamed patch is the failure
+      # mode that otherwise reaches a guest, since the roles apply
+      # whatever *.patch they find.
+      - name: Assert the artifact ships the SRQ inputs
+        run: |
+          listing=$(tar tvzf ./*.tar.gz)
+          rc=0
+
+          require() {
+            if ! printf '%s\n' "${listing}" | grep -qE "[[:space:]]${1}\$"; then
+              echo "::error::${1} is missing from the collection artifact"
+              rc=1
+            fi
+          }
+          require_exec() {
+            require "${1}"
+            if ! printf '%s\n' "${listing}" \
+                 | grep -E "[[:space:]]${1}\$" | grep -q '^-..x'; then
+              echo "::error::${1} ships without an execute bit"
+              rc=1
+            fi
+          }
+          count() {
+            n=$(printf '%s\n' "${listing}" \
+                | grep -cE "[[:space:]]${1}\$" || true)
+            if [ "${n}" -ne "${2}" ]; then
+              echo "::error::expected ${2} files matching ${1}, found ${n}"
+              rc=1
+            fi
+          }
+
+          require_exec 'files/scripts/fetch-ionic-sources.sh'
+          require_exec 'files/scripts/setup-ionic-dkms.sh'
+          # The base series, which fetch-ionic-sources.sh applies by
+          # default, and the two READMEs.  ernic_srq_provider parses its
+          # pinned base SHA out of the rdma-core one, so that file is an
+          # input, not documentation.
+          require 'files/patches/0002-ionic-allocate-an-address-handle-for-UC-queue-pairs.patch'
+          require 'files/patches/srq/README.md'
+          require 'files/patches/rdma-core/README.md'
+          count 'files/patches/srq/.*\.patch' 9
+          count 'files/patches/rdma-core/.*\.patch' 6
+
+          [ "${rc}" -eq 0 ] || exit 1
+          echo "✓ the SRQ patch series and both scripts ship in the artifact"
+
+      - name: Upload collection artifact
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: collection-artifact
+          path: "*.tar.gz"
+          retention-days: 7
+
+  # The repo's own plays reach these roles by short name through
+  # roles_path, so nothing else here exercises the collection the
+  # way an external consumer does: installed from an artifact and
+  # addressed by FQCN.  This job does exactly that.
+  consumer:
+    name: Consume the built collection
+    needs: build
+    runs-on: ubuntu-26.04
+    timeout-minutes: 10
+    steps:
+      - name: Set up Python
+        uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
+        with:
+          python-version: "3.12"
+
+      - name: Install ansible-core
+        run: python3 -m pip install ansible-core
+
+      - name: Download collection artifact
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: collection-artifact
+
+      - name: Install the collection from the artifact
+        run: >-
+          ansible-galaxy collection install ./*.tar.gz
+          -p /tmp/consumer-collections
+
+      - name: Write a consumer playbook
+        run: |
+          cat > /tmp/consumer.yml <<'EOF'
+          ---
+          - name: Consume the rocm.ernic collection by FQCN
+            hosts: localhost
+            gather_facts: false
+            roles:
+              - role: rocm.ernic.ernic_guest_setup
+              - role: rocm.ernic.ernic_host_setup
+          EOF
+
+      - name: Syntax-check against the installed collection
+        env:
+          ANSIBLE_COLLECTIONS_PATH: /tmp/consumer-collections
+        run: ansible-playbook --syntax-check /tmp/consumer.yml
