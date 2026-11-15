@@ -85,12 +85,41 @@ even if `.nojekyll` is ever lost.
 
 That's the layout while `PAGES_SUBDIR` in `ci/pages.env` is empty.
 Set it to a directory, as on a `gh-pages` branch other projects
-share, and the site and `perf/` move into that directory, while
-the branch root and everything else on the branch are left alone,
-`.nojekyll` included: Pages honours it only at the root, which
-then belongs to the branch's owners. `docs-deploy.yml` and
+share, and the workflows publish the site and `perf/` there
+instead, leaving the branch root and everything else on the branch
+alone, `.nojekyll` included: Pages honours it only at the root,
+which then belongs to the branch's owners. `docs-deploy.yml` and
 `.github/actions/publish-perf` both read the setting through
 `ci/pages-subdir.sh`, so they can't disagree about it.
+
+### Changing `PAGES_SUBDIR`
+
+The setting says only where the workflows write; it moves nothing
+already published. A lane publishing to a `perf/` with no history
+would start the trend over and turn every badge it didn't measure
+into `"no data"`, so publish-perf refuses to: it warns and
+publishes nothing until `perf/history.jsonl` exists there. To move
+the site, here or onto another repository's `gh-pages`:
+
+1. Stop the publishers: disable `system-tests.yml`, which runs
+   every publishing lane, and `docs-deploy.yml`
+   (`gh workflow disable`), then wait for their runs in progress to
+   finish.
+2. In one `gh-pages` commit, copy `perf/history.jsonl` and
+   `perf/badge-*.json` from the old directory to the new one's
+   `perf/`. To start a new history on purpose, commit an empty
+   `history.jsonl` and the `"no data"` badges from
+   `docs/perf-history/` instead.
+3. Change `PAGES_SUBDIR`, along with everything that names the old
+   location: the badge and page URLs in `README.md` and the docs,
+   and the `git show origin/gh-pages:perf/history.jsonl` commands
+   here and in `docs/perf-trends.rst`.
+4. Re-enable both workflows, run `docs-deploy.yml` by hand to
+   publish the site in its new place, then let `system-tests.yml`
+   publish again.
+
+The old directory is left as it was, and serves stale pages until
+it's removed or replaced with redirects.
 
 A publishing lane clones `gh-pages`, copies `perf/history.jsonl`
 into `docs/perf-history/`, runs `ci/report/publish-perf.py` to

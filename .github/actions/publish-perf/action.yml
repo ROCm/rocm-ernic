@@ -106,6 +106,14 @@ runs:
         git clone --quiet --depth 1 --branch gh-pages "$remote" "$pages" \
           || bail "could not clone gh-pages (has it been seeded?)"
 
+        # A perf/ with no history is one nobody has seeded, as when
+        # PAGES_SUBDIR has just changed.  Publishing there would start
+        # the trend over and turn every badge this run didn't measure
+        # into "no data", so wait for the record to be copied in (see
+        # "Changing PAGES_SUBDIR" in ci/README.md).
+        [ -f "$perf/history.jsonl" ] \
+          || bail "gh-pages has no ${perf_rel}/history.jsonl to append to"
+
         # Seed the working copy from the published data, not from the
         # placeholders committed to develop, or every run would append
         # to an empty history and the trend would be one point long.
