@@ -709,7 +709,7 @@ int ionic_datapath_register_qp(struct ionic_datapath *dp, uint32_t qp_id,
     q->sq_cmb_buf_offset = 0;
     q->rq_cmb_buf_offset = 0;
     memset(q->rdma, 0, sizeof(q->rdma));
-    q->writes_sent = 0;
+    q->writes_queued = 0;
     q->writes_acked = 0;
     q->writes_landed = 0;
     q->valid = true;
@@ -755,12 +755,12 @@ void ionic_datapath_unregister_qp(struct ionic_datapath *dp, uint32_t qp_id)
 
     struct ionic_qp_ring *q = &dp->qp[qp_id];
 
-    if (q->valid && (q->writes_sent || q->writes_landed)) {
+    if (q->valid && (q->writes_queued || q->writes_landed)) {
         vfu_log(dp->vfu_ctx, LOG_INFO,
-                "ionic_datapath: QP %u sent %" PRIu64
-                " RDMA WRITEs to other nodes (%" PRIu64
+                "ionic_datapath: QP %u queued %" PRIu64
+                " RDMA WRITEs for other nodes (%" PRIu64
                 " acknowledged), and %" PRIu64 " from other nodes landed",
-                qp_id, q->writes_sent, q->writes_acked, q->writes_landed);
+                qp_id, q->writes_queued, q->writes_acked, q->writes_landed);
     }
 
     ionic_dp_nvmeof_drop_qp(dp, qp_id);
@@ -2767,7 +2767,7 @@ static enum dp_post remote_post(struct ionic_datapath *dp,
         if (p->write) {
             ionic_dp_rdma_bytes(dp, qp_id, payload_len, ERNIC_STAT_RDMA_WRITE,
                                 DP_RDMA_TX);
-            q->writes_sent++;
+            q->writes_queued++;
         } else if (wire_op != IONIC_WIRE_READ_REQ &&
                    wire_op != IONIC_WIRE_ATOMIC_REQ) {
             ionic_dp_rdma_bytes(dp, qp_id, payload_len, ERNIC_STAT_SEND,

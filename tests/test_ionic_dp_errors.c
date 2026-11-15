@@ -3892,14 +3892,15 @@ static const char *cmb_doorbell_run(struct ionic_datapath *dp)
 }
 
 /*
- * The WRITEs a QP sent to another node, those acknowledged, and those that
+ * The WRITEs a QP queued for another node, those acknowledged, and those that
  * landed on it from another node, which its destruction logs.  The data path
- * is both ends: QP_A's peer is QP_B "on node 1", so QP_A counts what it sent
- * and QP_B what landed.
+ * is both ends: QP_A's peer is QP_B "on node 1", so QP_A counts what it
+ * queued and QP_B what landed.
  */
 static bool write_counts_zero(const struct ionic_qp_ring *q)
 {
-    return q->writes_sent == 0 && q->writes_acked == 0 && q->writes_landed == 0;
+    return q->writes_queued == 0 && q->writes_acked == 0 &&
+           q->writes_landed == 0;
 }
 
 static const char *write_counts_run(struct ionic_datapath *dp)
@@ -3929,14 +3930,14 @@ static const char *write_counts_run(struct ionic_datapath *dp)
         return "the WRITE to an unregistered rkey wasn't refused";
     }
 
-    if (dp->qp[QP_A].writes_sent != 3 || dp->qp[QP_A].writes_acked != 2 ||
+    if (dp->qp[QP_A].writes_queued != 3 || dp->qp[QP_A].writes_acked != 2 ||
         dp->qp[QP_A].writes_landed != 0) {
-        return "QP_A didn't count 3 WRITEs sent, 2 acknowledged and none "
+        return "QP_A didn't count 3 WRITEs queued, 2 acknowledged and none "
                "landed";
     }
-    if (dp->qp[QP_B].writes_sent != 0 || dp->qp[QP_B].writes_acked != 0 ||
+    if (dp->qp[QP_B].writes_queued != 0 || dp->qp[QP_B].writes_acked != 0 ||
         dp->qp[QP_B].writes_landed != 2) {
-        return "QP_B didn't count 2 WRITEs landed and none sent";
+        return "QP_B didn't count 2 WRITEs landed and none queued";
     }
 
     g_last_log[0] = '\0';
@@ -3946,14 +3947,14 @@ static const char *write_counts_run(struct ionic_datapath *dp)
     }
     ionic_datapath_unregister_qp(dp, QP_A);
     (void)snprintf(want, sizeof(want),
-                   "ionic_datapath: QP %u sent 3 RDMA WRITEs to other nodes "
-                   "(2 acknowledged), and 0 from other nodes landed",
+                   "ionic_datapath: QP %u queued 3 RDMA WRITEs for other "
+                   "nodes (2 acknowledged), and 0 from other nodes landed",
                    QP_A);
     if (strcmp(g_last_log, want) != 0) {
         return "QP_A's destruction didn't log its counts";
     }
 
-    /* A QP registered under the id of one that sent WRITEs, or one they
+    /* A QP registered under the id of one that queued WRITEs, or one they
      * landed on, starts from zero */
     register_qp(dp, QP_A, CQ_ID);
     ionic_datapath_unregister_qp(dp, QP_B);
@@ -3973,11 +3974,12 @@ static void check_write_counts(void)
         dp ? write_counts_run(dp) : "could not create a data path";
 
     ionic_datapath_destroy(dp);
-    printf("%s positive: two remote WRITEs, a READ, a SEND, then a WRITE to "
-           "an unregistered rkey; expected: the sender counts 3 WRITEs sent "
-           "and 2 acknowledged, the receiving QP 2 landed, and destroying "
-           "the sender logs its counts\n",
-           why ? "FAIL" : "ok  ");
+    printf(
+        "%s positive: two remote WRITEs, a READ, a SEND, then a WRITE to "
+        "an unregistered rkey; expected: the sender counts 3 WRITEs "
+        "queued and 2 acknowledged, the receiving QP 2 landed, and destroying "
+        "the sender logs its counts\n",
+        why ? "FAIL" : "ok  ");
     if (why) {
         printf("     %s\n", why);
         failures++;

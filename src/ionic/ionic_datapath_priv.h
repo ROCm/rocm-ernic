@@ -262,13 +262,14 @@ struct ionic_qp_ring {
     uint64_t rdma[IONIC_DP_RDMA_COUNT];
 
     /*
-     * The RDMA WRITEs and WRITE_IMMs this QP sent to another node, those of
-     * them the peer acknowledged as landed, and those another node sent
-     * that landed here, addressed to this QP.  Logged when the QP is
-     * destroyed, so the two ends of a connection can be compared; zeroed at
-     * registration.  Only the vfu thread moves them.
+     * The RDMA WRITEs and WRITE_IMMs this QP queued in the mesh for another
+     * node, those of them the peer acknowledged as landed, and those another
+     * node sent that landed here, addressed to this QP.  Queued isn't sent:
+     * the mesh drops what is still queued on a connection it closes.
+     * Logged when the QP is destroyed, so the two ends of a connection can
+     * be compared; zeroed at registration.  Only the vfu thread moves them.
      */
-    uint64_t writes_sent;
+    uint64_t writes_queued;
     uint64_t writes_acked;
     uint64_t writes_landed;
 };

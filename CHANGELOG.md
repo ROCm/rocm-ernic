@@ -732,9 +732,11 @@
 ### Changed
 
 * When a QP that sent or received RDMA WRITEs across the TCP mesh is
-  destroyed, the server logs, at `info`, how many WRITEs it sent to other
-  nodes, how many of those were acknowledged, and how many from other
-  nodes landed on it, so the two ends of a connection can be compared.
+  destroyed, the server logs, at `info`, how many WRITEs it queued for
+  other nodes, how many of those were acknowledged, and how many from
+  other nodes landed on it, so the two ends of a connection can be
+  compared. A queued WRITE may never have been sent: the mesh drops what
+  is still queued on a connection it closes.
 * RDMA-Tutorial's write example, in the two-VM lane, numbers its messages
   and fails at once, naming the number it expected and the one it got,
   when a message arrives twice or out of turn, rather than hang until
