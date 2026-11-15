@@ -140,12 +140,13 @@ index 7219cc5..7505e20 100644
      duration   = (double)((end.tv_sec - start.tv_sec) * 1000000 + 
  			  (end.tv_usec - start.tv_usec));
 diff --git a/ib.c b/ib.c
-index 638bcdf..ee58c34 100644
+index 638bcdf..51dc58a 100644
 --- a/ib.c
 +++ b/ib.c
-@@ -1,10 +1,15 @@
+@@ -1,10 +1,16 @@
  #include <arpa/inet.h>
 +#include <signal.h>
++#include <stdbool.h>
 +#include <string.h>
 +#include <time.h>
  #include <unistd.h>
@@ -160,7 +161,7 @@ index 638bcdf..ee58c34 100644
  {
      int ret = 0;
  
-@@ -30,18 +35,23 @@ int modify_qp_to_rts (struct ibv_qp *qp, uint32_t target_qp_num, uint16_t target
+@@ -30,18 +36,23 @@ int modify_qp_to_rts (struct ibv_qp *qp, uint32_t target_qp_num, uint16_t target
      {
  	struct ibv_qp_attr  qp_attr = {
  	    .qp_state           = IBV_QPS_RTR,
@@ -186,7 +187,7 @@ index 638bcdf..ee58c34 100644
  	ret = ibv_modify_qp(qp, &qp_attr,
  			    IBV_QP_STATE | IBV_QP_AV |
  			    IBV_QP_PATH_MTU | IBV_QP_DEST_QPN |
-@@ -172,3 +182,109 @@ int post_write_unsignaled (uint32_t req_size, uint32_t lkey, uint64_t wr_id,
+@@ -172,3 +183,110 @@ int post_write_unsignaled (uint32_t req_size, uint32_t lkey, uint64_t wr_id,
      ret = ibv_post_send (qp, &send_wr, &bad_send_wr);
      return ret;
  }
@@ -217,6 +218,7 @@ index 638bcdf..ee58c34 100644
 +    volatile char   *end  = msg + msg_size - sizeof(uint64_t);
 +    uint64_t         head = 0, tail = 0;
 +    struct timespec  since, now;
++    bool             expired = false;
 +
 +    do {
 +	head = seq_word (msg);
@@ -224,12 +226,12 @@ index 638bcdf..ee58c34 100644
 +    } while (head == 0 && tail == 0);
 +
 +    clock_gettime (CLOCK_MONOTONIC, &since);
-+    while ((head != want || tail != want) && head != tail) {
++    while ((head != want || tail != want) && head != tail && !expired) {
++	/* the clock first, so the words that decide are read after the
++	 * deadline is seen, and a pause can't get one reported stale */
 +	clock_gettime (CLOCK_MONOTONIC, &now);
-+	if ((now.tv_sec - since.tv_sec) * 1000000000L +
-+	    (now.tv_nsec - since.tv_nsec) > 100000000L) {
-+	    break;
-+	}
++	expired = (now.tv_sec - since.tv_sec) * 1000000000L +
++		  (now.tv_nsec - since.tv_nsec) > 100000000L;
 +	head = seq_word (msg);
 +	tail = seq_word (end);
 +    }

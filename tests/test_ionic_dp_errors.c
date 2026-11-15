@@ -3897,6 +3897,11 @@ static const char *cmb_doorbell_run(struct ionic_datapath *dp)
  * is both ends: QP_A's peer is QP_B "on node 1", so QP_A counts what it sent
  * and QP_B what landed.
  */
+static bool write_counts_zero(const struct ionic_qp_ring *q)
+{
+    return q->writes_sent == 0 && q->writes_acked == 0 && q->writes_landed == 0;
+}
+
 static const char *write_counts_run(struct ionic_datapath *dp)
 {
     struct wqe bad = WRITE_OK;
@@ -3948,11 +3953,17 @@ static const char *write_counts_run(struct ionic_datapath *dp)
         return "QP_A's destruction didn't log its counts";
     }
 
-    /* A QP registered under QP_A's id starts from zero */
+    /* A QP registered under the id of one that sent WRITEs, or one they
+     * landed on, starts from zero */
     register_qp(dp, QP_A, CQ_ID);
-    return dp->qp[QP_A].writes_sent == 0 && dp->qp[QP_A].writes_acked == 0
+    ionic_datapath_unregister_qp(dp, QP_B);
+    register_qp(dp, QP_B, CQ_ID);
+    if (!write_counts_zero(&dp->qp[QP_A])) {
+        return "a new QP_A inherited the old one's counts";
+    }
+    return write_counts_zero(&dp->qp[QP_B])
                ? NULL
-               : "a new QP_A inherited the old one's counts";
+               : "a new QP_B inherited the old one's counts";
 }
 
 static void check_write_counts(void)
