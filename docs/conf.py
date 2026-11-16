@@ -16,10 +16,49 @@ copyright = "2025-2026 Advanced Micro Devices, Inc. All rights reserved."
 version = "0.2.0"
 release = version
 
+# -- Repository --------------------------------------------------
+
+# Where the sources are on GitHub. Every link the pages make into the
+# repository is built from these, so a move changes only them.
+repository_url = "https://github.com/ROCm/rocm-ernic"
+repository_branch = "develop"
+# The project's directory in the repository, with a trailing slash,
+# or "" when the project is the whole repository.
+project_dir = ""
+
+# Links into the repository, as roles:
+#
+#   :project-file:`LICENSE.md`               a file in the project
+#   :project-file:`license <LICENSE.md>`     ... with its own text
+#   :repo:`nightly <releases/tag/nightly>`   a page of the repository
+#
+# A substitution can't be used inside a link's target, which is why
+# these are roles rather than rst_epilog substitutions.
+extlinks = {
+    "project-file": (
+        f"{repository_url}/blob/{repository_branch}/{project_dir}%s",
+        "%s",
+    ),
+    "repo": (f"{repository_url}/%s", "%s"),
+}
+
+# Substitutions for repository names in text and in literal blocks.
+# A code-block doesn't expand them; use parsed-literal, which does.
+#
+#   |repository|          ``ROCm/rocm-ernic``
+#   |collection-source|   the Ansible collection's source, for
+#                         ansible-galaxy collection install
+repository_name = repository_url.removeprefix("https://github.com/")
+rst_epilog = f"""
+.. |repository| replace:: ``{repository_name}``
+.. |collection-source| replace:: git+{repository_url}.git#/{project_dir}ansible/
+"""
+
 # -- Extensions --------------------------------------------------
 
 extensions = [
     "breathe",
+    "sphinx.ext.extlinks",
     # Emits .nojekyll into the build.  Pages serves this site from a
     # branch, so without it Jekyll runs and strips _static/ -- the
     # whole site loses its CSS.
@@ -54,7 +93,9 @@ suppress_warnings = [
 
 html_theme = "sphinx_book_theme"
 html_theme_options = {
-    "repository_url": ("https://github.com/ROCm/rocm-ernic"),
+    "repository_url": repository_url,
+    "repository_branch": repository_branch,
+    "path_to_docs": f"{project_dir}docs",
     "use_repository_button": True,
     "show_toc_level": 2,
 }

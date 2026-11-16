@@ -96,9 +96,8 @@ QEMU PVRDMA implementation. The original authors of that work:
 License
 -------
 
-The build system, documentation, and the deployment and automation code are licensed
-under the
-`MIT license <https://github.com/ROCm/rocm-ernic/blob/develop/LICENSE.md>`_.
+The build system, documentation, and the deployment and automation code
+are licensed under the :project-file:`MIT license <LICENSE.md>`.
 The emulator itself is ``GPL-2.0-or-later``:
 
 - Everything under ``src/`` and ``tests/``, and the fuzz harnesses in
@@ -112,6 +111,5 @@ they modify: mostly ``GPL-2.0`` for the kernel drivers and
 ``GPL-2.0 OR Linux-OpenIB`` for rdma-core.
 
 The groupings above are a summary; the per-file ``SPDX-License-Identifier``
-notice is authoritative. See
-`LICENSE.md <https://github.com/ROCm/rocm-ernic/blob/develop/LICENSE.md>`_
-for the full statement.
+notice is authoritative. See :project-file:`LICENSE.md` for the full
+statement.
