@@ -457,7 +457,7 @@ source lines as closely. CI's Build and Test workflow runs one
 coverage leg (Clang, Debug, no project-wide sanitizer). It puts
 the report on the run's summary page and fails if line coverage
 drops below the floor set in the workflow. On ``develop`` it also publishes the
-figure to the ``badges`` branch, which the README's Coverage
+figure to the ``ernic-badges`` branch, which the README's Coverage
 badge reads.
 
 .. _iwyu:
