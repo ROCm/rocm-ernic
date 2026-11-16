@@ -1266,15 +1266,29 @@ program the P4 engine’s control surface (see <a class="reference internal" hre
 </dd>
 </dl>
 <p>The collection is not published to Ansible Galaxy. Consumers
-outside this repo install it from a pinned commit, matching the
-server they run, and address the roles by their fully qualified
-name:</p>
+outside this repo install a release of it, and address the roles
+by their fully qualified name. Each release, tagged
+<code class="docutils literal notranslate"><span class="pre">ernic-ansible-v&lt;VERSION&gt;</span></code>, carries the built collection as an
+asset, so installing it clones nothing:</p>
+<pre class="literal-block">ansible-galaxy collection install \
+  https://github.com/ROCm/rocm-ernic/releases/download/ernic-ansible-v&lt;VERSION&gt;/rocm-ernic-&lt;VERSION&gt;.tar.gz</pre>
+<p>For a commit between releases, install from that commit,
+matching the server you run:</p>
 <pre class="literal-block">ansible-galaxy collection install \
   git+https://github.com/ROCm/rocm-ernic.git#/ansible/,&lt;SHA&gt;</pre>
+<p>Either way, set <code class="docutils literal notranslate"><span class="pre">ernic_source_repo_version</span></code> to the release’s
+tag or that SHA, so the sources the roles build match the
+collection:</p>
 <div class="highlight-yaml notranslate"><div class="highlight"><pre><span></span><span class="nt">roles</span><span class="p">:</span>
 <span class="w">  </span><span class="p p-Indicator">-</span><span class="w"> </span><span class="nt">role</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">rocm.ernic.ernic_guest_setup</span>
+<span class="w">    </span><span class="nt">vars</span><span class="p">:</span>
+<span class="w">      </span><span class="nt">ernic_source_repo_version</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">ernic-ansible-v&lt;VERSION&gt;</span>
 </pre></div>
 </div>
+<p>Pushing an <code class="docutils literal notranslate"><span class="pre">ernic-ansible-v&lt;VERSION&gt;</span></code> tag, with <code class="docutils literal notranslate"><span class="pre">&lt;VERSION&gt;</span></code>
+the <code class="docutils literal notranslate"><span class="pre">version</span></code> in <code class="docutils literal notranslate"><span class="pre">ansible/galaxy.yml</span></code>, publishes the release:
+<code class="docutils literal notranslate"><span class="pre">.github/workflows/ernic-ansible-collection.yml</span></code> builds and
+checks the collection, then attaches it to the release.</p>
 <p>Playbooks in this repo instead reach the same roles by short
 name through <code class="docutils literal notranslate"><span class="pre">roles_path</span></code> in <code class="docutils literal notranslate"><span class="pre">ansible/ansible.cfg</span></code>, so they
 always run against this checkout rather than an installed
