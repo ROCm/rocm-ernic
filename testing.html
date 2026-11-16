@@ -1269,10 +1269,8 @@ program the P4 engine’s control surface (see <a class="reference internal" hre
 outside this repo install it from a pinned commit, matching the
 server they run, and address the roles by their fully qualified
 name:</p>
-<div class="highlight-bash notranslate"><div class="highlight"><pre><span></span>ansible-galaxy<span class="w"> </span>collection<span class="w"> </span>install<span class="w"> </span><span class="se">\</span>
-<span class="w">  </span>git+https://github.com/ROCm/rocm-ernic.git#/ansible/,&lt;SHA&gt;
-</pre></div>
-</div>
+<pre class="literal-block">ansible-galaxy collection install \
+  git+https://github.com/ROCm/rocm-ernic.git#/ansible/,&lt;SHA&gt;</pre>
 <div class="highlight-yaml notranslate"><div class="highlight"><pre><span></span><span class="nt">roles</span><span class="p">:</span>
 <span class="w">  </span><span class="p p-Indicator">-</span><span class="w"> </span><span class="nt">role</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">rocm.ernic.ernic_guest_setup</span>
 </pre></div>
