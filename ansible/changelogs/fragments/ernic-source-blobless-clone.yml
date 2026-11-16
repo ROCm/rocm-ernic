@@ -31,3 +31,9 @@ minor_changes:
     ``requirements.yml``) and clones no repository.  Set
     ``ernic_source_repo_version`` to the same tag.  Installing from a git
     SHA still works.
+bugfixes:
+  - >-
+    ``ernic_source`` expands a ``~`` in ``ernic_source_dir``.  Reading the
+    ionic kernel ref out of the checkout failed for a path such as
+    ``~/rocm-ernic``, because the shell doesn't expand ``~`` inside double
+    quotes.  The ``ernic_source_dir`` the role records is expanded too.

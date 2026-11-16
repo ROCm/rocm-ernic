@@ -124,7 +124,9 @@
       environment:
         ERNIC_REPO_URL: "{{ ernic_source_repo_url }}"
         ERNIC_VERSION: "{{ ernic_source_repo_version | trim }}"
-        ERNIC_CLONE_DIR: "{{ ernic_source_clone_dir }}"
+        # ansible.builtin.git expanded a ~ in dest; the shell won't
+        # in a quoted variable, so expand it here, on the controller.
+        ERNIC_CLONE_DIR: "{{ ernic_source_clone_dir | expanduser }}"
         ERNIC_SUBDIR: >-
           {{ ernic_source_subdir | trim | regex_replace('/+$', '') }}
         ERNIC_FORCE: "{{ ernic_source_force_clone | bool | lower }}"
@@ -143,12 +145,14 @@
 
     # ernic_source_subdir applies only to the clone: an
     # ernic_source_dir you set is the project directory itself.
+    # Expanded, because the roles also pass it to a shell in
+    # double quotes, where a ~ stays literal.
     - name: Record the resolved source directory
       ansible.builtin.set_fact:
         ernic_source_dir: >-
-          {{ (ernic_source_dir | trim)
+          {{ (ernic_source_dir | trim | expanduser)
              if (ernic_source_dir | trim | length > 0)
-             else ([ernic_source_clone_dir]
+             else ([ernic_source_clone_dir | expanduser]
                    + ([ernic_source_subdir | trim
                        | regex_replace('/+$', '')]
                       if (ernic_source_subdir | trim | length > 0)
