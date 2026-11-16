@@ -48,10 +48,19 @@ extlinks = {
 #   |repository|          ``ROCm/rocm-ernic``
 #   |collection-source|   the Ansible collection's source, for
 #                         ansible-galaxy collection install
+#   |collection-release|  the URL of a release's built collection,
+#                         with <VERSION> in place of its version; the
+#                         backslash keeps docutils from making part
+#                         of it a link, shown as the repository name
 repository_name = repository_url.removeprefix("https://github.com/")
+collection_release = (
+    f"{repository_url}/releases/download"
+    "/ernic-ansible-v<VERSION>/rocm-ernic-<VERSION>.tar.gz"
+)
 rst_epilog = f"""
 .. |repository| replace:: ``{repository_name}``
 .. |collection-source| replace:: git+{repository_url}.git#/{project_dir}ansible/
+.. |collection-release| replace:: \\{collection_release}
 """
 
 # -- Extensions --------------------------------------------------

@@ -22,7 +22,15 @@ ernic_source_repo_url: "https://github.com/ROCm/rocm-ernic.git"
 ernic_source_repo_version: ""
 ernic_source_clone_dir: "/var/tmp/rocm-ernic-src"
 
-# Re-clone even when the checkout already exists.
+# Where rocm-ernic is inside the repository at
+# ernic_source_repo_url, relative to its top; empty when it is the
+# whole repository.  Only this directory is checked out, and
+# ernic_source_dir is set to it.  Not applied to an
+# ernic_source_dir you set yourself.
+ernic_source_subdir: ""
+
+# Discard local changes to tracked files in an existing clone,
+# which otherwise fail the run.
 ernic_source_force_clone: false
 
 # Upstream kernel tag the ionic driver sources are taken from.

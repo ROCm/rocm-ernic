@@ -1,0 +1,39 @@
+# Copyright (c) Advanced Micro Devices, Inc. All rights reserved.
+#
+# SPDX-License-Identifier: MIT
+
+---
+minor_changes:
+  - >-
+    ``ernic_source`` clones rocm-ernic blob-less, with git commands rather
+    than ``ansible.builtin.git``: it fetches only the commit named by
+    ``ernic_source_repo_version`` and its history, without file contents,
+    and downloads only the files it checks out.  The controller needs
+    ``git``, as before.  An existing clone at ``ernic_source_clone_dir``,
+    including one the old role made, is reused and moved to the new
+    version.
+  - >-
+    ``ernic_source`` has a new ``ernic_source_subdir`` variable for a
+    repository that holds rocm-ernic in a subdirectory, such as a monorepo.
+    The clone then checks out only that directory (a cone-mode sparse
+    checkout, which needs git 2.35 or later), and ``ernic_source_dir`` is
+    set to it.  It defaults to empty, the whole repository, and is not
+    applied to an ``ernic_source_dir`` you set yourself.
+  - >-
+    ``ernic_source_force_clone`` discards local changes to tracked files
+    in an existing clone, which otherwise fail the run.  That is what it
+    did before; its description, which said it re-cloned, was wrong.
+  - >-
+    Each release of the collection is published as a GitHub release
+    tagged ``ernic-ansible-v<VERSION>``, with the built collection
+    attached, so installing it needs only the asset's URL
+    (``ansible-galaxy collection install <URL>``, or ``type: url`` in a
+    ``requirements.yml``) and clones no repository.  Set
+    ``ernic_source_repo_version`` to the same tag.  Installing from a git
+    SHA still works.
+bugfixes:
+  - >-
+    ``ernic_source`` expands a ``~`` in ``ernic_source_dir``.  Reading the
+    ionic kernel ref out of the checkout failed for a path such as
+    ``~/rocm-ernic``, because the shell doesn't expand ``~`` inside double
+    quotes.  The ``ernic_source_dir`` the role records is expanded too.

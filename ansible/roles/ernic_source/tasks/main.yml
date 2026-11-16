@@ -27,28 +27,137 @@
       sources from the collection version, so there is no safe default here.
   run_once: true
 
+- name: Verify ernic_source_subdir is a relative path inside the clone
+  ansible.builtin.assert:
+    that:
+      - not (ernic_source_subdir | trim).startswith('/')
+      - "'..' not in (ernic_source_subdir | trim).split('/')"
+    fail_msg: >-
+      ernic_source_subdir ({{ ernic_source_subdir }}) must be a path
+      relative to the top of the clone, with no '..' in it.
+  run_once: true
+
 - name: Resolve the rocm-ernic source checkout
   when: not (ernic_source_resolved | default(false))
   block:
 
+    # ansible.builtin.git can't make a blob-less or sparse clone,
+    # and a full clone of a monorepo is gigabytes.  This fetches
+    # only the commit asked for and its history, without file
+    # contents (--filter=blob:none); checking out then downloads
+    # the files it needs, which with ernic_source_subdir set are
+    # only that directory's.
+    #
+    # A version is fetched by name first.  A remote can't resolve
+    # an abbreviated SHA, so that falls back to fetching every
+    # branch and tag and resolving it here.
     - name: Clone rocm-ernic on the controller
-      ansible.builtin.git:
-        repo: "{{ ernic_source_repo_url }}"
-        dest: "{{ ernic_source_clone_dir }}"
-        version: "{{ ernic_source_repo_version }}"
-        accept_hostkey: true
-        force: "{{ ernic_source_force_clone | bool }}"
+      ansible.builtin.shell:
+        executable: /bin/bash
+        cmd: |
+          set -euo pipefail
+
+          if [ ! -e "${ERNIC_CLONE_DIR}/.git" ]; then
+            if [ -n "$(find "${ERNIC_CLONE_DIR}" -mindepth 1 -maxdepth 1 \
+                         -print -quit 2>/dev/null)" ]; then
+              echo "${ERNIC_CLONE_DIR} is not empty and not a git" \
+                   "checkout; remove it or set ernic_source_clone_dir" >&2
+              exit 1
+            fi
+            git init --quiet -- "${ERNIC_CLONE_DIR}"
+          fi
+          cd "${ERNIC_CLONE_DIR}"
+
+          before="$(git rev-parse --quiet --verify HEAD || true)"
+          before+=" $(git sparse-checkout list 2>/dev/null || true)"
+          before+=" $(git status --porcelain --untracked-files=no)"
+
+          if [ "${ERNIC_FORCE}" != true ] && [ -n "$(git rev-parse \
+               --quiet --verify HEAD)" ] && [ -n "$(git status \
+               --porcelain --untracked-files=no)" ]; then
+            echo "${ERNIC_CLONE_DIR} has local changes; set" \
+                 "ernic_source_force_clone to discard them" >&2
+            exit 1
+          fi
+
+          if git remote get-url origin >/dev/null 2>&1; then
+            git remote set-url origin "${ERNIC_REPO_URL}"
+          else
+            git remote add origin "${ERNIC_REPO_URL}"
+          fi
+
+          if git fetch --quiet --no-tags --filter=blob:none \
+               origin -- "${ERNIC_VERSION}" 2>/dev/null; then
+            target="$(git rev-parse --verify 'FETCH_HEAD^{commit}')"
+          else
+            git fetch --quiet --tags --filter=blob:none origin \
+              '+refs/heads/*:refs/remotes/origin/*'
+            if ! target="$(git rev-parse --quiet --verify \
+                             "${ERNIC_VERSION}^{commit}")"; then
+              echo "${ERNIC_REPO_URL} has no commit, branch or tag" \
+                   "named ${ERNIC_VERSION}" >&2
+              exit 1
+            fi
+          fi
+
+          if [ -n "${ERNIC_SUBDIR}" ]; then
+            git sparse-checkout set --cone -- "${ERNIC_SUBDIR}"
+          elif [ "$(git config --bool core.sparseCheckout || true)" = true ]
+          then
+            git sparse-checkout disable
+          fi
+
+          force=()
+          if [ "${ERNIC_FORCE}" = true ]; then
+            force=(--force)
+          fi
+          git checkout --quiet "${force[@]}" --detach "${target}"
+
+          after="$(git rev-parse HEAD)"
+          after+=" $(git sparse-checkout list 2>/dev/null || true)"
+          after+=" $(git status --porcelain --untracked-files=no)"
+          if [ "${before}" = "${after}" ]; then
+            echo "already at ${target}"
+          else
+            echo "checked out ${target}"
+          fi
+      environment:
+        ERNIC_REPO_URL: "{{ ernic_source_repo_url }}"
+        ERNIC_VERSION: "{{ ernic_source_repo_version | trim }}"
+        # ansible.builtin.git expanded a ~ in dest; the shell won't
+        # in a quoted variable, so expand it here, on the controller.
+        ERNIC_CLONE_DIR: "{{ ernic_source_clone_dir | expanduser }}"
+        ERNIC_SUBDIR: >-
+          {{ ernic_source_subdir | trim | regex_replace('/+$', '') }}
+        ERNIC_FORCE: "{{ ernic_source_force_clone | bool | lower }}"
+        # Fail rather than wait for a password nobody will type, and
+        # accept an SSH remote's host key the first time, as
+        # ansible.builtin.git's accept_hostkey did, but not a key
+        # that has changed since.
+        GIT_TERMINAL_PROMPT: "0"
+        GIT_SSH_COMMAND: ssh -o BatchMode=yes -o StrictHostKeyChecking=accept-new
+      register: ernic_source_clone
+      changed_when: "'already at' not in ernic_source_clone.stdout"
       delegate_to: localhost
       become: false
       run_once: true
       when: not (ernic_source_dir | trim | length > 0)
 
+    # ernic_source_subdir applies only to the clone: an
+    # ernic_source_dir you set is the project directory itself.
+    # Expanded, because the roles also pass it to a shell in
+    # double quotes, where a ~ stays literal.
     - name: Record the resolved source directory
       ansible.builtin.set_fact:
         ernic_source_dir: >-
-          {{ (ernic_source_dir | trim)
+          {{ (ernic_source_dir | trim | expanduser)
              if (ernic_source_dir | trim | length > 0)
-             else ernic_source_clone_dir }}
+             else ([ernic_source_clone_dir | expanduser]
+                   + ([ernic_source_subdir | trim
+                       | regex_replace('/+$', '')]
+                      if (ernic_source_subdir | trim | length > 0)
+                      else []))
+                  | join('/') }}
 
     - name: Verify the source tree looks like rocm-ernic
       ansible.builtin.stat:
@@ -79,7 +188,9 @@
              | rejectattr('stat.exists')
              | map(attribute='item') | join(', ') }}.
           Set ernic_source_dir to a checkout, or leave it empty
-          to clone {{ ernic_source_repo_url }}.
+          to clone {{ ernic_source_repo_url }}, setting
+          ernic_source_subdir to rocm-ernic's directory in it
+          if it isn't the whole repository.
       run_once: true
 
     # Set last: the block's guard is re-evaluated per task, so

@@ -28,12 +28,26 @@ ernic_source_repo_url: "https://github.com/ROCm/rocm-ernic.git"
 # ernic_source_dir nor ernic_source_repo_version is set.
 ernic_source_repo_version: ""
 ernic_source_clone_dir: "/var/tmp/rocm-ernic-src"
+# rocm-ernic's directory in the repository, when it isn't the whole
+# repository. Only it is checked out, and ernic_source_dir is set to it.
+ernic_source_subdir: ""
+# Discard local changes to tracked files in an existing clone.
 ernic_source_force_clone: false
 ```
 
+The clone is blob-less (`git fetch --filter=blob:none`): it fetches only the
+commit you name and its history (every branch and tag for an abbreviated SHA,
+which the remote can't look up), and downloads only the files it checks out.
+With `ernic_source_subdir` set, it checks out only that directory (a cone-mode
+sparse checkout), which needs git 2.35 or later on the controller. An existing
+clone at `ernic_source_clone_dir` is moved to the new version on each run; one
+with local changes to tracked files fails the run unless
+`ernic_source_force_clone` is true.
+
 `ernic_source_repo_version` has **no default** and must be a SHA or tag that
-matches the collection you installed. The only release tag on the repo today
-is `ansible-v0.1.0`, so a SHA is the pin — not a version tag.
+matches the collection you installed. If you installed a collection release,
+pin it to that release's tag, `ernic-ansible-v<version>`; otherwise, to the
+SHA you installed the collection from.
 
 Pinning the collection does not pin this. The driver sources, the patch
 series, `udev/99-rocm-ernic.rules` and the ionic kernel ref (`ernic_ionic_kernel_ref`

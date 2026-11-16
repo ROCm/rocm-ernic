@@ -10,13 +10,16 @@
 # ib_umem_get_va.
 
 ---
+# Expanded here as well as where main.yml records it: a ~ stays
+# literal in double quotes, and set_fact can't replace an
+# ernic_source_dir given with -e.
 - name: Read the pinned ionic kernel ref from cmake
   ansible.builtin.shell:
     executable: /bin/bash
     cmd: >-
       set -o pipefail;
       grep -oP 'set\(IONIC_KERNEL_REF\s+"\K[^"]+'
-      "{{ ernic_source_dir }}/cmake/ErnicKernelModule.cmake"
+      "{{ ernic_source_dir | expanduser }}/cmake/ErnicKernelModule.cmake"
   delegate_to: localhost
   become: false
   run_once: true
