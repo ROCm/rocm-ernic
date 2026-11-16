@@ -753,6 +753,10 @@
   runs from before the rename stay under the old workflows.
   `tests/test_nested_checkout.sh` fails if a workflow or action isn't
   named `ernic-*`.
+* The README's Coverage badge reads `coverage.json` from the
+  `ernic-badges` branch, not `badges`, a name that would be shared with
+  every other project in rocm-systems. The job that publishes it fetches
+  only `develop`'s commits, not the whole repository.
 * When a QP that sent or received RDMA WRITEs across the TCP mesh is
   destroyed, the server logs, at `info`, how many WRITEs it queued for
   other nodes, how many of those were acknowledged, and how many from
