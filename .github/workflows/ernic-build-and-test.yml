@@ -593,14 +593,14 @@ jobs:
           retention-days: 7
 
   # Publish develop's line coverage for the README's Coverage badge, which
-  # shields.io draws from coverage.json on the badges branch. That branch
-  # holds a single commit with only that file, replaced on every run, so
-  # it never grows. It is kept off gh-pages so it never races the perf
-  # lanes and docs-deploy for that branch. This is a separate job so that
-  # the token that can push to the repository is never present while the
-  # repository's code runs; this job only copies the build job's JSON into
-  # the branch. It runs only when every build leg passes, so the badge
-  # shows the coverage of the latest develop commit that passed.
+  # shields.io draws from coverage.json on the BADGE_BRANCH branch. That
+  # branch holds a single commit with only that file, replaced on every
+  # run, so it never grows. It is kept off gh-pages so it never races the
+  # perf lanes and docs-deploy for that branch. This is a separate job so
+  # that the token that can push to the repository is never present while
+  # the repository's code runs; this job only copies the build job's JSON
+  # into the branch. It runs only when every build leg passes, so the
+  # badge shows the coverage of the latest develop commit that passed.
   publish-coverage-badge:
     name: Publish Coverage Badge
     needs: build-test
@@ -608,26 +608,20 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 10
     permissions:
-      contents: write # push to the badges branch
+      contents: write # push to the badge branch
     # One publish at a time. A newer pending run replaces an older one.
     # This does not order the publishes: the build jobs are in groups of
-    # their own, so runs can reach here out of order. "Publish to badges"
-    # does that.
+    # their own, so runs can reach here out of order. "Publish to the
+    # badge branch" does that.
     concurrency:
       group: ${{ github.workflow }}-publish-coverage-badge
       cancel-in-progress: false
+    env:
+      # Prefixed because it shares a branch namespace with every other
+      # project in a monorepo. The README's Coverage badge URL names it
+      # too.
+      BADGE_BRANCH: ernic-badges
     steps:
-      # Only for a repository to push from and for develop's history:
-      # nothing in the checkout runs.
-      - name: Check out code
-        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          # The whole history, for the ancestry check in "Publish to
-          # badges".
-          fetch-depth: 0
-          # "Publish to badges" pushes through origin with this token.
-          persist-credentials: true
-
       # Outside the workspace, so it can't land in either worktree.
       - name: Download coverage badge data
         uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
@@ -635,9 +629,27 @@ jobs:
           name: coverage-badge
           path: ${{ runner.temp }}/coverage-badge
 
-      - name: Publish to badges
+      - name: Publish to the badge branch
+        env:
+          # The clone, fetch, and push authenticate through gh's git
+          # credential helper with this token.
+          GH_TOKEN: ${{ github.token }}
+          # The clone has no trees, so git would otherwise fetch any
+          # object it lacks from origin, with all its history. Here,
+          # missing means not in develop's history, which the check
+          # below relies on.
+          GIT_NO_LAZY_FETCH: 1
         run: |
           set -euo pipefail
+
+          # develop's commits only, for the ancestry check below: no
+          # trees, blobs, tags, other branches, or working tree. Nothing
+          # in the clone runs. A full clone of rocm-systems is 1.8 GiB;
+          # this is about 45 MB.
+          gh auth setup-git
+          git clone --quiet --filter=tree:0 --no-checkout --single-branch \
+            --branch develop --no-tags \
+            "${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}.git" .
 
           git config user.name  "rocm-ernic-ci"
           git config user.email "rocm-ernic-ci@users.noreply.github.com"
@@ -646,11 +658,11 @@ jobs:
           # Runs can get here out of order, and an old run can be re-run,
           # so a run whose commit is the published one or an ancestor of
           # it publishes nothing. The published commit is the
-          # Source-Commit trailer of the badges commit. If that is not
-          # in develop's history (develop was rewritten), this run
+          # Source-Commit trailer of the badge branch's commit. If that
+          # is not in develop's history (develop was rewritten), this run
           # publishes. The push's lease makes it fail, rather than
-          # overwrite, if badges moved after this check.
-          lease=$(git ls-remote origin refs/heads/badges | cut -f1)
+          # overwrite, if the branch moved after this check.
+          lease=$(git ls-remote origin "refs/heads/${BADGE_BRANCH}" | cut -f1)
           if [ -n "${lease}" ]; then
             git fetch --quiet origin "${lease}"
             published=$(git log -1 \
@@ -658,19 +670,19 @@ jobs:
             if [[ "${published}" =~ ^[0-9a-f]{40}$ ]] &&
                git cat-file -e "${published}^{commit}" 2>/dev/null &&
                git merge-base --is-ancestor "${GITHUB_SHA}" "${published}"; then
-              echo "badges has ${published}, which contains ${GITHUB_SHA}: not published"
+              echo "${BADGE_BRANCH} has ${published}, which contains ${GITHUB_SHA}: not published"
               exit 0
             fi
           fi
 
-          git worktree add --quiet --orphan -b badges ../badges
-          cp "${RUNNER_TEMP}/coverage-badge/coverage.json" ../badges/
-          git -C ../badges add coverage.json
-          git -C ../badges commit --quiet \
+          git worktree add --quiet --orphan -b "${BADGE_BRANCH}" ../badge
+          cp "${RUNNER_TEMP}/coverage-badge/coverage.json" ../badge/
+          git -C ../badge add coverage.json
+          git -C ../badge commit --quiet \
             -m "Coverage badge from ${GITHUB_SHA}" \
             -m "Published by ernic-build-and-test.yml. [skip ci]" \
             -m "Source-Commit: ${GITHUB_SHA}"
-          git -C ../badges push --quiet \
-            --force-with-lease="refs/heads/badges:${lease}" \
-            origin HEAD:refs/heads/badges
-          echo "published: $(cat ../badges/coverage.json)"
+          git -C ../badge push --quiet \
+            --force-with-lease="refs/heads/${BADGE_BRANCH}:${lease}" \
+            origin "HEAD:refs/heads/${BADGE_BRANCH}"
+          echo "published: $(cat ../badge/coverage.json)"
