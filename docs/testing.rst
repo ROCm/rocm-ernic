@@ -937,10 +937,10 @@ outside this repo install it from a pinned commit, matching the
 server they run, and address the roles by their fully qualified
 name:
 
-.. code-block:: bash
+.. parsed-literal::
 
-   ansible-galaxy collection install \
-     git+https://github.com/ROCm/rocm-ernic.git#/ansible/,<SHA>
+   ansible-galaxy collection install \\
+     |collection-source|,<SHA>
 
 .. code-block:: yaml
 
@@ -1066,7 +1066,7 @@ password is locked, and the guest made its own host keys.
 So a pull request that changes an image publishes it and
 runs every lane with it. A pull request from a fork can't
 push, so one changing an image fails; a maintainer pushes
-the branch to ``ROCm/rocm-ernic`` instead.
+the branch to |repository| instead.
 
 To rebuild an image whose definition hasn't changed, for
 Ubuntu's updates, or the guest's newer cloud image, bump

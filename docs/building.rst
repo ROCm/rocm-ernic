@@ -105,8 +105,7 @@ Nightly Packages
 
 Every night that ``develop`` changes, DEB packages of it for
 Ubuntu 24.04 and 26.04 are published as the
-`nightly prerelease
-<https://github.com/ROCm/rocm-ernic/releases/tag/nightly>`_.
+:repo:`nightly prerelease <releases/tag/nightly>`.
 They're development builds for testing, not supported releases.
 Download the packages for your Ubuntu release (the file names end
 with it) and install them:

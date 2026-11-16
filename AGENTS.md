@@ -536,6 +536,11 @@ The skills have the commands.
 ### Docs and Ansible
 
 - The docs build without a Sphinx warning, and pass doc8 at 80 columns.
+- **Never hard-code this repository's URL or name in the docs.** Link
+  into it with the `:project-file:` and `:repo:` roles, and name it with
+  the `|repository|` and `|collection-source|` substitutions (in a
+  `parsed-literal` block, not a `code-block`), so that moving the
+  repository changes only `docs/conf.py`.
 - The Ansible collection passes `ansible-lint --strict` and
   `ansible-test sanity`, at the versions
   [ernic-ansible-collection.yml](.github/workflows/ernic-ansible-collection.yml)
