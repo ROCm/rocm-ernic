@@ -4,7 +4,9 @@
 
 ---
 # The collection is not published to Galaxy.  Install it from a
-# pinned git SHA; see PLAYBOOKS.md for the ansible-galaxy command.
+# release's asset or a pinned git SHA; see PLAYBOOKS.md for the
+# ansible-galaxy command.  Pushing the tag ernic-ansible-v<version>
+# publishes a release, from ernic-ansible-collection.yml.
 namespace: rocm
 name: ernic
 version: 0.3.0

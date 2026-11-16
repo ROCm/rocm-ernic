@@ -9,7 +9,13 @@
 # rocm.ernic is not listed here: the playbooks in this directory
 # reach its roles by short name via roles_path in ansible.cfg, so
 # they use the source under ansible/roles/.  Consumers outside this
-# repo install it from a pinned commit (it is not on Galaxy):
+# repo install it from a release (it is not on Galaxy), which
+# needs no clone of the repository:
+#
+#   - name: https://github.com/ROCm/rocm-ernic/releases/download/ernic-ansible-v<VERSION>/rocm-ernic-<VERSION>.tar.gz
+#     type: url
+#
+# or, for a commit between releases, from a pinned commit:
 #
 #   - name: https://github.com/ROCm/rocm-ernic.git#/ansible/
 #     type: git

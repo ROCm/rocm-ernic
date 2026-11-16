@@ -933,19 +933,39 @@ here:
    program the P4 engine's control surface (see :doc:`p4`).
 
 The collection is not published to Ansible Galaxy. Consumers
-outside this repo install it from a pinned commit, matching the
-server they run, and address the roles by their fully qualified
-name:
+outside this repo install a release of it, and address the roles
+by their fully qualified name. Each release, tagged
+``ernic-ansible-v<VERSION>``, carries the built collection as an
+asset, so installing it clones nothing:
+
+.. parsed-literal::
+
+   ansible-galaxy collection install \\
+     |collection-release|
+
+For a commit between releases, install from that commit,
+matching the server you run:
 
 .. parsed-literal::
 
    ansible-galaxy collection install \\
      |collection-source|,<SHA>
 
+Either way, set ``ernic_source_repo_version`` to the release's
+tag or that SHA, so the sources the roles build match the
+collection:
+
 .. code-block:: yaml
 
    roles:
      - role: rocm.ernic.ernic_guest_setup
+       vars:
+         ernic_source_repo_version: ernic-ansible-v<VERSION>
+
+Pushing an ``ernic-ansible-v<VERSION>`` tag, with ``<VERSION>``
+the ``version`` in ``ansible/galaxy.yml``, publishes the release:
+``.github/workflows/ernic-ansible-collection.yml`` builds and
+checks the collection, then attaches it to the release.
 
 Playbooks in this repo instead reach the same roles by short
 name through ``roles_path`` in ``ansible/ansible.cfg``, so they

@@ -45,21 +45,29 @@ lower bound against the running guest.
 
 ## Installing
 
-The collection is not published to Ansible Galaxy. Install it from a pinned
-commit of the rocm-ernic repo, matching the server you run:
+The collection is not published to Ansible Galaxy. Each release of it, tagged
+`ernic-ansible-v<VERSION>`, carries the built collection as an asset, which
+installs without cloning the rocm-ernic repo:
 
 ```bash
 ansible-galaxy collection install \
-  git+https://github.com/ROCm/rocm-ernic.git#/ansible/,<SHA>
+  https://github.com/ROCm/rocm-ernic/releases/download/ernic-ansible-v<VERSION>/rocm-ernic-<VERSION>.tar.gz
 ```
 
 Or in a `requirements.yml`:
 
 ```yaml
 collections:
-  - name: https://github.com/ROCm/rocm-ernic.git#/ansible/
-    type: git
-    version: <SHA>
+  - name: https://github.com/ROCm/rocm-ernic/releases/download/ernic-ansible-v<VERSION>/rocm-ernic-<VERSION>.tar.gz
+    type: url
+```
+
+For a commit between releases, install it from that commit, matching the
+server you run:
+
+```bash
+ansible-galaxy collection install \
+  git+https://github.com/ROCm/rocm-ernic.git#/ansible/,<SHA>
 ```
 
 ## Provisioning a guest
@@ -78,9 +86,10 @@ Set `ernic_guest_build_deps: true` if the base image does not already carry
 `dkms`, `cmake`, `ninja-build` and the rdma-core build dependencies.
 
 By default the roles clone `ROCm/rocm-ernic` on the controller to get the
-driver and provider sources. Point them at a checkout you already have with
-`ernic_source_dir`, and pin `ernic_source_repo_version` to a tag when the run
-needs to be reproducible.
+driver and provider sources, at the version you set in
+`ernic_source_repo_version`: the release's tag, or the SHA you installed the
+collection from. Point them at a checkout you already have with
+`ernic_source_dir` instead.
 
 `ernic_rdma_core_version` defaults to `61.0`, which Ubuntu 26.04 packages. The
 role writes a provider stamp and skips the source build when the installed
@@ -95,7 +104,8 @@ with it on that run and on every later one.
 
 - `ansible-core` >= 2.18, which is what `community.general` >= 13.3.0 needs
 - `community.general` >= 13.3.0 (`modprobe`, `make`)
-- A rocm-ernic checkout on the controller, or network access to clone one
+- A rocm-ernic checkout on the controller, or git and network access to clone
+  one
 - A guest running a kernel >= 6.18, and >= 7.2 to build `ionic-ernic`
 
 ## License

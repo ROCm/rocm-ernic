@@ -50,8 +50,17 @@ short name and always run against this checkout. That path is
 relative, so run `ansible-playbook` from this directory.
 
 The collection is not published to Ansible Galaxy. To use the
-roles from another project, install it from a pinned git SHA and
-address them by fully qualified name:
+roles from another project, install a release of it and address
+them by fully qualified name. A release, tagged
+`ernic-ansible-v<VERSION>`, carries the built collection as an
+asset, so installing it clones nothing:
+
+```bash
+ansible-galaxy collection install \
+  https://github.com/ROCm/rocm-ernic/releases/download/ernic-ansible-v<VERSION>/rocm-ernic-<VERSION>.tar.gz
+```
+
+For a commit between releases, install from a pinned git SHA:
 
 ```bash
 ansible-galaxy collection install \
@@ -62,11 +71,18 @@ ansible-galaxy collection install \
 roles:
   - role: rocm.ernic.ernic_guest_setup
     vars:
-      # ernic_source_repo_version has no default — it must be set to the
-      # SHA that matches your server build, or set ernic_source_dir to an
-      # existing checkout instead.
-      ernic_source_repo_version: "<SHA>"
+      # ernic_source_repo_version has no default — set it to the
+      # release's tag (ernic-ansible-v<VERSION>) or the SHA you
+      # installed, or set ernic_source_dir to an existing checkout
+      # instead.
+      ernic_source_repo_version: "ernic-ansible-v<VERSION>"
 ```
+
+Pushing a tag `ernic-ansible-v<VERSION>`, where `<VERSION>` is
+`version` in `galaxy.yml`, makes the release:
+`.github/workflows/ernic-ansible-collection.yml` builds and
+checks the collection and publishes it, and fails if the tag
+and `galaxy.yml` disagree.
 
 ## Quick Start
 

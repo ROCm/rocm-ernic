@@ -155,6 +155,15 @@
 
 ### Added
 
+* **The Ansible collection is published as a GitHub release**, tagged
+  `ernic-ansible-v<VERSION>`, with the built collection attached, when
+  that tag is pushed. Install it with `ansible-galaxy collection install`
+  and the asset's URL, which clones no repository, and set
+  `ernic_source_repo_version` to the same tag. Installing from a git SHA
+  still works. The collection's `ernic_source` role now clones rocm-ernic
+  blob-less, fetching only the commit it's given, and its new
+  `ernic_source_subdir` variable names rocm-ernic's directory in a
+  repository that holds more, which is then all it checks out.
 * The server now includes uthash 2.4.0, a single header copied into
   `third-party/uthash/` and compiled in, so it needs nothing installed to
   build. The server's hash tables use it in place of GLib's. It is

@@ -2,15 +2,23 @@
 #
 # SPDX-License-Identifier: MIT
 #
-# Sanity-check, lint and build the rocm.ernic Ansible collection.
+# Sanity-check, lint and build the rocm.ernic Ansible collection,
+# and publish it as a GitHub release when an ernic-ansible-v<version>
+# tag is pushed.
 #
 # The collection is not published to Galaxy; consumers install it
-# from a pinned git SHA (see ansible/PLAYBOOKS.md).
+# from a release's asset or from a pinned git SHA (see
+# ansible/PLAYBOOKS.md).
 
 name: ernic - Ansible Collection
 
 "on":
   workflow_dispatch: {}
+  # The version in the tag must be the one in galaxy.yml; the build
+  # job checks it.
+  push:
+    tags:
+      - 'ernic-ansible-v*'
   pull_request:
     branches:
       - develop
@@ -18,9 +26,10 @@ name: ernic - Ansible Collection
       - 'ansible/**'
       - '.github/workflows/ernic-ansible-collection.yml'
 
-# Read-only: nothing here writes to the repo.  actions: read is for
-# actions/download-artifact, which fetches the built collection
-# through the artifact API rather than the workspace.
+# Read-only, but for the publish job, which creates the release.
+# actions: read is for actions/download-artifact, which fetches the
+# built collection through the artifact API rather than the
+# workspace.
 permissions:
   contents: read
   actions: read
@@ -119,11 +128,34 @@ jobs:
     needs: [sanity, lint]
     runs-on: ubuntu-26.04
     timeout-minutes: 10
+    outputs:
+      version: ${{ steps.version.outputs.version }}
     steps:
       - name: Check out code
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
+
+      # A release tag names the collection version it publishes, and
+      # consumers pin ernic_source_repo_version to it, so a tag that
+      # doesn't match galaxy.yml fails here rather than publishing a
+      # collection that says it's another version.
+      - name: Read and validate the collection version
+        id: version
+        run: |
+          version=$(sed -n 's/^version:[[:space:]]*//p' \
+            "${COLLECTION_DIR}/galaxy.yml")
+          if ! [[ "${version}" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "::error::no X.Y.Z version in ${COLLECTION_DIR}/galaxy.yml"
+            exit 1
+          fi
+          echo "version=${version}" >> "${GITHUB_OUTPUT}"
+          if [[ "${GITHUB_REF_TYPE}" == "tag" ]]; then
+            if [[ "${GITHUB_REF_NAME}" != "ernic-ansible-v${version}" ]]; then
+              echo "::error::tag ${GITHUB_REF_NAME} does not match version ${version} in galaxy.yml"
+              exit 1
+            fi
+          fi
 
       - name: Set up Python
         uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
@@ -261,3 +293,58 @@ jobs:
         env:
           ANSIBLE_COLLECTIONS_PATH: /tmp/consumer-collections
         run: ansible-playbook --syntax-check /tmp/consumer.yml
+
+  # Installing from the asset needs only its URL: no clone of the
+  # repository, however large it is.  --latest=false keeps the
+  # server's release, not this one, as the repository's latest.
+  publish:
+    name: Publish the collection release
+    needs: [build, consumer]
+    if: >-
+      github.ref_type == 'tag' &&
+      github.ref_name == format('ernic-ansible-v{0}', needs.build.outputs.version)
+    runs-on: ubuntu-26.04
+    timeout-minutes: 10
+    permissions:
+      contents: write
+      actions: read
+    steps:
+      - name: Download collection artifact
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: collection-artifact
+          path: dist
+
+      # --repo is required: this job does not check the repository
+      # out, so gh has no git remote to infer it from.
+      - name: Create GitHub release
+        working-directory: dist
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          VERSION: ${{ needs.build.outputs.version }}
+        run: |
+          asset="rocm-ernic-${VERSION}.tar.gz"
+          if [ ! -f "${asset}" ]; then
+            echo "::error::the artifact has no ${asset}"
+            exit 1
+          fi
+          sha256sum "${asset}" > "SHA256SUMS-rocm-ernic-${VERSION}.txt"
+          url="${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}"
+          cat > /tmp/notes.md <<EOF
+          The rocm.ernic Ansible collection, version ${VERSION}.
+          Install it with:
+
+              ansible-galaxy collection install \\
+                ${url}/releases/download/${GITHUB_REF_NAME}/${asset}
+
+          and set \`ernic_source_repo_version\` to \`${GITHUB_REF_NAME}\`,
+          so the sources the roles build match the collection.
+
+          Changes: [CHANGELOG.rst](${url}/blob/${GITHUB_REF_NAME}/${COLLECTION_DIR}/CHANGELOG.rst)
+          EOF
+          gh release create "${GITHUB_REF_NAME}" ./* \
+            --repo "${GITHUB_REPOSITORY}" \
+            --title "rocm.ernic Ansible collection ${VERSION}" \
+            --notes-file /tmp/notes.md \
+            --latest=false \
+            --verify-tag
