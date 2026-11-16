@@ -8,16 +8,16 @@
 
 ---
 # Set this to an existing rocm-ernic checkout to skip the
-# clone entirely.  The playbooks in the rocm-ernic repo set
-# it to the repo root; standalone consumers leave it empty
-# and get a clone at ``ernic_source_clone_dir``.
+# clone entirely.  rocm-ernic's own playbooks set it to the
+# rocm-ernic project directory; standalone consumers leave
+# it empty and get a clone at ``ernic_source_clone_dir``.
 ernic_source_dir: ""
 
 ernic_source_repo_url: "https://github.com/ROCm/rocm-ernic.git"
 # No default: a moving branch silently decouples the compiled sources from
 # the collection that told them how to build, so a consumer must name a
-# SHA or tag. The playbooks in this repo set it to the repo root via
-# ernic_source_dir and never reach this clone path; standalone consumers
+# SHA or tag. rocm-ernic's own playbooks set ernic_source_dir to the
+# project directory and never reach this clone path; standalone consumers
 # must set it explicitly or the clone task will fail with a clear message.
 ernic_source_repo_version: ""
 ernic_source_clone_dir: "/var/tmp/rocm-ernic-src"

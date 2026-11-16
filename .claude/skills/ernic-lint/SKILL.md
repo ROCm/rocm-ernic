@@ -7,9 +7,9 @@ description: "Run rocm-ernic's non-C checks: ShellCheck, actionlint, and the emb
 
 The rules for writing these files are in [AGENTS.md](../../../AGENTS.md);
 this file says how to check them. Each check is quick, so run it for any
-file of its kind you touch, from the repository root. CI runs most of
-them, but a workflow's `paths:` filter can miss a change, and vermin
-isn't in CI at all.
+file of its kind you touch, from the project directory (where AGENTS.md
+is). CI runs most of them, but a workflow's `paths:` filter can miss a
+change, and vermin isn't in CI at all.
 
 ## Shell
 

@@ -75,9 +75,9 @@ ctest --test-dir build -j"$(nproc)" --output-on-failure
   test, clang-tidy, IWYU, and CodeQL builds turn it on; so must yours.
 - Docs build without a C compiler or the C dependencies:
   `-DERNIC_DOCS_ONLY=ON -DERNIC_BUILD_DOCS=ON`.
-- **Reuse build directories**, named `build-<config>` in the repository
-  root (git ignores them): an incremental build recompiles, and re-runs
-  clang-tidy or IWYU on, only what changed.
+- **Reuse build directories**, named `build-<config>` in the project
+  directory, beside this file (git ignores them): an incremental build
+  recompiles, and re-runs clang-tidy or IWYU on, only what changed.
 
 CI builds GCC 15 and Clang 21 × Debug and Release × no sanitizer, ASan,
 and TSan on Ubuntu 26.04, plus a Clang coverage build, and runs the tests
