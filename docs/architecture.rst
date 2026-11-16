@@ -1520,8 +1520,8 @@ itself, so they start no threads. The completion thread the
 QEMU code had upstream is gone.
 
 Shared state between threads uses mutexes or C11 atomics. The
-thread-safety section of ``AGENTS.md``, in the repository root,
-has the rules.
+thread-safety section of ``AGENTS.md``, in the project
+directory, has the rules.
 
 Trust Boundaries
 ----------------

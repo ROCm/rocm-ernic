@@ -7,9 +7,9 @@ description: "Build and check a rocm-ernic C change before finishing it: the GCC
 
 The rules these checks enforce are in [AGENTS.md](../../../AGENTS.md)
 (see its Checks section); this file says how to run them. Run everything
-from the repository root, each configuration in its own `build-<config>`
-directory, and reuse the directories: a rebuild recompiles, and re-runs
-clang-tidy or IWYU on, only what changed. `-k 0` makes ninja report every
+from the project directory (where AGENTS.md is), each configuration in
+its own `build-<config>` directory, and reuse the directories: a rebuild
+recompiles, and re-runs clang-tidy or IWYU on, only what changed. `-k 0` makes ninja report every
 failing file rather than stopping at the first.
 
 ## Warning builds

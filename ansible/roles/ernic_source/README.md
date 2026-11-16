@@ -17,8 +17,8 @@ apply it directly.
 ## Role Variables
 
 ```yaml
-# Use an existing checkout and skip the clone. The playbooks in the
-# rocm-ernic repo set this to the repo root.
+# Use an existing checkout and skip the clone. rocm-ernic's own
+# playbooks set this to the rocm-ernic project directory.
 ernic_source_dir: ""
 
 ernic_source_repo_url: "https://github.com/ROCm/rocm-ernic.git"
@@ -40,9 +40,9 @@ series, `udev/99-rocm-ernic.rules` and the ionic kernel ref (`ernic_ionic_kernel
 defaults to empty, meaning "read `IONIC_KERNEL_REF` out of the checkout's
 `cmake/ErnicKernelModule.cmake`") all come from whatever this role resolved,
 which is a different tree from the one the roles came from unless you say
-otherwise. In this repo's own playbooks `ernic_source_dir` is set to the repo
-root, so they never clone and never drift; a standalone consumer should pin
-both and bump them together.
+otherwise. rocm-ernic's own playbooks set `ernic_source_dir` to the project
+directory, so they never clone and never drift; a standalone consumer should
+pin both and bump them together.
 
 After the role runs, `ernic_source_dir` is set on every host in the play and
 `ernic_source_resolved` is `true`, so re-including the role is a no-op.
