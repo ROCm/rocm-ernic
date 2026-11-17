@@ -57,10 +57,10 @@
       {{ ernic_project_root }}/docs/perf-results
     tcp_bw_csv: "{{ results_dir }}/tcp-bw-{{ ts }}.csv"
     ts: >-
-      {{ ansible_date_time.date }}-{{
-         ansible_date_time.hour }}{{
-         ansible_date_time.minute }}{{
-         ansible_date_time.second }}
+      {{ ansible_facts['date_time'].date }}-{{
+         ansible_facts['date_time'].hour }}{{
+         ansible_facts['date_time'].minute }}{{
+         ansible_facts['date_time'].second }}
 
   tasks:
 

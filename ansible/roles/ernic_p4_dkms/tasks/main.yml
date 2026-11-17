@@ -30,7 +30,7 @@
     fail_msg: >-
       {{ item.item }} is not available on this host. Building ernic_p4
       needs dkms, git and make, plus headers for the running kernel
-      ({{ ansible_kernel }}).
+      ({{ ansible_facts['kernel'] }}).
   loop: "{{ ernic_p4_prereq.results }}"
   loop_control:
     label: "{{ item.item }}"
@@ -144,7 +144,7 @@
   ansible.builtin.command:
     cmd: >-
       {{ ernic_p4_dkms_module_dir }}/find-ionic-symvers.sh
-      {{ ansible_kernel }}
+      {{ ansible_facts['kernel'] }}
   register: ernic_p4_symvers_found
   changed_when: false
   failed_when: false
@@ -174,7 +174,7 @@
     that: ernic_p4_symvers | length > 0
     fail_msg: >-
       No Module.symvers exporting ionic_adminq_post_wait could be found
-      or rebuilt for {{ ansible_kernel }}. Building against the kernel's
+      or rebuilt for {{ ansible_facts['kernel'] }}. Building against the kernel's
       own symbols would produce a module that cannot insert against a
       patched ionic.
       Lookup said: {{ ernic_p4_symvers_found.msg
@@ -222,7 +222,7 @@
 - name: Remove a hand-installed module from an earlier run
   become: true
   ansible.builtin.file:
-    path: "/lib/modules/{{ ansible_kernel }}/updates/ernic_p4.ko"
+    path: "/lib/modules/{{ ansible_facts['kernel'] }}/updates/ernic_p4.ko"
     state: absent
   notify: Rebuild the module dependency map
 
@@ -275,7 +275,7 @@
   ansible.builtin.command:
     cmd: >-
       dkms {{ item }} {{ ernic_p4_pkg }}/{{ ernic_p4_ver }}
-      -k {{ ansible_kernel }}
+      -k {{ ansible_facts['kernel'] }}
   loop:
     - build
     - install

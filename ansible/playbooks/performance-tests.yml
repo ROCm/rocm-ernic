@@ -125,10 +125,10 @@
       - {tool: ib_read_lat, label: read}
 
     ts: >-
-      {{ ansible_date_time.date }}-{{
-         ansible_date_time.hour }}{{
-         ansible_date_time.minute }}{{
-         ansible_date_time.second }}
+      {{ ansible_facts['date_time'].date }}-{{
+         ansible_facts['date_time'].hour }}{{
+         ansible_facts['date_time'].minute }}{{
+         ansible_facts['date_time'].second }}
     results_dir: >-
       {{ ernic_project_root }}/docs/perf-results
     bw_csv: "{{ results_dir }}/bw-{{ ts }}.csv"
