@@ -24,7 +24,7 @@
       - "!min"
       - user
       - env
-  when: ansible_user_id is not defined or ansible_env is not defined
+  when: ansible_facts['user_id'] is not defined or ansible_facts['env'] is not defined
 
 # ernic_vm_launch_user, or whoever runs this play, or if that's root,
 # whoever ran it with sudo
@@ -32,8 +32,8 @@
   ansible.builtin.set_fact:
     ernic_vm_key_user: >-
       {{ ernic_vm_launch_user | default('', true)
-         or (ansible_user_id if ansible_user_id != 'root'
-             else ansible_env.SUDO_USER | default('', true)) }}
+         or (ansible_facts['user_id'] if ansible_facts['user_id'] != 'root'
+             else ansible_facts['env'].SUDO_USER | default('', true)) }}
 
 - name: Look up their home directory
   ansible.builtin.getent:

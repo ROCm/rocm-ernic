@@ -1,0 +1,13 @@
+---
+bugfixes:
+  - >-
+    All gathered-fact references across the collection now use
+    ``ansible_facts['name']`` instead of the injected top-level form
+    ``ansible_name``.  ansible-core 2.24 will remove
+    ``INJECT_FACTS_AS_VARS``, which silently provided the old form,
+    and already emits a deprecation warning pointing at every task
+    that relies on it.  Affected facts: ``kernel``,
+    ``processor_vcpus``, ``processor_nproc``, ``user_id``, ``env``,
+    and ``date_time``.  Connection and magic variables such as
+    ``ansible_user``, ``ansible_host``, and ``ansible_check_mode``
+    are not gathered facts and are unaffected.

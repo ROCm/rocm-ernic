@@ -47,7 +47,7 @@ ernic_log_level: warn
 ernic_tap_setup: true
 ernic_tap_prefix: ernic-tap
 ernic_tap_bridge: ernicbr0
-ernic_tap_owner: "{{ ansible_user_id }}"
+ernic_tap_owner: "{{ ansible_facts['user_id'] }}"
 # Optional host address on the bridge, for debugging from the host.
 ernic_tap_bridge_ip: ""
 

@@ -48,7 +48,7 @@
     fail_msg: >-
       {{ item.item }} is not available on this host. The SRQ DKMS build needs
       dkms, git and make, plus headers for the running kernel
-      ({{ ansible_kernel }}).
+      ({{ ansible_facts['kernel'] }}).
   loop: "{{ ernic_srq_dkms_prereq.results }}"
   loop_control:
     label: "{{ item.item }}"
@@ -65,10 +65,10 @@
        | regex_replace('^v', '')
        | regex_replace('-rc[0-9]+$', '')
        | regex_replace('^([0-9]+\.[0-9]+).*$', '\1'))
-      != (ansible_kernel | regex_replace('^([0-9]+\.[0-9]+).*$', '\1'))
+      != (ansible_facts['kernel'] | regex_replace('^([0-9]+\.[0-9]+).*$', '\1'))
   ansible.builtin.debug:
     msg: >-
-      WARNING: {{ inventory_hostname }} runs kernel {{ ansible_kernel }} but
+      WARNING: {{ inventory_hostname }} runs kernel {{ ansible_facts['kernel'] }} but
       the SRQ sources are pinned to {{ ernic_srq_dkms_sources[0].ref }}. ionic
       tracks IB-core helpers that move between minor releases, so this build
       may fail for that reason alone. The fix is to repin the guest image to

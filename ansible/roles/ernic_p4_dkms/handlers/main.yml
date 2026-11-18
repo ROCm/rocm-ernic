@@ -8,5 +8,5 @@
 - name: Rebuild the module dependency map
   become: true
   ansible.builtin.command:
-    cmd: "depmod -a {{ ansible_kernel }}"
+    cmd: "depmod -a {{ ansible_facts['kernel'] }}"
   changed_when: true

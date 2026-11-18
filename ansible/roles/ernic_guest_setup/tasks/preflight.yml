@@ -14,22 +14,22 @@
 # sees is "Failed to register ibdev", which names neither CPUs nor
 # queues and reads like a device or driver fault.
 #
-# ansible_processor_nproc is nproc, which is what num_online_cpus()
-# reports; ansible_processor_vcpus counts what the guest was built
+# ansible_facts['processor_nproc'] is nproc, which is what num_online_cpus()
+# reports; ansible_facts['processor_vcpus'] counts what the guest was built
 # with, and the two differ once a CPU is offlined.
 - name: Assert the guest has enough vCPUs for the RDMA admin queue
   ansible.builtin.assert:
     that:
       - >-
-        (ansible_processor_nproc
-         | default(ansible_processor_vcpus) | int)
+        (ansible_facts['processor_nproc']
+         | default(ansible_facts['processor_vcpus']) | int)
         >= ernic_ionic_min_vcpus | int
     fail_msg: >-
       ionic_rdma needs at least {{ ernic_ionic_min_vcpus }} online
       CPUs: ionic_lif_size() derives its event-queue count from
       num_online_cpus() and ionic_create_rdma_admin() rejects fewer
       than IONIC_EQ_COUNT_MIN.  This guest has
-      {{ ansible_processor_nproc | default(ansible_processor_vcpus) }},
+      {{ ansible_facts['processor_nproc'] | default(ansible_facts['processor_vcpus']) }},
       so ionic_rdma would fail to probe with "Failed to register
       ibdev".  Relaunch it with more vCPUs (ernic_vm_vcpus, or
       --vcpus on ernicctl vm-launch).

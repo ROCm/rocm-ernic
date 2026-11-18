@@ -61,7 +61,7 @@
       - cmake
       - --build
       - "{{ ernic_rocm_xio_dir }}/build"
-      - "-j{{ ansible_processor_vcpus | default(2) }}"
+      - "-j{{ ansible_facts['processor_vcpus'] | default(2) }}"
   changed_when: true
 
 - name: Build, install and load the rocm-xio kernel module
@@ -72,14 +72,14 @@
       community.general.make:
         chdir: "{{ ernic_rocm_xio_dir }}/kernel/rocm-xio"
         params:
-          KDIR: "/lib/modules/{{ ansible_kernel }}/build"
+          KDIR: "/lib/modules/{{ ansible_facts['kernel'] }}/build"
 
     - name: Install the rocm-xio module for modprobe
       ansible.builtin.shell:
         cmd: >-
-          mkdir -p /lib/modules/{{ ansible_kernel }}/extra
+          mkdir -p /lib/modules/{{ ansible_facts['kernel'] }}/extra
           && cp -f {{ ernic_rocm_xio_dir }}/kernel/rocm-xio/rocm-xio.ko
-          /lib/modules/{{ ansible_kernel }}/extra/
+          /lib/modules/{{ ansible_facts['kernel'] }}/extra/
           && depmod -a
       changed_when: true
 

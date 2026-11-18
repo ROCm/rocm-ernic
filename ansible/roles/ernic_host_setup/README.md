@@ -54,7 +54,7 @@ debugging.
 ernic_tap_setup: true
 ernic_tap_prefix: ernic-tap
 ernic_tap_bridge: ernicbr0
-ernic_tap_owner: "{{ ansible_user_id }}"
+ernic_tap_owner: "{{ ansible_facts['user_id'] }}"
 ernic_tap_bridge_ip: ""         # e.g. 192.168.200.1/24
 
 ernic_build: true

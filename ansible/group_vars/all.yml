@@ -86,7 +86,7 @@ ernic_vm_ssh_host: local-vm
 # Optional: ssh/scp -F path so sudo ernicctl resolves Host aliases
 # (e.g. /home/youruser/.ssh/config).  Root's /root/.ssh is not used by
 # ernicctl for VM ssh; use this path or ERNIC_VM_SSH_IDENTITY in env.
-ernic_vm_ssh_config: "{{ ansible_env.HOME }}/.ssh/config"
+ernic_vm_ssh_config: "{{ ansible_facts['env'].HOME }}/.ssh/config"
 # Private key on the target host for ERNIC_VM_SSH_IDENTITY (ernicctl VM_LOAD
 # SSH fallback, guest_ssh, etc.); ernicctl vm-launch authorizes its .pub at
 # each boot.  Empty skips the line in ``rocm-ernic.env``, and ernicctl

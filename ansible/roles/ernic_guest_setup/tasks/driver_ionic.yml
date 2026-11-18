@@ -31,10 +31,10 @@
   ansible.builtin.assert:
     that:
       - >-
-        ansible_kernel.split('-')[0]
+        ansible_facts['kernel'].split('-')[0]
         is version(ernic_ionic_min_kernel, '>=')
     fail_msg: >-
-      Guest kernel {{ ansible_kernel }} is older than
+      Guest kernel {{ ansible_facts['kernel'] }} is older than
       {{ ernic_ionic_min_kernel }}; ionic_rdma cannot be built.
       Update the guest image.
 
@@ -49,10 +49,10 @@
   ansible.builtin.assert:
     that:
       - >-
-        ansible_kernel.split('-')[0].split('.')[0:2] | join('.')
+        ansible_facts['kernel'].split('-')[0].split('.')[0:2] | join('.')
         == ernic_ionic_kver.split('.')[0:2] | join('.')
     fail_msg: >-
-      Guest kernel {{ ansible_kernel }} does not match the ionic
+      Guest kernel {{ ansible_facts['kernel'] }} does not match the ionic
       sources pinned at {{ ernic_ionic_ref }}; ionic_rdma needs a
       {{ ernic_ionic_kver.split('.')[0:2] | join('.') }}.x kernel.
       Set ernic_ionic_kernel_ref to a tag matching this kernel, or
@@ -68,13 +68,13 @@
     that:
       - >-
         groups['ernic_vms']
-        | map('extract', hostvars, 'ansible_kernel')
+        | map('extract', hostvars, ['ansible_facts', 'kernel'])
         | unique | length == 1
     fail_msg: >-
       The guests disagree on their kernel version:
       {{ groups['ernic_vms']
          | zip(groups['ernic_vms']
-               | map('extract', hostvars, 'ansible_kernel'))
+               | map('extract', hostvars, ['ansible_facts', 'kernel']))
          | map('join', '=') | join(', ') }}.
       Rebuild the overlays from a single golden image.
   run_once: true
@@ -93,7 +93,7 @@
       - grep
       - -qs
       - ib_umem_get_va
-      - "/lib/modules/{{ ansible_kernel }}/build/include/rdma/ib_umem.h"
+      - "/lib/modules/{{ ansible_facts['kernel'] }}/build/include/rdma/ib_umem.h"
   register: ernic_ionic_umem_helper
   failed_when: false
   changed_when: false
@@ -103,7 +103,7 @@
     that:
       - ernic_ionic_umem_helper.rc == 0
     fail_msg: >-
-      /lib/modules/{{ ansible_kernel }}/build does not provide
+      /lib/modules/{{ ansible_facts['kernel'] }}/build does not provide
       ib_umem_get_va, so the ionic sources at {{ ernic_ionic_ref }}
       cannot build against it.  Either the kernel headers are not
       installed --- note that a mainline kernel's headers come from
