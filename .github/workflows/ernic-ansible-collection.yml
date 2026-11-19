@@ -234,9 +234,15 @@ jobs:
           # pinned base SHA out of the rdma-core one, so that file is an
           # input, not documentation.
           require 'files/patches/0002-ionic-allocate-an-address-handle-for-UC-queue-pairs.patch'
+          require 'files/patches/0003-ionic-use-the-Rx-buffer-s-page-offset-for-XDP-frags.patch'
+          require 'files/patches/0004-ionic-free-every-temporary-queue-after-a-queue-count.patch'
+          require 'files/patches/README.md'
           require 'files/patches/srq/README.md'
           require 'files/patches/rdma-core/README.md'
-          count 'files/patches/srq/.*\.patch' 9
+          # [^/]* so this counts the base series only, not the series in
+          # the subdirectories, which have their own counts or none.
+          count 'files/patches/[^/]*\.patch' 3
+          count 'files/patches/srq/.*\.patch' 11
           count 'files/patches/rdma-core/.*\.patch' 6
 
           [ "${rc}" -eq 0 ] || exit 1

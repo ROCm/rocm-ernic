@@ -11,8 +11,14 @@ inside the collection so that a consumer who installs `rocm.ernic` gets
 everything the SRQ roles need from one artifact at one ref.
 
 ```text
+patches/README.md     what the base series is, and when to drop each patch
 patches/0002-ionic-allocate-an-address-handle-for-UC-queue-pairs.patch
-patches/srq/          the SRQ series, applied to v7.2.6, plus README.md
+patches/0003-ionic-use-the-Rx-buffer-s-page-offset-for-XDP-frags.patch
+patches/0004-ionic-free-every-temporary-queue-after-a-queue-count.patch
+patches/srq/          the SRQ series, applied to v7.2.6, plus README.md.
+                      It carries copies of the base series' own patches as
+                      0009-0011, because --patches-dir replaces the default
+                      directory rather than adding to it
 patches/devmem-tx/    the optional netmem (devmem TCP) Tx series, applied
                       to v7.2.6 after the others, plus README.md
 patches/devmem-rx/    the devmem TCP Rx series, for reference only: it is

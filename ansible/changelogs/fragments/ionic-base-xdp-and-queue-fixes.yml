@@ -1,0 +1,39 @@
+# Copyright (c) Advanced Micro Devices, Inc. All rights reserved.
+#
+# SPDX-License-Identifier: MIT
+
+---
+security_fixes:
+  - >-
+    The base ionic patch series now carries
+    ``files/patches/0003-ionic-use-the-Rx-buffer-s-page-offset-for-XDP-frags.patch``,
+    which stops an XDP multi-buffer frame carrying bytes that are not its
+    own.  With an ``xdp.frags`` program loaded and an MTU above one
+    buffer, the driver described every frag as starting at offset 0 of its
+    page instead of at the buffer's own offset, so a frame sent with
+    ``XDP_TX`` or ``XDP_REDIRECT`` could put another frame's data, or
+    stale kernel memory, on the wire.  The bug is upstream's, present in
+    mainline and in the pinned ``v7.2.6``, and is applied by default, so
+    rebuilding the driver with ``ernic_guest_setup`` picks it up with no
+    configuration.  ``files/patches/srq`` carries the same patch as
+    ``0010``, because ``ernic_srq_dkms`` replaces the base series rather
+    than adding to it and builds ``ionic.ko`` as well as
+    ``ionic_rdma.ko``.
+bugfixes:
+  - >-
+    The base ionic patch series now carries
+    ``files/patches/0004-ionic-free-every-temporary-queue-after-a-queue-count.patch``
+    (and ``files/patches/srq/0011``), so that changing the queue count no
+    longer leaks memory.  ``ethtool -L`` growing the count left DMA
+    allocations unfreed and a page pool registered with a pointer to a
+    freed NAPI, so ``rmmod ionic`` reported ``pending DMA allocations
+    while released from device`` and a later page-pool dump over netlink
+    read freed memory.  The bug is upstream's, present in mainline and in
+    the pinned ``v7.2.6``.
+minor_changes:
+  - >-
+    ``files/patches`` has a ``README.md`` describing the base series, which
+    caller reaches it, and when each patch must be dropped.  Patches
+    ``0003`` and ``0004`` are not upstream and have been reported to the
+    AMD Pensando team; they must be removed once the pinned kernel ref
+    contains the upstream fixes, or they will stop applying.

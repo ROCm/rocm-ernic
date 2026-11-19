@@ -199,6 +199,67 @@ jobs:
         [ "$rc" -eq 0 ] || exit 1
         echo "all $want patch subjects present as commits"
 
+    # The base series' two correctness fixes, checked on every leg. They are
+    # silent: a tree without them applies, builds and loads, and the symptoms
+    # are another frame's bytes on the wire and a use-after-free in a page
+    # pool dump. Three ways they can go missing, none of which the subject
+    # check above catches: srq/ carries its own copies (0010, 0011) that can
+    # drift from these; devmem-tx edits the same two files, so a rebase of it
+    # can revert a hunk; and when the pinned ref gains the upstream fixes
+    # these must be DROPPED, not kept.
+    #
+    # devmem-rx is NOT covered: no leg applies it (it is against v7.4-rc3).
+    # It reintroduces the 0003 bug in netmem form -- see its README.
+    #
+    # These greps name the shape of our fixes, not the behaviour. If upstream
+    # lands a differently shaped fix and these patches are dropped, delete
+    # this step with them rather than making the strings match.
+    - name: Verify the base series' ionic fixes are in the tree
+      run: |
+        ETH=ionic-kernel-src/drivers/net/ethernet/pensando/ionic
+        rc=0
+        check() {
+          if grep -qF "$2" "$1"; then
+            echo "  ✓ $3"
+          else
+            echo "::error::$3 -- not found in $1"
+            rc=1
+          fi
+        }
+        # 0003: XDP frags must be built at the buffer's own page offset.
+        check "$ETH/ionic_txrx.c" 'bi->page_offset, frag_len);' \
+              'XDP frags use the buffer page offset'
+        if grep -qF 'skb_frag_fill_page_desc(frag, bi->page, 0,' \
+             "$ETH/ionic_txrx.c"; then
+          echo "::error::$ETH/ionic_txrx.c still fills XDP frags at page offset 0"
+          rc=1
+        fi
+        # 0004: the temporary qcqs must be freed up to the larger count.
+        check "$ETH/ionic_lif.c" 'max(qparam->nxqs, lif->nxqs)' \
+              'every temporary queue freed after a queue count change'
+        [ "$rc" -eq 0 ] || exit 1
+
+    # The srq series applies ALONE (no base_patches), so its copies of the
+    # base patches are the only thing keeping its eth driver current.
+    - name: Verify the srq copies of the base patches have not drifted
+      if: matrix.series == 'base'
+      run: |
+        rc=0
+        for pair in \
+          "0003-ionic-use-the-Rx-buffer-s-page-offset-for-XDP-frags.patch:0010-ionic-use-the-Rx-buffer-s-page-offset-for-XDP-frags.patch" \
+          "0004-ionic-free-every-temporary-queue-after-a-queue-count.patch:0011-ionic-free-every-temporary-queue-after-a-queue-count.patch"
+        do
+          base="ansible/files/patches/${pair%%:*}"
+          copy="ansible/files/patches/srq/${pair##*:}"
+          if cmp -s "$base" "$copy"; then
+            echo "  ✓ $(basename "$copy") matches $(basename "$base")"
+          else
+            echo "::error file=$copy::differs from $base -- change both together"
+            rc=1
+          fi
+        done
+        [ "$rc" -eq 0 ] || exit 1
+
     # The three facts the srq series exists to produce.  Without these it
     # can apply cleanly and still yield a driver reporting max_srq=0, which is
     # exactly the state the SRQ work exists to leave behind -- and it would

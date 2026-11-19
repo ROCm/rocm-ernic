@@ -81,10 +81,23 @@ the dependency order. Do not renumber without re-testing.
 | 0007 | `8a093abb541a` **add Shared receive queue (SRQ) support** | the verbs |
 | 0008 | `4dd2160af277` SRQ event handling | |
 | 0009 | *(local)* allocate an address handle for UC queue pairs | this repo's own patch, carried so a tree built from here is not a regression against `patches/` |
+| 0010 | *(local)* use the Rx buffer's page offset for XDP frags | ditto: an information leak onto the wire from XDP multi-buffer |
+| 0011 | *(local)* free every temporary queue after a queue count change | ditto: leaked DMA allocations and a page pool pointing at a freed NAPI |
 
-0009 is a copy of `patches/0002-*.patch`. `--patches-dir` **replaces** the
-default directory rather than adding to it, so a local patch omitted here
-would silently be dropped from an SRQ build.
+0009-0011 are copies of the three patches in `patches/`. `--patches-dir`
+**replaces** the default directory rather than adding to it, so a local
+patch omitted here would silently be dropped from an SRQ build — and this
+role builds `ionic.ko` as well as `ionic_rdma.ko`, so that would ship an
+eth driver missing an information-leak fix (0010) and a use-after-free fix
+(0011) that every other build has.
+
+0010 and 0011 are **byte-identical** to `patches/0003-*.patch` and
+`patches/0004-*.patch`: the SRQ series touches neither `ionic_txrx.c` nor
+`ionic_lif.c`, so no rebase was needed. 0009 is `patches/0002-*.patch`
+regenerated, because the series does shift `ionic_controlpath.c`. Change a
+patch in `patches/` and you must change its copy here in the same commit;
+the `ionic-patches` workflow checks the patched tree for both fixes on
+every leg, which is what catches a copy left behind.
 
 ## What the result must contain
 

@@ -824,12 +824,14 @@ that ``ernic_p4.ko`` binds to. ``fetch-ionic-sources.sh`` applies the
 not those of a directory's subdirectories. There are four series:
 
 - ``ansible/files/patches/`` — the base series: the UC address-handle
-  fix only. ``ernic_guest_setup`` always applies it.
+  fix, the XDP frag offset fix and the queue count leak fix.
+  ``ernic_guest_setup`` always applies it.
 - ``ansible/files/patches/srq/`` — the SRQ series, which enables SRQ
   (``max_srq > 0``). It **replaces** the base series rather than adding
-  to it: it carries its own copy of the UC address-handle fix as
-  ``0009``, so applied after the base series, ``git am`` fails on that
-  copy. ``ernic_srq_dkms`` builds ionic with the SRQ series alone.
+  to it: it carries its own copies of the base series' three patches as
+  ``0009``–``0011``, so applied after the base series, ``git am`` fails
+  on those copies. ``ernic_srq_dkms`` builds ionic with the SRQ series
+  alone.
 - ``ansible/files/patches/p4/`` — the P4 series, which creates the
   auxiliary device ``ernic_p4.ko`` binds to. It applies after either the
   base series or the SRQ series.

@@ -880,6 +880,21 @@ Patches currently carried:
    * - ``0002-ionic-allocate-an-address-handle-for-UC-queue-pairs.patch``
      - Allocates an address handle for UC queue pairs, which
        the upstream RDMA driver otherwise omits.
+   * - ``0003-ionic-use-the-Rx-buffer-s-page-offset-for-XDP-frags.patch``
+     - Builds XDP multi-buffer frags at the Rx buffer's own
+       page offset. Without it a frame sent with ``XDP_TX``
+       or ``XDP_REDIRECT`` can carry another frame's bytes
+       or stale kernel memory.
+   * - ``0004-ionic-free-every-temporary-queue-after-a-queue-count.patch``
+     - Frees every temporary queue after a queue count
+       change. Without it ``ethtool -L`` leaks DMA
+       allocations and leaves a page pool pointing at a
+       freed NAPI.
+
+Patches ``0003`` and ``0004`` fix pre-existing upstream
+bugs, present in mainline and in the pinned ref, and are
+not upstream yet. Drop them once the pinned ref carries
+the upstream fixes; see ``ansible/files/patches/README.md``.
 
 Building and Installing
 ^^^^^^^^^^^^^^^^^^^^^^^

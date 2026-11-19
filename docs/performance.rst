@@ -231,10 +231,22 @@ Known Limitations
   over the TCP mesh needs ``net.core.wmem_max`` and
   ``net.core.rmem_max`` raised to at least 16 MB on the host.
 
-- **GPU CQ/SQ in system memory:** GPU VRAM buffers would need a
-  vfio-user DMA proxy for GPU BAR regions, which does not
-  exist. System memory buffers registered with
-  ``hipHostRegister`` work.
+- **GPU VRAM buffers need the fork QEMU, and a guest kernel
+  built for peer-to-peer:** the server reaches another emulated
+  device's BAR only when QEMU passes that region's file
+  descriptor in its DMA map. The stock image does not, and says
+  nothing: it never advertises the window, so the address
+  resolves to no region and the transfer fails. The fork
+  (``sbates130272/qemu``, *"hw/vfio: assign region fd to
+  RAMBlock for vfio-user P2P DMA"*) does, and the server then
+  maps the GPU's VRAM aperture like any other region; look for
+  it in the server's ``/proc/<pid>/maps``. The guest side needs
+  ``CONFIG_PCI_P2PDMA``, and an importer that attaches allowing
+  peer-to-peer. Without either, amdgpu pins the buffer into GTT
+  and the server reads system memory instead -- successfully,
+  with nothing in the result to show which it was. System
+  memory buffers registered with ``hipHostRegister`` work
+  whatever QEMU is in use.
 
 - **~1 ms GPU latency floor:** GPU-initiated work goes through
   the QEMU pci-mmio-bridge, whose default poll interval is

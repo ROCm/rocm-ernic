@@ -46,6 +46,29 @@ that drives it stay together.
 
 `0000-cover-letter.patch` says what only a device vendor can answer.
 
+## Carries a bug the base series fixes
+
+`0004-ionic-track-rx-buffers-as-netmem.patch` converts the XDP frag loop
+in `ionic_run_xdp()` to netmem and keeps both halves of the bug that
+[`../0003-ionic-use-the-Rx-buffer-s-page-offset-for-XDP-frags.patch`](..)
+fixes: it fills the frag at offset `0` instead of `bi->page_offset`, and
+syncs at the *first* buffer's `buf_info->page_offset`:
+
+```c
+page_pool_dma_sync_netmem_for_cpu(rxq->page_pool, bi->netmem,
+                                  buf_info->page_offset, frag_len);
+skb_frag_fill_netmem_desc(frag, bi->netmem, 0, frag_len);
+```
+
+That is an information leak onto the wire — an `XDP_TX` or
+`XDP_REDIRECT` frame carrying another frame's bytes or stale kernel
+memory. Nothing applies this series today, so nothing ships it, and the
+`ionic-patches` workflow's check of the base fixes does not cover these
+patches. **Fix it when this series is backported or reposted**: the
+netmem form of the fix is `bi->page_offset` in both calls. The base
+series' patch is not upstream either, so a rebase onto a newer mainline
+will not bring the fix with it.
+
 ## What was tested
 
 Two guests of this emulator, on a `v7.4-rc3` kernel with KASAN and

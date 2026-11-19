@@ -1,0 +1,55 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Stephen Bates <sbates@raithlin.com>
+Date: Wed, 19 Nov 2026 10:12:00 -0500
+Subject: [PATCH] ionic: use the Rx buffer's page offset for XDP frags
+
+ionic_run_xdp() describes every buffer after the first as a frag that
+starts at offset 0 of its page, and syncs it for the CPU at the first
+buffer's offset.  Since the Rx buffers come from page_pool_alloc(), a
+buffer no larger than half a page is a page fragment and can start
+anywhere in its page: the descriptor handed to the device has the right
+address (ionic_rx_buf_pa() adds page_offset), the XDP frag does not.
+
+With an MTU of 9000 the third buffer of a frame is 1402 bytes, so two of
+them share a page and every second one starts at offset 1402.  An XDP
+program then sees, and XDP_TX or XDP_REDIRECT sends, the start of the
+page instead: the tail of whichever frame owns the other fragment, or
+whatever the page held before if that fragment has not been filled yet.
+That is an information leak onto the wire -- another frame's data, or
+stale kernel memory, in a packet this host transmits.  The skb path is
+not affected, it uses page_offset.
+
+Found while testing XDP multi-buffer against the rocm-ernic userspace
+emulated NIC, with a program that echoes 8000-byte UDP datagrams with
+XDP_TX at MTU 9000: 5000 of 10000 echoes had their last 426 bytes
+replaced by the bytes of another datagram.  With this patch all 10000
+came back intact.
+
+The same bug is in mainline.  This is not upstream yet; it has been
+reported to the AMD Pensando team, who have not replied.  Drop this
+patch once the fix lands in the kernel IONIC_KERNEL_REF pins.
+
+Fixes: ac8813c0ab7d ("ionic: convert Rx queue buffers to use page_pool")
+---
+ drivers/net/ethernet/pensando/ionic/ionic_txrx.c | 6 +++---
+ 1 file changed, 3 insertions(+), 3 deletions(-)
+
+diff --git a/drivers/net/ethernet/pensando/ionic/ionic_txrx.c b/drivers/net/ethernet/pensando/ionic/ionic_txrx.c
+index e436e3231e86..16c2235e96da 100644
+--- a/drivers/net/ethernet/pensando/ionic/ionic_txrx.c
++++ b/drivers/net/ethernet/pensando/ionic/ionic_txrx.c
+@@ -520,9 +520,9 @@ static bool ionic_run_xdp(struct ionic_rx_stats *stats,
+ 			bi++;
+ 			frag_len = min_t(u16, remain_len, bi->len);
+ 			page_pool_dma_sync_for_cpu(rxq->page_pool, bi->page,
+-						   buf_info->page_offset,
+-						   frag_len);
+-			skb_frag_fill_page_desc(frag, bi->page, 0, frag_len);
++						   bi->page_offset, frag_len);
++			skb_frag_fill_page_desc(frag, bi->page,
++						bi->page_offset, frag_len);
+ 			sinfo->xdp_frags_size += frag_len;
+ 			remain_len -= frag_len;
+ 
+-- 
+2.43.0

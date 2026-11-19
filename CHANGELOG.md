@@ -4,6 +4,36 @@
 
 ### Fixed
 
+* **Two ionic driver bugs are now fixed in every guest**, as
+  `ansible/files/patches/0003-*.patch` and `0004-*.patch` in the base
+  series. Both are pre-existing upstream bugs, present in mainline and in
+  the `v7.2.6` that `IONIC_KERNEL_REF` pins; neither comes from anything
+  this project adds. They are applied by default, so a guest built from
+  this ref picks them up with no configuration — rebuild the driver
+  (the `install-ionic-dkms` CMake target, the `vm-driver-install.sh` that
+  `rocm-ernic-driver-pack` writes, or the `ernic_guest_setup` role) to get
+  them.
+  * **An XDP multi-buffer frame could carry bytes that were not its
+    own.** With an `xdp.frags` program loaded and an MTU above one
+    buffer, `ionic` described each frag as starting at offset 0 of its
+    page rather than at the buffer's own offset, so an `XDP_TX` or
+    `XDP_REDIRECT` frame could put another frame's data, or stale kernel
+    memory, on the wire. At MTU 9000, half of all echoed 8000-byte
+    datagrams had their last 426 bytes replaced. Only the XDP path was
+    affected; ordinary traffic was not.
+  * **Changing the queue count leaked memory and could crash the
+    host.** `ethtool -L` growing the count left DMA allocations unfreed
+    and a page pool registered with a pointer to a freed NAPI, so
+    `rmmod ionic` reported `pending DMA allocations while released from
+    device` and a later page-pool dump over netlink read freed memory
+    (a KASAN use-after-free).
+
+  Both were found by testing against this emulator and have been reported
+  upstream to the AMD Pensando team. They carry no `Signed-off-by:` and
+  **must be dropped once the pinned kernel ref has the upstream fixes** —
+  see `ansible/files/patches/README.md`. `patches/srq/` carries copies as
+  `0010` and `0011`, because an SRQ build replaces the base series rather
+  than adding to it, and it builds `ionic.ko` too.
 * **`ernicctl vm-launch` works again.** It started guests with
   qemu-minimal's `run-vm` script, which qemu-minimal has since removed, so
   it failed with `run-vm not found`. It now boots them with

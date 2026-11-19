@@ -1,0 +1,65 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Stephen Bates <sbates@raithlin.com>
+Date: Wed, 19 Nov 2026 10:28:00 -0500
+Subject: [PATCH] ionic: free every temporary queue after a queue count change
+
+ionic_reconfigure_queues() allocates the new rings in temporary qcqs,
+swaps their contents with the live ones, and frees the temporaries,
+which by then hold the old rings.  The loop that frees them runs up to
+qparam->nxqs, but lif->nxqs and qparam->nxqs have been swapped just
+above, so it runs up to the *old* queue count.
+
+When the count grows into an index that has no qcq yet, a short
+placeholder qcq is allocated so the swap has something to swap with,
+and its rings and page pool end up in the temporary at that index --
+which is beyond the old count, so it is never freed.  The qcq structs
+themselves are devm allocations and go away at unbind, but the DMA
+allocations do not, and the page pool stays listed with a pointer to a
+NAPI that has been freed:
+
+  ip link set $IF down; ethtool -L $IF combined 2; ip link set $IF up
+  ethtool -L $IF combined 4; rmmod ionic
+
+  DMA-API: pci 0000:01:00.0: device driver has pending DMA allocations
+  while released from device [count=12]
+
+and a later page pool dump over netlink reads the freed NAPI:
+
+  BUG: KASAN: slab-use-after-free in page_pool_nl_fill+0x690/0x730
+
+Free the temporaries up to the larger of the two counts.  Both arrays
+have room for every queue, and the loop already skips the entries that
+were never allocated, so this frees exactly the ones that were missed.
+
+Found while testing queue reconfiguration against the rocm-ernic
+userspace emulated NIC, and reproduced with an unmodified driver.
+
+The same bug is in mainline.  This is not upstream yet; it has been
+reported to the AMD Pensando team, who have not replied.  Drop this
+patch once the fix lands in the kernel IONIC_KERNEL_REF pins.
+
+Fixes: 101b40a0171f ("ionic: change queue count with no reset")
+---
+ drivers/net/ethernet/pensando/ionic/ionic_lif.c | 7 +++++--
+ 1 file changed, 5 insertions(+), 2 deletions(-)
+
+diff --git a/drivers/net/ethernet/pensando/ionic/ionic_lif.c b/drivers/net/ethernet/pensando/ionic/ionic_lif.c
+index abc8e3530435..15e878b6c13c 100644
+--- a/drivers/net/ethernet/pensando/ionic/ionic_lif.c
++++ b/drivers/net/ethernet/pensando/ionic/ionic_lif.c
+@@ -3144,8 +3144,11 @@ int ionic_reconfigure_queues(struct ionic_lif *lif,
+ 		err = ionic_start_queues_reconfig(lif);
+ 
+ err_out:
+-	/* free old allocs without cleaning intr */
+-	for (i = 0; i < qparam->nxqs; i++) {
++	/* free old allocs without cleaning intr; the counts may have been
++	 * swapped above, and a placeholder's rings end up in the temporary
++	 * qcq of an index beyond the old count
++	 */
++	for (i = 0; i < max(qparam->nxqs, lif->nxqs); i++) {
+ 		if (tx_qcqs && tx_qcqs[i]) {
+ 			tx_qcqs[i]->flags &= ~IONIC_QCQ_F_INTR;
+ 			ionic_qcq_free(lif, tx_qcqs[i]);
+-- 
+2.43.0
