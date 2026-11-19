@@ -145,6 +145,23 @@ wait "$SERVER_PID" 2>/dev/null || true
 SERVER_PID=""
 pass "MSI-X vectors follow the profile"
 
+# --- Test 6c: the header-split profile turns the Rx prototype on ---
+echo ""
+echo "Test 6c: header-split: Rx header split reported at startup, and only then"
+if grep -q "NIC Rx header split" "$LOG"; then
+    fail "Rx header split reported under generic-400g, which leaves it off"
+fi
+start_server loopback --nic-profile header-split ||
+    fail "server did not start with --nic-profile header-split"
+grep -q "NIC profile: compat + header-split" "$LOG" ||
+    fail "the header-split profile is not in the profile chain"
+grep -q "NIC Rx header split: on" "$LOG" ||
+    fail "Rx header split not reported"
+kill -TERM "$SERVER_PID"
+wait "$SERVER_PID" 2>/dev/null || true
+SERVER_PID=""
+pass "Rx header split follows the profile"
+
 # --- Test 7: none backend ---
 echo ""
 echo "Test 7: none backend"

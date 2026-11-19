@@ -143,6 +143,7 @@ static bool profile_equal(const struct ionic_profile *a,
            a->queues.rdma_eqs == b->queues.rdma_eqs &&
            a->queues.intr_vectors == b->queues.intr_vectors &&
            a->stats.interval_ms == b->stats.interval_ms &&
+           a->rx.header_split == b->rx.header_split &&
            memcmp(a->chain, b->chain, sizeof(a->chain)) == 0;
 }
 
@@ -234,7 +235,7 @@ static const struct text_case text_cases[] = {
      "error naming the line and the section",
      {"# c\n[quues]\neth = 64\n"},
      "layer1:2: unknown section [quues] (known sections: identity, link, "
-     "queues, stats)",
+     "queues, stats, rx)",
      {COMPAT_VALUES}},
     {"negative",
      "a section a later PR adds, [rdma]",
@@ -957,13 +958,16 @@ static const struct spec_case spec_cases[] = {
      "generic-100g", NULL, NULL, "compat + generic-100g", 100000},
     {"positive", "built-in generic-400g by name", "accepted; 400G",
      "generic-400g", NULL, NULL, "compat + generic-400g", 400000},
+    {"positive", "built-in header-split by name",
+     "accepted; the link as compat", "header-split", NULL, NULL,
+     "compat + header-split", 100000},
     {"positive", "a file by path", "its keys applied; the path in the chain",
      "@fast.ini", "[link]\nspeed_mbps = 400000\n", NULL, "compat + @fast.ini",
      400000},
     {"negative", "an unknown built-in name",
      "error listing the built-in profiles and how to name a file", "nope", NULL,
      "unknown NIC profile 'nope' (built-in profiles: compat, small-vm, "
-     "generic-100g, generic-400g; a "
+     "generic-100g, generic-400g, header-split; a "
      "file path needs a '/' or an .ini suffix)",
      "compat", 100000},
     {"negative", "a missing file", "error naming the path and the errno text",
@@ -1080,7 +1084,7 @@ static void check_compat_sets_every_key(void)
                       "fw_version = far\n[link]\nspeed_mbps = 1000\n"
                       "xcvr = none\nmtu_max = 1500\n[queues]\neth = 64\n"
                       "rdma_eqs = 4\nintr_vectors = auto\n[stats]\n"
-                      "interval_ms = 10\n";
+                      "interval_ms = 10\n[rx]\nheader_split = on\n";
     const struct want compat = {COMPAT_VALUES};
     bool ok;
 
@@ -1090,10 +1094,81 @@ static void check_compat_sets_every_key(void)
          text &&
          ionic_profile_apply_text(&p, "compat", text, strlen(text), err,
                                   sizeof(err)) == 0 &&
-         profile_is(&p, &compat);
+         profile_is(&p, &compat) && !p.rx.header_split;
     report(ok, "positive",
            "built-in compat layered on a profile that differs in every key",
            "every key back to compat: the built-in sets each one");
+}
+
+/*
+ * [rx] header_split: off in compat, turned on by the key or the built-in
+ * header-split profile, which sets nothing else, and off or on only.
+ */
+static void check_rx_header_split(void)
+{
+    static const struct {
+        const char *category;
+        const char *description;
+        const char *expected;
+        const char *text; /* NULL: the built-in header-split profile */
+        const char *want_err;
+        bool want;
+    } rows[] = {
+        {"positive", "rx.header_split = on", "on", "[rx]\nheader_split = on\n",
+         NULL, true},
+        {"positive", "rx.header_split = off", "off",
+         "[rx]\nheader_split = off\n", NULL, false},
+        {"positive", "the built-in header-split profile", "on", NULL, NULL,
+         true},
+        {"boundary", "no [rx] section", "off, as compat has it",
+         "[link]\nxcvr = fiber\n", NULL, false},
+        {"negative", "rx.header_split = yes", "error naming the two values",
+         "[rx]\nheader_split = yes\n",
+         "layer:2: rx.header_split: 'yes' is not one of off, on", false},
+        {"negative", "rx.header_split = 1", "error naming the two values",
+         "[rx]\nheader_split = 1\n",
+         "layer:2: rx.header_split: '1' is not one of off, on", false},
+        {"negative", "rx.header_split = ON", "error: the values are lower case",
+         "[rx]\nheader_split = ON\n",
+         "layer:2: rx.header_split: 'ON' is not one of off, on", false},
+        {"negative", "an unknown key in [rx]", "error naming the key",
+         "[rx]\nheader_spilt = on\n", "layer:2: unknown key 'rx.header_spilt'",
+         false},
+    };
+    const struct want compat = {COMPAT_VALUES};
+
+    for (size_t i = 0; i < sizeof(rows) / sizeof(rows[0]); i++) {
+        struct ionic_profile p;
+        char err[256] = "";
+        int rc;
+        bool ok;
+
+        ionic_profile_defaults(&p);
+        ok = !p.rx.header_split;
+        if (rows[i].text) {
+            rc = ionic_profile_apply_text(&p, "layer", rows[i].text,
+                                          strlen(rows[i].text), err,
+                                          sizeof(err));
+        } else {
+            rc = ionic_profile_apply(&p, "header-split", err, sizeof(err));
+        }
+        if (rows[i].want_err) {
+            ok = ok && rc != 0 && strstr(err, rows[i].want_err) != NULL;
+        } else {
+            ok = ok && rc == 0;
+        }
+        ok = ok && ((p.rx.header_split && rows[i].want) ||
+                    (!p.rx.header_split && !rows[i].want));
+        /* The built-in sets no other key. */
+        if (!rows[i].text) {
+            ok = ok && profile_is(&p, &compat);
+        }
+        report(ok, rows[i].category, rows[i].description, rows[i].expected);
+        if (!ok) {
+            printf("     rc %d, error: %s, header_split %s\n", rc, err,
+                   p.rx.header_split ? "on" : "off");
+        }
+    }
 }
 
 /* --print-profile output parses back to the same profile and hash. */
@@ -1103,7 +1178,8 @@ static void check_round_trip(void)
                         "fw_version = 1.8.0 (E-32)\n[link]\n"
                         "speed_mbps = 400000\nxcvr = fiber\nmtu_max = 9000\n"
                         "[queues]\neth = 9\nrdma_eqs = 5\n"
-                        "intr_vectors = auto\n[stats]\ninterval_ms = 250\n";
+                        "intr_vectors = auto\n[stats]\ninterval_ms = 250\n"
+                        "[rx]\nheader_split = on\n";
     struct ionic_profile p;
     struct ionic_profile q;
     char err[256];
@@ -1122,7 +1198,8 @@ static void check_round_trip(void)
          memcmp(&p.identity, &q.identity, sizeof(p.identity)) == 0 &&
          p.link.speed_mbps == q.link.speed_mbps && p.link.xcvr == q.link.xcvr &&
          p.link.mtu_max == q.link.mtu_max &&
-         p.stats.interval_ms == q.stats.interval_ms &&
+         p.stats.interval_ms == q.stats.interval_ms && p.rx.header_split &&
+         q.rx.header_split &&
          memcmp(&p.queues, &q.queues, sizeof(p.queues)) == 0 &&
          ionic_profile_hash(&p) == ionic_profile_hash(&q);
     report(ok, "corner", "the printed profile parsed back onto compat",
@@ -1151,6 +1228,10 @@ static void check_hash(void)
            "the same values reached in two layers or in one", "the same hash");
     report(ionic_profile_hash(&a) != ionic_profile_hash(&c), "corner",
            "compat and a profile that differs from it", "different hashes");
+    ionic_profile_defaults(&a);
+    a.rx.header_split = true;
+    report(ionic_profile_hash(&a) != ionic_profile_hash(&c), "corner",
+           "compat and compat with rx.header_split on", "different hashes");
 }
 
 /* What each built-in profile sets in [queues], layered on compat. */
@@ -1482,7 +1563,7 @@ static void check_out_of_memory(void)
         "[identity]\nasic_type = elba\nasic_rev = 3\nfw_version = a\\sb\n"
         "[link]\nspeed_mbps = 25000\nxcvr = fiber\nmtu_max = 9000\n"
         "[queues]\neth = 8\nrdma_eqs = 16\nintr_vectors = auto\n"
-        "[stats]\ninterval_ms = 250\n";
+        "[stats]\ninterval_ms = 250\n[rx]\nheader_split = on\n";
     const struct want want = {2, 3, "a b", 25000, 1, 9000, 250, 8, 16, 0};
     const char *path = scratch_file("oom.ini", text);
 
@@ -1547,6 +1628,8 @@ int main(void)
     check_builtin_matches_file("small-vm");
     check_builtin_matches_file("generic-100g");
     check_builtin_matches_file("generic-400g");
+    check_builtin_matches_file("header-split");
+    check_rx_header_split();
     check_builtin_queues();
     check_intr_vectors();
     check_warnings();

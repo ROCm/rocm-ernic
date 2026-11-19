@@ -49,6 +49,7 @@
 #include "ionic/ionic_eth_emu_priv.h"
 #include "ionic/ionic_emu_stats.h"
 #include "ionic/ionic_eth_net.h"
+#include "ionic/ionic_eth_rx.h"
 #include "ionic/ionic_eth_steer.h"
 #include "ionic/ionic_eth_tx.h"
 #include "ionic/ionic_profile.h"
@@ -75,6 +76,15 @@ struct eth_inbox_frame {
     bool port_counted; /* the MAC has seen it; it waits for a buffer */
     uint8_t data[];
 };
+
+/* The offloads LIF_SETATTR(FEATURES) grants and the LIF identity reports:
+ * Rx checksum is part of the header-split mode, since a driver cannot
+ * checksum a payload it may not read. */
+static uint64_t eth_hw_features(const struct ionic_eth_emu *emu)
+{
+    return IONIC_EMU_ETH_HW_FEATURES |
+           (emu->profile.rx.header_split ? IONIC_ETH_HW_RX_CSUM : 0);
+}
 
 /* The Ethernet queue pairs the LIF offers: queues.eth, which the profile
  * loader keeps inside eth_q[]. */
@@ -1159,7 +1169,7 @@ void ionic_eth_emu_handle_lif_identify(struct ionic_eth_emu *emu,
     /* The offloads LIF_SETATTR(FEATURES) will grant.  The driver takes its
      * features from that command's completion, and reads only the timestamp
      * bits here, which stay clear. */
-    ernic_put_le64(data + LIFID_CONFIG_FEATURES_OFF, IONIC_EMU_ETH_HW_FEATURES);
+    ernic_put_le64(data + LIFID_CONFIG_FEATURES_OFF, eth_hw_features(emu));
 
     /* ionic_lif_config.  queue_count[] is not advisory: ionic_lif_size() reads
      * TXQ/RXQ straight out of it and hands the result to alloc_etherdev_mqs(),
@@ -1546,7 +1556,7 @@ static void handle_lif_setattr(struct ionic_eth_emu *emu, const uint8_t *cmd,
          * granted. */
         ernic_put_le64(comp + LIF_ATTR_COMP_OFF,
                        ernic_get_le64(cmd + LIF_ATTR_CMD_OFF) &
-                           IONIC_EMU_ETH_HW_FEATURES);
+                           eth_hw_features(emu));
     }
     comp[0] = IONIC_RC_SUCCESS;
 }
@@ -1662,8 +1672,15 @@ void ionic_eth_emu_handle_q_identify(const struct ionic_eth_emu *emu,
      * none: the guest maps the CMB, so the device never sees the stores that
      * would ring one, and rings a doorbell instead.  Nor is there an
      * Ethernet queue in the CMB, or a 2x/4x descriptor ring, each of which
-     * changes a ring layout we would then have to decode differently. */
-    ernic_put_le64(data + QID_FEATURES_OFF, 0);
+     * changes a ring layout we would then have to decode differently.
+     *
+     * Except, with [rx] header_split = on, header split on an Rx queue and
+     * the doubled completion it reports through.  comp_sz stays the base
+     * size: the driver doubles it itself, as it does for a timestamp. */
+    ernic_put_le64(data + QID_FEATURES_OFF,
+                   qtype == IONIC_QTYPE_RXQ && emu->profile.rx.header_split
+                       ? IONIC_RXQ_FEATURES_HDS
+                       : 0);
 #undef QID_SG_DESC_STRIDE_OFF
 #undef QID_MAX_SG_ELEMS_OFF
 #undef QID_SG_DESC_SZ_OFF
@@ -1728,7 +1745,8 @@ void ionic_eth_emu_handle_q_init(struct ionic_eth_emu *emu, const uint8_t *cmd,
      */
     /* Remaining ionic_q_init_cmd fields (packed): intr_index le16 @14,
      * flags le16 @16, cos @18, ring_size @19 (log2 depth), ring_base le64
-     * @20, cq_ring_base le64 @28, sg_ring_base le64 @36. */
+     * @20, cq_ring_base le64 @28, sg_ring_base le64 @36, rsvd2[12] @44,
+     * features le64 @56. */
 #define Q_INIT_TYPE_OFF         4
 #define Q_INIT_VER_OFF          5
 #define Q_INIT_INDEX_OFF        8
@@ -1738,6 +1756,7 @@ void ionic_eth_emu_handle_q_init(struct ionic_eth_emu *emu, const uint8_t *cmd,
 #define Q_INIT_RING_BASE_OFF    20
 #define Q_INIT_CQ_RING_BASE_OFF 28
 #define Q_INIT_SG_RING_BASE_OFF 36
+#define Q_INIT_FEATURES_OFF     56
     uint8_t qtype = cmd[Q_INIT_TYPE_OFF];
     uint8_t ver = cmd[Q_INIT_VER_OFF];
     uint32_t index = ernic_get_le32(cmd + Q_INIT_INDEX_OFF);
@@ -1747,6 +1766,12 @@ void ionic_eth_emu_handle_q_init(struct ionic_eth_emu *emu, const uint8_t *cmd,
     uint64_t ring_base = ernic_get_le64(cmd + Q_INIT_RING_BASE_OFF);
     uint64_t cq_ring_base = ernic_get_le64(cmd + Q_INIT_CQ_RING_BASE_OFF);
     uint64_t sg_ring_base = ernic_get_le64(cmd + Q_INIT_SG_RING_BASE_OFF);
+    /* Read only for an Rx queue with [rx] header_split = on, which offers
+     * some: any other queue's are ignored, as they always were. */
+    bool rx_features = qtype == IONIC_QTYPE_RXQ && emu->profile.rx.header_split;
+    uint64_t features =
+        rx_features ? ernic_get_le64(cmd + Q_INIT_FEATURES_OFF) : 0;
+    bool sg = (flags & IONIC_QINIT_F_SG) != 0 && sg_ring_base != 0;
 
     /* ring_size is the guest's exponent, and isn't checked until further
      * down, so it is logged as one rather than shifted by. */
@@ -1768,9 +1793,31 @@ void ionic_eth_emu_handle_q_init(struct ionic_eth_emu *emu, const uint8_t *cmd,
          * a way the Tx path would misread.  The other queue types have one
          * layout, and their version is not looked at. */
         status = IONIC_RC_EVERSION;
+    } else if ((features & ~IONIC_RXQ_FEATURES_HDS) != 0) {
+        /* A feature Q_IDENTIFY never offered. */
+        status = IONIC_RC_ENOSUPP;
+    } else if (features != 0 && (features != IONIC_RXQ_FEATURES_HDS || !sg)) {
+        /* Header split reports through the doubled completion and puts the
+         * payload in SG elements, so it comes with both or not at all: a
+         * queue with half of that would be read by a rule the driver did
+         * not mean. */
+        status = IONIC_RC_EINVAL;
     }
 
+    if (status != IONIC_RC_SUCCESS && rx_features) {
+        vfu_log(emu->vfu_ctx, LOG_ERR,
+                "ionic_eth_emu: Q_INIT qtype=%u ver=%u index=%" PRIu32
+                " depth=2^%u features=%#" PRIx64
+                " refused (qtype below %d, index below %" PRIu32
+                ", depth at most 2^%u, Rx features 0 or %#" PRIx64
+                " with an SG ring)",
+                qtype, ver, index, ring_size, features, IONIC_QTYPE_ETH_MAX,
+                eth_qcount(emu), ETH_Q_MAX_RING_SIZE, IONIC_RXQ_FEATURES_HDS);
+        comp[0] = status;
+        return;
+    }
     if (status != IONIC_RC_SUCCESS) {
+        /* The features were not read, so they are not a rule to quote. */
         vfu_log(emu->vfu_ctx, LOG_ERR,
                 "ionic_eth_emu: Q_INIT qtype=%u ver=%u index=%" PRIu32
                 " depth=2^%u refused (qtype below %d, index below %" PRIu32
@@ -1789,8 +1836,9 @@ void ionic_eth_emu_handle_q_init(struct ionic_eth_emu *emu, const uint8_t *cmd,
         .sg_ring_base = sg_ring_base,
         /* A queue that names no SG ring has none, whatever its flags say:
          * its lists are not read from where guest memory starts. */
-        .sg = (flags & IONIC_QINIT_F_SG) != 0 && sg_ring_base != 0,
+        .sg = sg,
         .ver = ver,
+        .hds = features == IONIC_RXQ_FEATURES_HDS,
         .depth = (uint16_t)(1U << ring_size),
         /* ionic_cq_init() starts with done_color = 1. */
         .cq_color = 1,
@@ -2508,22 +2556,78 @@ struct eth_rx_buf {
     uint16_t len;
 };
 
+/* struct ionic_rxq_desc: opcode@0, rsvd[5], len le16 @6, addr le64 @8.
+ * The opcode is IONIC_RXQ_DESC_OPCODE_SIMPLE (0) or _SG (1). */
+#define RXQ_DESC_OPCODE_OFF    0
+#define RXQ_DESC_LEN_OFF       6
+#define RXQ_DESC_ADDR_OFF      8
+#define RXQ_DESC_OPCODE_SIMPLE 0U
+#define RXQ_DESC_OPCODE_SG     1U
+
+/* struct ionic_rxq_sg_elem: addr le64 @0, len le16 @8, rsvd[3]. */
+#define RXQ_SG_ELEM_ADDR_OFF 0
+#define RXQ_SG_ELEM_LEN_OFF  8
+
+/*
+ * Gather into @bufs, from its second entry on, the elements of SG list @sg
+ * that @len bytes fill, each to its length before the next.  The driver
+ * zeroes the element after the last one it posts, so a zero-length element
+ * ends the list.  Returns how many, or -1 if they do not hold @len bytes.
+ */
+static int eth_rx_sg_bufs(const uint8_t sg[RXQ_SG_DESC_SIZE], size_t len,
+                          struct eth_rx_buf bufs[1 + RXQ_SG_MAX_ELEMS])
+{
+    size_t room = 0;
+    int n = 0;
+
+    for (size_t i = 0; i < RXQ_SG_MAX_ELEMS && room < len; i++) {
+        const uint8_t *e = sg + (i * RXQ_SG_ELEM_SIZE);
+        uint16_t elen = ernic_get_le16(e + RXQ_SG_ELEM_LEN_OFF);
+        if (!elen) {
+            break;
+        }
+        n++;
+        bufs[n].addr = ernic_get_le64(e + RXQ_SG_ELEM_ADDR_OFF);
+        bufs[n].len = elen;
+        room += elen;
+    }
+
+    return room >= len ? n : -1;
+}
+
 /*
  * Gather the buffers the descriptor at @q's head posts for a frame of @len
  * bytes into @bufs: the descriptor's own, then for an SG descriptor the
- * elements of its SG list in order, as many as the frame needs.  The driver
- * zeroes the element after the last one it posts, so a zero-length element
- * ends the list.
+ * elements of its SG list in order, as many as the frame needs.  Each is
+ * filled to its length before the next is started.
+ *
+ * @hdr_len is 0, or where the headers of a frame that may be split end, on
+ * a header-split queue.  The frame is split there if the descriptor is an
+ * SG descriptor, its own buffer has room for the headers and its SG
+ * elements for the rest: the first buffer is then gathered as @hdr_len
+ * bytes long, whatever the descriptor's length, and *@hds_flags is
+ * RXQ_COMP_HDS_F_SPLIT.  Otherwise the frame fills the buffers as on any
+ * queue, with RXQ_COMP_HDS_F_HBO if the headers were all that did not fit,
+ * and 0 if not.
  *
  * Returns how many buffers the frame fills, or a negative errno: -EFAULT if
  * the descriptor or its SG list can't be read, -EINVAL for an opcode the
  * device doesn't know or an SG descriptor on a queue set up without
  * scatter/gather, -EMSGSIZE if the frame doesn't fit.
+ *
+ * The SG list is read for a frame longer than the descriptor's own buffer,
+ * and for a frame with a payload that is to be split, however short: its
+ * payload belongs in the elements.  So a header-split queue returns -EFAULT
+ * for an unreadable list where a queue without would have put the same
+ * frame in the descriptor's buffer and never looked at the list.
  */
 static int eth_rx_bufs(const struct ionic_eth_emu *emu,
-                       const struct eth_queue *q, size_t len,
-                       struct eth_rx_buf bufs[1 + RXQ_SG_MAX_ELEMS])
+                       const struct eth_queue *q, size_t len, size_t hdr_len,
+                       struct eth_rx_buf bufs[1 + RXQ_SG_MAX_ELEMS],
+                       uint8_t *hds_flags)
 {
+    *hds_flags = 0;
+
     uint8_t desc[ETH_DESC_SIZE];
     if (ernic_dma_read(emu->dma, emu->vfu_ctx,
                        q->ring_base + ((uint64_t)q->head * ETH_DESC_SIZE), desc,
@@ -2531,13 +2635,6 @@ static int eth_rx_bufs(const struct ionic_eth_emu *emu,
         return -EFAULT;
     }
 
-    /* struct ionic_rxq_desc: opcode@0, rsvd[5], len le16 @6, addr le64 @8.
-     * The opcode is IONIC_RXQ_DESC_OPCODE_SIMPLE (0) or _SG (1). */
-#define RXQ_DESC_OPCODE_OFF    0
-#define RXQ_DESC_LEN_OFF       6
-#define RXQ_DESC_ADDR_OFF      8
-#define RXQ_DESC_OPCODE_SIMPLE 0U
-#define RXQ_DESC_OPCODE_SG     1U
     uint8_t opcode = desc[RXQ_DESC_OPCODE_OFF];
     if (opcode != RXQ_DESC_OPCODE_SIMPLE &&
         (opcode != RXQ_DESC_OPCODE_SG || !q->sg)) {
@@ -2546,7 +2643,19 @@ static int eth_rx_bufs(const struct ionic_eth_emu *emu,
 
     bufs[0].addr = ernic_get_le64(desc + RXQ_DESC_ADDR_OFF);
     bufs[0].len = ernic_get_le16(desc + RXQ_DESC_LEN_OFF);
-    if (len <= bufs[0].len) {
+
+    /* Only an SG descriptor has anywhere else to put a payload. */
+    bool split = hdr_len != 0 && opcode == RXQ_DESC_OPCODE_SG;
+    if (split && hdr_len > bufs[0].len) {
+        *hds_flags = RXQ_COMP_HDS_F_HBO;
+        split = false;
+    }
+    if (split && hdr_len == len) {
+        /* Nothing but headers: no element is used, so none is read. */
+        *hds_flags = RXQ_COMP_HDS_F_SPLIT;
+        return 1;
+    }
+    if (!split && len <= bufs[0].len) {
         return 1;
     }
     if (opcode != RXQ_DESC_OPCODE_SG) {
@@ -2564,24 +2673,23 @@ static int eth_rx_bufs(const struct ionic_eth_emu *emu,
         return -EFAULT;
     }
 
-    /* struct ionic_rxq_sg_elem: addr le64 @0, len le16 @8, rsvd[3]. */
-#define RXQ_SG_ELEM_ADDR_OFF 0
-#define RXQ_SG_ELEM_LEN_OFF  8
-    size_t room = bufs[0].len;
-    int n = 1;
-    for (size_t i = 0; i < RXQ_SG_MAX_ELEMS && room < len; i++) {
-        const uint8_t *e = sg + (i * RXQ_SG_ELEM_SIZE);
-        uint16_t elen = ernic_get_le16(e + RXQ_SG_ELEM_LEN_OFF);
-        if (!elen) {
-            break;
+    if (split) {
+        /* @hdr_len is below @len here, and at most the buffer's length. */
+        int n = eth_rx_sg_bufs(sg, len - hdr_len, bufs);
+        if (n >= 0) {
+            bufs[0].len = (uint16_t)hdr_len;
+            *hds_flags = RXQ_COMP_HDS_F_SPLIT;
+            return 1 + n;
         }
-        bufs[n].addr = ernic_get_le64(e + RXQ_SG_ELEM_ADDR_OFF);
-        bufs[n].len = elen;
-        n++;
-        room += elen;
+        /* The payload alone does not fit the elements.  The whole frame
+         * may still fit them and the first buffer together. */
+        if (len <= bufs[0].len) {
+            return 1;
+        }
     }
 
-    return room >= len ? n : -EMSGSIZE;
+    int n = eth_rx_sg_bufs(sg, len - bufs[0].len, bufs);
+    return n >= 0 ? 1 + n : -EMSGSIZE;
 }
 
 static int eth_rx_deliver(const struct ionic_eth_emu *emu, struct eth_queue *q,
@@ -2591,16 +2699,27 @@ static int eth_rx_deliver(const struct ionic_eth_emu *emu, struct eth_queue *q,
         return -ENOBUFS; /* guest has posted no buffers */
     }
 
+    /* With [rx] header_split = on, every completion reports the frame's
+     * checksums, and a header-split queue is told where its headers end. */
+    struct ionic_eth_rx_info info = {0};
+    if (emu->profile.rx.header_split) {
+        ionic_eth_rx_parse(frame, len, &info);
+    }
+
     /* Nothing is written until the whole frame is known to fit, so a frame
      * that is dropped leaves the guest's buffers as they were. */
     struct eth_rx_buf bufs[1 + RXQ_SG_MAX_ELEMS];
-    int nbufs = eth_rx_bufs(emu, q, len, bufs);
+    uint8_t hds_flags;
+    int nbufs =
+        eth_rx_bufs(emu, q, len, q->hds && info.splittable ? info.hdr_len : 0,
+                    bufs, &hds_flags);
     if (nbufs < 0) {
         return nbufs;
     }
 
     /* Each buffer is filled before the next is started: the driver splits
-     * the frame by the same rule when it builds the skb. */
+     * the frame by the same rule when it builds the skb.  For a frame that
+     * was split, the first buffer ends where the headers do. */
     size_t off = 0;
     for (int i = 0; i < nbufs; i++) {
         size_t n = len - off < bufs[i].len ? len - off : bufs[i].len;
@@ -2611,25 +2730,32 @@ static int eth_rx_deliver(const struct ionic_eth_emu *emu, struct eth_queue *q,
         off += n;
     }
 
-    /* struct ionic_rxq_comp: status@0, num_sg_elems@1, comp_index le16 @2,
-     * rss_hash le32 @4, csum le16 @8, vlan_tci le16 @10, len le16 @12,
-     * csum_flags@14, pkt_type_color@15.  num_sg_elems counts the SG
-     * elements the frame filled, not the descriptor's own buffer.
-     * csum_flags stays zero so the driver marks the skb CHECKSUM_NONE and
-     * verifies in software. */
-#define RXQ_COMP_NUM_SG_ELEMS_OFF 1
-#define RXQ_COMP_COMP_INDEX_OFF   2
-#define RXQ_COMP_LEN_OFF          12
-    uint8_t comp[ETH_COMP_SIZE] = {0};
+    /* A header-split queue's entry is the extension, then the completion
+     * every Rx queue has (ionic_eth_emu_priv.h has both layouts).  With
+     * header split off csum and csum_flags stay zero, so the driver marks
+     * the skb CHECKSUM_NONE and verifies in software. */
+    uint8_t entry[RXQ_COMP_EXT_SIZE + ETH_COMP_SIZE] = {0};
+    size_t entry_size = ETH_COMP_SIZE;
+    uint8_t *comp = entry;
+    if (q->hds) {
+        /* What the first buffer holds, which is at most its 16-bit length */
+        size_t head = len < bufs[0].len ? len : bufs[0].len;
+
+        ernic_put_le16(entry + RXQ_COMP_EXT_HDS_HDR_LEN_OFF, (uint16_t)head);
+        entry[RXQ_COMP_EXT_HDS_FLAGS_OFF] = hds_flags;
+        entry_size += RXQ_COMP_EXT_SIZE;
+        comp += RXQ_COMP_EXT_SIZE;
+    }
     comp[RXQ_COMP_NUM_SG_ELEMS_OFF] = (uint8_t)(nbufs - 1);
     ernic_put_le16(comp + RXQ_COMP_COMP_INDEX_OFF, q->head);
+    ernic_put_be16(comp + RXQ_COMP_CSUM_OFF, info.csum);
     ernic_put_le16(comp + RXQ_COMP_LEN_OFF, (uint16_t)len);
+    comp[RXQ_COMP_CSUM_FLAGS_OFF] = info.csum_flags;
     comp[ETH_COMP_SIZE - 1] = q->cq_color ? (uint8_t)ADMIN_COMP_COLOR_MASK : 0;
 
     if (ernic_dma_write(emu->dma, emu->vfu_ctx,
-                        q->cq_ring_base +
-                            ((uint64_t)q->cq_index * ETH_COMP_SIZE),
-                        comp, sizeof(comp)) < 0) {
+                        q->cq_ring_base + ((uint64_t)q->cq_index * entry_size),
+                        entry, entry_size) < 0) {
         return -EIO;
     }
 

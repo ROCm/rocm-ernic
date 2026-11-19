@@ -19,6 +19,9 @@
  *   [stats]
  *   interval_ms = 100
  *
+ *   [rx]
+ *   header_split = on
+ *
  * The built-in "compat" profile is today's device, byte for byte, and is
  * always the base.  Each --nic-profile layers a built-in profile (a bare
  * name) or a file (a name with a '/' or ending in ".ini") on top, key by
@@ -36,6 +39,7 @@
 #ifndef IONIC_PROFILE_H
 #define IONIC_PROFILE_H
 
+#include <stdbool.h>
 #include <stddef.h>
 #include <stdint.h>
 
@@ -124,6 +128,10 @@ struct ionic_profile {
     struct {
         uint32_t interval_ms;
     } stats;
+    struct {
+        /* Offer the prototype Rx header split, and report Rx checksums */
+        bool header_split;
+    } rx;
     char chain[IONIC_PROFILE_CHAIN_MAX];
 };
 

@@ -132,8 +132,9 @@ byte for byte.
 
 ``--nic-profile`` can be given more than once. Each one
 names either a built-in profile (a bare name: ``compat``,
-``small-vm``, ``generic-100g``, ``generic-400g``) or a file
-(a name containing a ``/`` or ending in ``.ini``). The layers
+``small-vm``, ``generic-100g``, ``generic-400g``,
+``header-split``) or a file (a name containing a ``/`` or
+ending in ``.ini``). The layers
 apply in order on top of ``compat``. A profile is an ini
 file:
 
@@ -225,6 +226,13 @@ device shape.
      - MSI-X vectors the device advertises. ``auto`` is
        1 + ``queues.eth`` + ``queues.rdma_eqs``, enough for
        every queue and EQ to have its own
+   * - ``rx.header_split``
+     - ``off``, ``on``
+     - ``off``
+     - ``on`` offers the prototype receive header split to a
+       driver that asks for it, and reports receive checksums
+       to every driver, so ``ethtool -k`` shows
+       ``rx-checksumming`` on; see `Receive header split`_
 
 The built-in profiles:
 
@@ -246,6 +254,9 @@ The built-in profiles:
    * - ``generic-400g``
      - 64 queues, 32 EQs, ``auto`` (97) vectors, 400 Gb/s
        fiber
+   * - ``header-split``
+     - ``rx.header_split = on`` and nothing else, so it
+       layers on any of the others
 
 The guest driver (``ionic_lif_size()``) wants one vector for
 the admin and notify queues, one per queue pair and one per
@@ -365,7 +376,8 @@ The driver asks for offloads with ``LIF_SETATTR`` and enables
 those the completion repeats. The emulated LIF grants transmit
 scatter-gather, the transmit checksum, and TCP segmentation
 over IPv4 and IPv6 with ECN, when the driver asks for them, and
-nothing else, so the guest's ``ethtool -k`` shows
+nothing else (but the receive checksum, with
+``rx.header_split = on``), so the guest's ``ethtool -k`` shows
 ``scatter-gather``, ``tx-checksum-ip-generic``,
 ``tx-tcp-segmentation``, ``tx-tcp6-segmentation`` and
 ``tx-tcp-ecn-segmentation`` on. ``ethtool -K`` turns each off
@@ -452,11 +464,143 @@ have been sent, the rest are not, and the chain counts once.
 
 .. note::
 
-   Receive checksum and hash, VLAN insertion, stripping and
-   filtering, and segmentation through tunnels are not
-   offered, so the guest's stack does those itself. Receive
-   scatter-gather is not an offload: the driver posts an SG
-   list whenever a frame may not fit in one buffer.
+   Receive hash, VLAN insertion, stripping and filtering,
+   and segmentation through tunnels are not offered, so the
+   guest's stack does those itself, and the receive checksum
+   too unless ``rx.header_split`` is ``on`` (see `Receive
+   header split`_). Receive scatter-gather is not an offload:
+   the driver posts an SG list whenever a frame may not fit
+   in one buffer.
+
+Receive header split
+^^^^^^^^^^^^^^^^^^^^
+
+.. warning::
+
+   This is a prototype, off by default. No ionic firmware
+   has receive header split, and the queue feature bit, the
+   completion layout and the flags below were made up so
+   that a driver under development has a device to run
+   against. They are not an ionic device interface, may
+   change, and say nothing about what real hardware will do.
+
+With ``rx.header_split = on`` in the NIC profile
+(``--nic-profile header-split``), the device can put a TCP
+segment's headers in one guest buffer and its payload in
+others, which is what a driver needs in order to receive
+into memory it cannot read (devmem TCP): the stack reads the
+headers and never the payload. The mode does three things,
+and is fixed for the life of the server. With it off, the
+device does none of them and is byte for byte the device
+described above.
+
+Receive checksum
+   The LIF grants ``IONIC_ETH_HW_RX_CSUM``, and every receive
+   completion, on every queue, reports the frame's checksum
+   status whether or not the driver asked for the feature.
+   ``csum_flags`` has ``CALC`` for any frame of 14 bytes or
+   more, and ``csum`` is then the ones-complement sum, not
+   inverted, of the frame from byte 14 to its end, VLAN tags
+   and padding included, stored high byte first. An IPv4
+   header behind at most two VLAN tags adds ``IP_OK`` or
+   ``IP_BAD``. TCP or UDP directly behind an unfragmented
+   IPv4 header with a good checksum, or behind an IPv6
+   header with no extension header, adds ``TCP_OK``,
+   ``TCP_BAD``, ``UDP_OK`` or ``UDP_BAD`` if the IP header's
+   length puts all of it inside the frame; the checksum is
+   taken over that length, so padding does not count. A UDP
+   checksum of zero adds neither flag, and nor does a UDP
+   length that disagrees with the IP header's. A good TCP
+   segment over IPv4 has ``csum_flags`` ``0x91``, over IPv6
+   ``0x81``; a good UDP datagram ``0x94`` and ``0x84``.
+   ``VLAN``, ``vlan_tci``, ``rss_hash`` and the packet type
+   stay zero.
+
+Negotiation
+   ``Q_IDENTIFY`` of the receive queue reports ``features``
+   ``0x20020``: ``IONIC_Q_F_2X_CQ_DESC`` (bit 5) and
+   ``IONIC_RXQ_F_HDS`` (bit 17, which ``ionic_if.h`` does not
+   have). ``comp_sz`` stays 16. A driver asks for header
+   split on a queue with exactly those two bits in
+   ``Q_INIT``'s ``features`` (the le64 at byte 56), together
+   with ``IONIC_QINIT_F_SG`` and an ``sg_ring_base`` other
+   than 0. ``features`` of 0 gives a queue without header
+   split. Any other bit is refused with ``IONIC_RC_ENOSUPP``,
+   and one of the two bits without the other, or both without
+   an SG ring, with ``IONIC_RC_EINVAL``; a refused ``Q_INIT``
+   leaves the queue as it was. The choice is the queue's
+   until its next ``Q_INIT``, and queues of one LIF may
+   differ. With the mode off ``Q_INIT`` does not look at
+   ``features``, as before.
+
+Completion
+   A header-split queue's completion ring has 32-byte
+   entries, as many as the descriptor ring. The second 16
+   bytes are the ``struct ionic_rxq_comp`` every receive
+   queue has, so the colour is bit 7 of byte 31. The first
+   16 are:
+
+   .. code-block:: text
+
+      [0:1]   le16 hds_hdr_len  frame bytes in the descriptor's own buffer
+      [2]     hds_flags         0x01 SPLIT, 0x02 HBO
+      [3:7]   reserved, zero
+      [8:15]  zero (where a hardware timestamp would be)
+
+   ``hds_hdr_len`` is set on every completion. The frame is
+   always the first ``hds_hdr_len`` bytes of the descriptor's
+   buffer followed by ``num_sg_elems`` SG elements, each full
+   but the last, so a driver builds the packet from those two
+   numbers and never parses it to find the split.
+
+What is split
+   A frame is split if it is TCP over IPv4 (any header
+   length, not a fragment, a good header checksum) or over
+   IPv6 with no extension header, behind at most two VLAN
+   tags; the IP header's length ends exactly where the frame
+   does; the TCP checksum is good; and the TCP header length
+   is at least 20 bytes and inside the segment. The descriptor
+   must be an ``SG`` descriptor whose own buffer holds the
+   headers, Ethernet through the TCP options, and whose SG
+   elements hold the payload. Then the headers alone go to the
+   descriptor's buffer, the payload to the elements, and
+   ``hds_flags`` is ``SPLIT``. A segment with no payload (a
+   SYN, an ACK that was not padded) is ``SPLIT`` with no
+   element used. ``SPLIT`` always comes with ``TCP_OK``, so
+   the driver can tell the stack the checksum is verified
+   without reading the payload.
+
+   Every other frame fills the descriptor's buffer and then
+   the elements, exactly as on a queue without header split,
+   with ``SPLIT`` clear: UDP and every other protocol,
+   fragments, IPv6 with any extension header, three or more
+   VLAN tags, frames padded past the IP length (a short ACK
+   padded to 60 bytes) or cut short of it, and frames with a
+   wrong IPv4 or TCP checksum. So does a frame that would be
+   split but whose payload does not fit the elements while
+   the whole frame fits the buffers as they are, and one whose
+   headers are longer than the descriptor's buffer; the
+   latter has ``HBO`` set. A driver that posted unreadable
+   payload buffers must drop a completion with ``SPLIT`` clear
+   and ``num_sg_elems`` above 0: the device does not avoid
+   producing it. A frame the buffers cannot hold is dropped
+   and counted in ``rx_desc_data_error``, as on any queue.
+
+   One frame is dropped here that a queue without header
+   split would deliver. A frame that is to be split and has a
+   payload has its SG list read even if all of it would fit
+   the descriptor's buffer, because the payload belongs in
+   the elements. If the list's address is not readable guest
+   memory, the frame is dropped and counted in
+   ``rx_desc_fetch_error``; a queue without header split
+   reads the list only for a frame longer than the
+   descriptor's buffer. A segment with no payload reads no
+   list on either.
+
+A driver that does not know the feature never sets the bits,
+and sees only the receive checksum: its queues, buffers and
+the rest of each completion are as with the mode off. Which
+queue a frame lands on is not changed by the mode.
 
 Statistics
 ^^^^^^^^^^
@@ -850,8 +994,10 @@ Testing
 starts on each backend, announces ``1dd8:1002`` with
 subsystem ``1dd8:5400``, reports the expected BAR and MSI-X
 geometry, shuts down cleanly on ``SIGTERM``, attaches to a
-TAP when one is available, comes up with no extra flags, and
-writes the full counter set to the stats file.
+TAP when one is available, comes up with no extra flags,
+reports receive header split under ``--nic-profile
+header-split`` and only then, and writes the full counter set
+to the stats file.
 
 The TAP attach check is skipped unless ``ERNIC_TEST_TAP``
 names an existing interface owned by the current user,

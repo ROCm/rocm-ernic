@@ -1788,6 +1788,10 @@ static void report_startup(const rocm_ernic_dev_t *dev,
                          " RDMA EQs, %" PRIu32 " MSI-X vectors",
                          dev->profile.queues.eth, dev->profile.queues.rdma_eqs,
                          ionic_profile_intr_vectors(&dev->profile));
+    if (dev->profile.rx.header_split) {
+        ernic_startup_report("  NIC Rx header split: on (a prototype no ionic "
+                             "firmware has), with Rx checksum reporting");
+    }
     if (ionic_profile_warning(&dev->profile, warning, sizeof(warning))) {
         ernic_startup_report("  NIC profile warning: %s", warning);
     }

@@ -56,7 +56,13 @@ static const char compat_ini[] =
     "# How often the statistics blocks in guest memory are rewritten, 10 to "
     "60000\n"
     "# ms.  The driver never asks, so this is how stale `ip -s link` can be.\n"
-    "interval_ms = 1000\n";
+    "interval_ms = 1000\n"
+    "\n"
+    "[rx]\n"
+    "# off or on.  On offers the prototype Rx header split, which no real "
+    "ionic\n"
+    "# firmware has, and reports Rx checksums; see docs/ionic.rst.\n"
+    "header_split = off\n";
 
 /* profiles/small-vm.ini */
 static const char small_vm_ini[] =
@@ -96,6 +102,16 @@ static const char generic_400g_ini[] =
     "eth = 64\n"
     "intr_vectors = auto\n";
 
+/* profiles/header-split.ini */
+static const char header_split_ini[] =
+    "# header-split: the prototype Rx header split, which no real ionic "
+    "firmware\n"
+    "# has, and Rx checksum reporting.  For developing a driver against; see\n"
+    "# docs/ionic.rst.\n"
+    "\n"
+    "[rx]\n"
+    "header_split = on\n";
+
 static const struct {
     const char *name;
     const char *text;
@@ -104,6 +120,7 @@ static const struct {
     {"small-vm", small_vm_ini},
     {"generic-100g", generic_100g_ini},
     {"generic-400g", generic_400g_ini},
+    {"header-split", header_split_ini},
 };
 
 const char *ionic_profile_builtin(const char *name)
@@ -121,5 +138,5 @@ const char *ionic_profile_builtin(const char *name)
 
 const char *ionic_profile_builtin_names(void)
 {
-    return "compat, small-vm, generic-100g, generic-400g";
+    return "compat, small-vm, generic-100g, generic-400g, header-split";
 }

@@ -16,9 +16,11 @@
 #ifndef IONIC_ETH_EMU_FAKES_H
 #define IONIC_ETH_EMU_FAKES_H
 
+#include <stdarg.h>
 #include <stdbool.h>
 #include <stddef.h>
 #include <stdint.h>
+#include <stdio.h>
 #include <string.h>
 #include <sys/mman.h>
 #include <sys/types.h>
@@ -52,8 +54,10 @@ static unsigned int g_write_attempts;
 /* Refuse this many of the next DMA write mappings, as an unmapped GPA would. */
 static unsigned int g_fail_writes;
 
-/* LOG_WARNING (or worse) messages logged since the test last cleared it. */
+/* LOG_WARNING (or worse) messages logged since the test last cleared it,
+ * and the text of the last one, cut short if it is longer than this. */
 static unsigned int g_nwarnings;
+static char g_last_warning[512];
 
 /* What ionic_eth_net_send() returns, and how often it was called. */
 static int g_net_send_rc;
@@ -134,9 +138,13 @@ void vfu_sgl_mark_dirty(vfu_ctx_t *vfu_ctx, dma_sg_t *sgl, size_t cnt)
 void vfu_log(vfu_ctx_t *vfu_ctx, int level, const char *fmt, ...)
 {
     (void)vfu_ctx;
-    (void)fmt;
     if (level <= LOG_WARNING) {
+        va_list ap;
+
         g_nwarnings++;
+        va_start(ap, fmt);
+        (void)vsnprintf(g_last_warning, sizeof(g_last_warning), fmt, ap);
+        va_end(ap);
     }
 }
 

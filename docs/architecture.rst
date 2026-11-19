@@ -379,7 +379,9 @@ part of any one path:
   with copies in ``profiles/``) is read once at startup. The
   front end consults it wherever it describes itself to the
   driver: the MSI-X table size, IDENTIFY, LIF_IDENTIFY,
-  PORT_INIT, and LIF_INIT.
+  PORT_INIT, and LIF_INIT. One key, ``rx.header_split``, also
+  changes what it does: the receive queue features Q_IDENTIFY
+  offers and Q_INIT takes, and what the receive path writes.
 - **Fault injection** (``--inject``,
   ``src/ionic/ionic_fault.c``) makes chosen events fail, so a
   test can check how the guest copes: a STATS_VALS admin
@@ -1644,6 +1646,9 @@ Where to Look in the Source
    * - ``src/ionic/ionic_eth_emu.c``
      - Registers, device commands, LIF, Ethernet queues,
        interrupt controller, doorbell decode, the CMB
+   * - ``src/ionic/ionic_eth_rx.c``
+     - Receive offloads of the header-split prototype: a
+       frame's checksum status, and where its headers end
    * - ``src/ionic/ionic_eth_tx.c``
      - Transmit offloads: the ``CSUM_PARTIAL`` checksum, and
        parsing a TSO chain's headers and rewriting them for

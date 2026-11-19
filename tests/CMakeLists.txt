@@ -31,6 +31,7 @@ set(ERNIC_TEST_IONIC_ETH_SOURCES
     ${PROJECT_SOURCE_DIR}/src/ernic_gnu.c
     ${PROJECT_SOURCE_DIR}/src/ernic_shm.c
     ${PROJECT_SOURCE_DIR}/src/ionic/ionic_eth_emu.c
+    ${PROJECT_SOURCE_DIR}/src/ionic/ionic_eth_rx.c
     ${PROJECT_SOURCE_DIR}/src/ionic/ionic_eth_tx.c
     ${PROJECT_SOURCE_DIR}/src/ionic/ionic_profile.c
     ${PROJECT_SOURCE_DIR}/src/ionic/ionic_profiles.c
@@ -513,6 +514,17 @@ ernic_add_test_program(test_ionic_queues
 ernic_add_test_program(test_ionic_eth_tx
     SOURCES
         test_ionic_eth_tx.c
+        ${ERNIC_TEST_IONIC_ETH_SOURCES}
+    HEADER_DEPS vfio-user ibverbs
+)
+
+# ionic Ethernet Rx header-split test. It links the eth emulator, posts Rx
+# descriptors and SG lists in a fake guest memory, hands the device the
+# frames in golden/ionic_eth_rx_frames.h, and compares all of guest memory
+# with what the frame's buffers and completion must hold.
+ernic_add_test_program(test_ionic_eth_rx
+    SOURCES
+        test_ionic_eth_rx.c
         ${ERNIC_TEST_IONIC_ETH_SOURCES}
     HEADER_DEPS vfio-user ibverbs
 )
@@ -1105,6 +1117,12 @@ ernic_add_unit_test(ionic-queues-unit test_ionic_queues TIMEOUT 30)
 # checksum and TSO descriptors turn into, byte for byte, and the features
 # and queue versions the driver negotiates first.
 ernic_add_unit_test(ionic-eth-tx-unit test_ionic_eth_tx TIMEOUT 30)
+
+# ionic Ethernet Rx header-split unit test: with [rx] header_split = on,
+# where each kind of frame is split and the checksum status its completion
+# reports, byte for byte, and the queue features the driver negotiates
+# first; with it off, that the device does none of it.
+ernic_add_unit_test(ionic-eth-rx-unit test_ionic_eth_rx TIMEOUT 30)
 
 # ionic QUERY_QP unit test: asserts the command writes the QP's real state
 # into the side buffers the driver reads, rather than leaving them zeroed and

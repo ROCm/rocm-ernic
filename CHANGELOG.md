@@ -200,6 +200,31 @@
   the Tx queue stop in `ionic_tx()`, which v7.2.15 has and v7.2.6 does
   not. The `ionic-patches` CI job checks that the series applies. See the
   directory's `README.md`.
+* **Experimental: a receive header-split mode for the emulated ionic
+  NIC, with receive checksum reporting**, for developing a driver that
+  receives into device memory (devmem TCP). It is off by default, and the
+  device is then unchanged. Turn it on with `--nic-profile header-split`,
+  or `header_split = on` in the new `[rx]` section of a NIC profile. No
+  ionic firmware has receive header split: the queue feature bit
+  (`IONIC_RXQ_F_HDS`, bit 17), the 32-byte completion and its flags were
+  made up for this, and are not an ionic device interface. With the mode
+  on, the LIF grants `IONIC_ETH_HW_RX_CSUM` and every receive completion
+  reports the frame's checksum status, so an unmodified guest shows
+  `rx-checksumming` on in `ethtool -k` and is otherwise unaffected;
+  `Q_IDENTIFY` offers header split on the Rx queue, and a queue whose
+  `Q_INIT` asks for it has the headers of each good TCP segment put in
+  the descriptor's buffer and its payload in the scatter-gather elements,
+  with the header length in the completion. In that mode an Rx queue
+  `Q_INIT` with feature bits the device does not offer is refused
+  (`IONIC_RC_ENOSUPP`, or `IONIC_RC_EINVAL` for half of the pair or no SG
+  ring) where the features used to be ignored. The server reports the
+  mode at startup. See "Receive header split" in `docs/ionic.rst`.
+* NIC profiles have an `[rx]` section with one key, `header_split`
+  (`off` or `on`; `off` in `compat`), and there is a built-in
+  `header-split` profile that sets it. `--print-profile` now prints the
+  section, and the profile hash in the startup log and the stats file's
+  `nic_profile` line changes for every profile, since it covers the new
+  key.
 * **The Ansible collection is published as a GitHub release**, tagged
   `ernic-ansible-v<VERSION>`, with the built collection attached, when
   that tag is pushed. Install it with `ansible-galaxy collection install`

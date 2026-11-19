@@ -209,6 +209,7 @@ set(IONIC_EMU_SOURCES
     src/ernic_dma.c
     src/ionic/ionic_eth_emu.c
     src/ionic/ionic_eth_net.c
+    src/ionic/ionic_eth_rx.c
     src/ionic/ionic_eth_tx.c
     src/ionic/ionic_profile.c
     src/ionic/ionic_profiles.c

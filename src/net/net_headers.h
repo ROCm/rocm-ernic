@@ -5,8 +5,9 @@
  * endpoint; the IPv6 header and the RoCEv2 global route header, for the
  * ionic datapath; and the Internet checksum, which the ionic datapath also
  * uses to build a GRH.  The emulated NIC's Tx offloads (ionic_eth_tx.h) use
- * the Ethernet, IPv4, IPv6 and TCP headers and the checksum.  Every
- * multi-byte field is big-endian.
+ * the Ethernet, IPv4, IPv6 and TCP headers and the checksum, and its Rx
+ * offloads (ionic_eth_rx.h) those and the UDP header.  Every multi-byte
+ * field is big-endian.
  *
  * Offsets are spelled out as macros rather than packed structs: a frame is
  * a byte buffer, a header in it can start at any alignment, and a struct
@@ -253,6 +254,22 @@ static inline void ip_addr_str(uint32_t addr, char *out)
 #define TCP_FLAG_CWR 0x80
 
 #define TCP_DATA_OFFSET_SHIFT 4 /* of the header length byte */
+
+/* -------------------------------------------------------------------------
+ * UDP header
+ *
+ *   [0:1]   be16 source port
+ *   [2:3]   be16 destination port
+ *   [4:5]   be16 length, of the header and the data
+ *   [6:7]   be16 checksum; over IPv4, zero means none was computed
+ * -------------------------------------------------------------------------
+ */
+
+#define UDP_HDR_LEN      8
+#define UDP_SRC_PORT_OFF 0
+#define UDP_DST_PORT_OFF 2
+#define UDP_LEN_OFF      4
+#define UDP_CHECKSUM_OFF 6
 
 /* -------------------------------------------------------------------------
  * RoCEv2 global route header

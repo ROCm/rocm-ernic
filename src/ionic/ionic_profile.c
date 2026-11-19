@@ -45,6 +45,7 @@ enum key_kind {
     KEY_RDMA_EQS,
     KEY_INTR_VECTORS,
     KEY_STATS_INTERVAL,
+    KEY_RX_HEADER_SPLIT,
 };
 
 static const struct schema_key {
@@ -62,15 +63,17 @@ static const struct schema_key {
     {"queues", "rdma_eqs", KEY_RDMA_EQS},
     {"queues", "intr_vectors", KEY_INTR_VECTORS},
     {"stats", "interval_ms", KEY_STATS_INTERVAL},
+    {"rx", "header_split", KEY_RX_HEADER_SPLIT},
 };
 
 #define SCHEMA_COUNT (sizeof(schema) / sizeof(schema[0]))
 
-static const char *const known_groups = "identity, link, queues, stats";
+static const char *const known_groups = "identity, link, queues, stats, rx";
 
 static const char *const asic_names[] = {"none", "capri", "elba", "giglio",
                                          "salina"};
 static const char *const xcvr_names[] = {"copper", "fiber", "none"};
+static const char *const switch_names[] = {"off", "on"};
 
 /* IONIC_SPEED_* in the kernel's ionic_if.h, in Mbps. */
 static const uint32_t speeds[] = {1000,  10000,  25000,  40000,
@@ -120,6 +123,7 @@ void ionic_profile_defaults(struct ionic_profile *p)
     p->queues.rdma_eqs = 32;
     p->queues.intr_vectors = 32;
     p->stats.interval_ms = 1000;
+    p->rx.header_split = false;
     memcpy(p->chain, "compat", sizeof("compat"));
 }
 
@@ -677,6 +681,16 @@ static int set_value(struct ionic_profile *q, const struct schema_key *k,
     case KEY_STATS_INTERVAL:
         return ionic_profile_set_stats_interval(q, raw, where, err, err_len);
 
+    case KEY_RX_HEADER_SPLIT:
+        idx = pick_name(switch_names, N_ELEMS(switch_names), raw);
+        if (idx < 0) {
+            ernic_set_err(err, err_len, "%s: '%.40s' is not one of off, on",
+                          where, raw);
+            return -1;
+        }
+        q->rx.header_split = idx != 0;
+        return 0;
+
     /* A schema[] row whose kind has no case above: a bug here, not in the
      * profile, but refused rather than silently ignored. */
     default:
@@ -983,12 +997,16 @@ static int format_values(const struct ionic_profile *p, char *buf, size_t len)
         "intr_vectors = %s\n"
         "\n"
         "[stats]\n"
-        "interval_ms = %" PRIu32 "\n",
+        "interval_ms = %" PRIu32 "\n"
+        "\n"
+        "[rx]\n"
+        "header_split = %s\n",
         name_or(asic_names, N_ELEMS(asic_names), p->identity.asic_type),
         (unsigned int)p->identity.asic_rev, p->identity.fw_version,
         p->link.speed_mbps,
         name_or(xcvr_names, N_ELEMS(xcvr_names), p->link.xcvr), p->link.mtu_max,
-        p->queues.eth, p->queues.rdma_eqs, vectors, p->stats.interval_ms);
+        p->queues.eth, p->queues.rdma_eqs, vectors, p->stats.interval_ms,
+        switch_names[p->rx.header_split ? 1 : 0]);
 }
 
 uint64_t ionic_profile_hash(const struct ionic_profile *p)

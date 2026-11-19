@@ -404,6 +404,61 @@ _Static_assert(RXQ_SG_DESC_SIZE == RXQ_SG_MAX_ELEMS * RXQ_SG_ELEM_SIZE,
 #define IONIC_QINIT_F_SG 0x04U
 
 /*
+ * Rx header split, which [rx] header_split = on offers.  It is a prototype:
+ * no ionic firmware has it, and every value here was made up for a driver
+ * under development to run against.
+ *
+ * A queue asks for it in Q_INIT's features with both bits below, which
+ * Q_IDENTIFY offers.  Its completion ring then has 32-byte entries, a
+ * struct ionic_rxq_comp behind 16 bytes that say where the device split
+ * the frame:
+ *
+ *   [0:1]   le16 hds_hdr_len: the frame bytes in the descriptor's own
+ *           buffer, on every completion
+ *   [2]     hds_flags (RXQ_COMP_HDS_F_*)
+ *   [3:7]   reserved, zero
+ *   [8:15]  le64 hwstamp, zero: where IONIC_RXQ_F_HWSTAMP, which is not
+ *           offered, would put a timestamp
+ *   [16:31] struct ionic_rxq_comp
+ */
+#define IONIC_Q_F_2X_CQ_DESC   (UINT64_C(1) << 5)  /* enum ionic_q_feature */
+#define IONIC_RXQ_F_HDS        (UINT64_C(1) << 17) /* not in ionic_if.h */
+#define IONIC_RXQ_FEATURES_HDS (IONIC_Q_F_2X_CQ_DESC | IONIC_RXQ_F_HDS)
+
+#define RXQ_COMP_EXT_SIZE 16U
+_Static_assert(RXQ_COMP_EXT_SIZE == ETH_COMP_SIZE,
+               "IONIC_Q_F_2X_CQ_DESC doubles the completion");
+#define RXQ_COMP_EXT_HDS_HDR_LEN_OFF 0U
+#define RXQ_COMP_EXT_HDS_FLAGS_OFF   2U
+/* The descriptor's buffer holds the frame's headers through TCP, exactly */
+#define RXQ_COMP_HDS_F_SPLIT 0x01U
+/* Not split, only because the headers are longer than that buffer */
+#define RXQ_COMP_HDS_F_HBO 0x02U
+
+/*
+ * struct ionic_rxq_comp:
+ *
+ *   [0]     status
+ *   [1]     num_sg_elems: the SG elements the frame filled, not counting
+ *           the descriptor's own buffer
+ *   [2:3]   le16 comp_index
+ *   [4:7]   le32 rss_hash
+ *   [8:9]   csum: with CALC in csum_flags, the ones-complement sum of the
+ *           frame from byte 14 on, high byte first.  ionic_if.h types it
+ *           __le16, but the driver hands le16_to_cpu() of it to the stack
+ *           as a __wsum, which holds a sum in the order of the wire.
+ *   [10:11] le16 vlan_tci
+ *   [12:13] le16 len: the whole frame
+ *   [14]    csum_flags (IONIC_RXQ_CSUM_F_* in ionic_eth_rx.h)
+ *   [15]    pkt_type_color: the colour in bit 7
+ */
+#define RXQ_COMP_NUM_SG_ELEMS_OFF 1U
+#define RXQ_COMP_COMP_INDEX_OFF   2U
+#define RXQ_COMP_CSUM_OFF         8U
+#define RXQ_COMP_LEN_OFF          12U
+#define RXQ_COMP_CSUM_FLAGS_OFF   14U
+
+/*
  * struct ionic_txq_desc, every field little-endian:
  *
  *   [0:7]   le64 cmd: flags in bits 3:0, the opcode in 7:4, the number of
@@ -441,9 +496,11 @@ _Static_assert(RXQ_SG_DESC_SIZE == RXQ_SG_MAX_ELEMS * RXQ_SG_ELEM_SIZE,
 
 /*
  * enum ionic_eth_hw_features, as LIF_SETATTR(FEATURES) negotiates them.
- * These are all the emulator has: no Rx checksum or hash, no VLAN insertion
- * or stripping, no TSO through a tunnel.
+ * These are all the emulator has: no Rx hash, no VLAN insertion or
+ * stripping, no TSO through a tunnel, and Rx checksum only with
+ * [rx] header_split = on, which adds it to the mask below.
  */
+#define IONIC_ETH_HW_RX_CSUM  (UINT64_C(1) << 4)
 #define IONIC_ETH_HW_TX_SG    (UINT64_C(1) << 5)
 #define IONIC_ETH_HW_TX_CSUM  (UINT64_C(1) << 7)
 #define IONIC_ETH_HW_TSO      (UINT64_C(1) << 8)
@@ -512,6 +569,10 @@ struct eth_queue {
      * at most TXQ_VERSION_MAX there, and whatever the driver sent elsewhere,
      * where nothing reads it. */
     uint8_t ver;
+    /* An Rx queue whose Q_INIT asked for header split: its completions are
+     * ETH_COMP_SIZE + RXQ_COMP_EXT_SIZE bytes.  Only with
+     * [rx] header_split = on, and then @sg is set too. */
+    bool hds;
     uint16_t depth;
     uint16_t head; /* next descriptor to consume */
     /* Last producer index the driver rang for.  The admin and Tx queues run
