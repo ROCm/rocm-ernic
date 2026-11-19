@@ -1,0 +1,20 @@
+# Copyright (c) Advanced Micro Devices, Inc. All rights reserved.
+#
+# SPDX-License-Identifier: MIT
+
+---
+minor_changes:
+  - >-
+    New optional ionic patch series ``files/patches/devmem-tx``, with
+    which a guest can bind a dma-buf to its ionic netdev for transmit and
+    send from it (devmem TCP).  It is experimental: a backport to
+    ``v7.2.6`` of an RFC that is not upstream, run between two guests of
+    this emulator but not on ionic hardware.  No role
+    applies it by default.  To have ``ernic_guest_setup`` build ionic with
+    it, add ``patches/devmem-tx`` to ``ernic_guest_ionic_extra_patches``,
+    after ``patches/p4`` if that is listed; a guest that also builds
+    ``ernic_p4.ko`` adds the directory to ``ernic_p4_dkms_patches_dirs``
+    too.  The guest needs a kernel with ``CONFIG_NET_DEVMEM`` and a
+    rocm-ernic server that grants transmit scatter-gather and checksum.
+    The series also carries upstream's fix to the Tx queue stop in
+    ``ionic_tx()``, which ``v7.2.15`` has and ``v7.2.6`` does not.

@@ -174,9 +174,10 @@ extra round trip at every size.
 
 TCP/IP over the emulated Ethernet LIF, for comparison:
 ``iperf3`` sustains 0.34 GB/s (2.7 Gbit/s) guest to guest,
-roughly an order of magnitude below RDMA at the same sizes. The
-LIF advertises no offloads, so the guest stack hands down linear
-skbs and every byte is copied.
+roughly an order of magnitude below RDMA at the same sizes. That
+was measured when the LIF had no offloads, so the guest stack
+handed down linear skbs of one MTU; it has not been measured
+again with the transmit offloads the LIF has now.
 
 Repeatability
 ~~~~~~~~~~~~~
@@ -220,10 +221,11 @@ Known Limitations
   zero and the connection can stall. Use a Mbit/s-scale cap or
   ``-u`` for a clean one.
 
-- **No Ethernet offloads:** the emulated LIF advertises no
-  checksum, TSO, or scatter-gather offload, so the guest stack
-  always hands down linear skbs. This costs transmit
-  throughput.
+- **Ethernet offloads:** the TCP row was measured when the
+  emulated LIF had no checksum, TSO, or scatter-gather offload.
+  It has the transmit ones now (see :doc:`ionic`) and still no
+  receive checksum offload, and the row has not been measured
+  again.
 
 - **Host sysctl required:** large-message bidirectional traffic
   over the TCP mesh needs ``net.core.wmem_max`` and

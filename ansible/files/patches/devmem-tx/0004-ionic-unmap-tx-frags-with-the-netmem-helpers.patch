@@ -1,0 +1,142 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Stephen Bates <sbates@raithlin.com>
+Date: Wed, 18 Nov 2026 19:00:58 -0500
+Subject: [PATCH] ionic: unmap Tx frags with the netmem helpers
+
+ionic maps skb frags with skb_frag_dma_map(), which already knows what to
+do with a net_iov frag: it returns the address the frag's owner mapped
+earlier and calls nothing in the DMA API. The unmap side is not
+symmetric. ionic_tx_desc_unmap_bufs() and the error unwind in
+ionic_tx_map_skb() pass every frag address to dma_unmap_page(), which is
+wrong for an address the driver did not map (netmem.rst: "The Driver must
+not pass the netmem dma_addr to any of the dma-mapping APIs directly").
+
+The driver has to remember, per buffer, whether there is anything to
+unmap. Two things about ionic decide how:
+
+ - The address can't be the marker. bnxt and gve store 0 for a net_iov
+   frag in the one copy of the address they keep, which they use only to
+   unmap. ionic reads buf_info->dma_addr back after mapping, to fill the
+   SG elements and to walk the buffers of a TSO skb.
+
+ - The marker has to be written for every frag by every writer. XDP
+   frames use the same tx_info[] slots as skbs and nothing clears bufs[]
+   when a descriptor completes, so a marker that only the skb path wrote
+   would be stale by the time an XDP_REDIRECT frame reuses the slot, and
+   the other way round.
+
+So add a DEFINE_DMA_UNMAP_ADDR() field next to dma_addr, in the way
+netmem.rst suggests. ionic_tx_map_skb() and the XDP_REDIRECT branch of
+ionic_xdp_post_frame() fill it with netmem_dma_unmap_addr_set(), which
+stores 0 for a net_iov frag and the address otherwise, and the XDP_TX
+branch stores 0, since that mapping belongs to the page pool. Both
+places that unmap frags then go through netmem_dma_unmap_page_attrs(),
+which skips an address of 0. The head buffer is not a frag and keeps its
+unconditional dma_unmap_single().
+
+With the field, struct ionic_tx_buf_info is back to the 24 bytes that
+struct ionic_buf_info took. Without CONFIG_NEED_DMA_MAP_STATE the field
+and the unmap calls on it compile away, which is fine since
+dma_unmap_page() does nothing in such a configuration.
+
+Nothing hands ionic a net_iov frag until the driver sets
+netdev->netmem_tx, so the only change in behaviour is the one the helper
+brings to every driver that uses it: a page frag that was really mapped
+at DMA address 0 is no longer unmapped.
+
+[ rocm-ernic: backport of patch 3/6 of the RFC series "ionic: support
+  netmem TX" (based on v7.4-rc3, not posted) to v7.2.6 with patches/srq
+  and patches/p4. The diff is unchanged; v7.2.15, which the module is
+  built against, has netmem_dma_unmap_addr_set() and
+  netmem_dma_unmap_page_attrs(). ]
+---
+ drivers/net/ethernet/pensando/ionic/ionic_dev.h  |  6 ++++++
+ drivers/net/ethernet/pensando/ionic/ionic_txrx.c | 18 ++++++++++++++----
+ 2 files changed, 20 insertions(+), 4 deletions(-)
+
+diff --git a/drivers/net/ethernet/pensando/ionic/ionic_dev.h b/drivers/net/ethernet/pensando/ionic/ionic_dev.h
+index 8df0b3a3c30c..a6086376fca7 100644
+--- a/drivers/net/ethernet/pensando/ionic/ionic_dev.h
++++ b/drivers/net/ethernet/pensando/ionic/ionic_dev.h
+@@ -210,8 +210,14 @@ struct ionic_buf_info {
+ 	u32 len;
+ };
+ 
++/* @dma_addr is what the device is given, for every buffer.  @unmap_addr is
++ * what dma_unmap_page() is given when a frag (bufs[1] and up) is released:
++ * the same address, or 0 for a frag whose mapping is not ours to undo.  The
++ * head (bufs[0]) is always unmapped with dma_unmap_single() on @dma_addr.
++ */
+ struct ionic_tx_buf_info {
+ 	dma_addr_t dma_addr;
++	DEFINE_DMA_UNMAP_ADDR(unmap_addr);
+ 	u32 len;
+ };
+ 
+diff --git a/drivers/net/ethernet/pensando/ionic/ionic_txrx.c b/drivers/net/ethernet/pensando/ionic/ionic_txrx.c
+index e27e2095190e..a4d176f6bf59 100644
+--- a/drivers/net/ethernet/pensando/ionic/ionic_txrx.c
++++ b/drivers/net/ethernet/pensando/ionic/ionic_txrx.c
+@@ -6,6 +6,7 @@
+ #include <linux/if_vlan.h>
+ #include <net/ip6_checksum.h>
+ #include <net/netdev_queues.h>
++#include <net/netmem.h>
+ #include <net/page_pool/helpers.h>
+ 
+ #include "ionic.h"
+@@ -354,6 +355,8 @@ static int ionic_xdp_post_frame(struct ionic_queue *q, struct xdp_frame *frame,
+ 				dma_sync_single_for_device(q->dev, dma_addr,
+ 							   skb_frag_size(frag),
+ 							   DMA_TO_DEVICE);
++				/* the page pool owns this mapping */
++				dma_unmap_addr_set(bi, unmap_addr, 0);
+ 			} else {
+ 				dma_addr = ionic_tx_map_frag(q, frag, 0,
+ 							     skb_frag_size(frag));
+@@ -361,6 +364,9 @@ static int ionic_xdp_post_frame(struct ionic_queue *q, struct xdp_frame *frame,
+ 					ionic_tx_desc_unmap_bufs(q, desc_info);
+ 					return -EIO;
+ 				}
++				netmem_dma_unmap_addr_set(skb_frag_netmem(frag),
++							  bi, unmap_addr,
++							  dma_addr);
+ 			}
+ 			bi->dma_addr = dma_addr;
+ 			bi->len = skb_frag_size(frag);
+@@ -1139,6 +1145,8 @@ static int ionic_tx_map_skb(struct ionic_queue *q, struct sk_buff *skb,
+ 		if (dma_addr == DMA_MAPPING_ERROR)
+ 			goto dma_fail;
+ 		buf_info->dma_addr = dma_addr;
++		netmem_dma_unmap_addr_set(skb_frag_netmem(frag), buf_info,
++					  unmap_addr, dma_addr);
+ 		buf_info->len = skb_frag_size(frag);
+ 		buf_info++;
+ 	}
+@@ -1152,8 +1160,9 @@ dma_fail:
+ 	while (frag_idx > 0) {
+ 		frag_idx--;
+ 		buf_info--;
+-		dma_unmap_page(dev, buf_info->dma_addr,
+-			       buf_info->len, DMA_TO_DEVICE);
++		netmem_dma_unmap_page_attrs(dev,
++					    dma_unmap_addr(buf_info, unmap_addr),
++					    buf_info->len, DMA_TO_DEVICE, 0);
+ 	}
+ 	dma_unmap_single(dev, desc_info->bufs[0].dma_addr,
+ 			 desc_info->bufs[0].len, DMA_TO_DEVICE);
+@@ -1174,8 +1183,9 @@ static void ionic_tx_desc_unmap_bufs(struct ionic_queue *q,
+ 			 buf_info->len, DMA_TO_DEVICE);
+ 	buf_info++;
+ 	for (i = 1; i < desc_info->nbufs; i++, buf_info++)
+-		dma_unmap_page(dev, buf_info->dma_addr,
+-			       buf_info->len, DMA_TO_DEVICE);
++		netmem_dma_unmap_page_attrs(dev,
++					    dma_unmap_addr(buf_info, unmap_addr),
++					    buf_info->len, DMA_TO_DEVICE, 0);
+ 
+ 	desc_info->nbufs = 0;
+ }
+-- 
+2.43.0
+

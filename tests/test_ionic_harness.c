@@ -3740,6 +3740,7 @@ static void test_eth(void)
     const struct q_init_cmd txq = {.qtype = IH_QTYPE_ETH_TXQ,
                                    .intr = TX_INTR,
                                    .depth_log2 = 3,
+                                   .flags = IONIC_QINIT_F_SG,
                                    .ring = txr,
                                    .cq = txc,
                                    .sg = txsg};
@@ -3771,7 +3772,9 @@ static void test_eth(void)
 
     ionic_eth_emu_register_tx_filter(h.emu, tx_filter, seen);
 
-    /* One frame in the descriptor, one split over two SG elements */
+    /* One frame in the descriptor's buffer, one with 50 bytes there and
+     * the rest in two SG elements: the descriptor's length is its own
+     * buffer's alone, as the driver writes it. */
     uint8_t frame[200];
     fill(frame, sizeof(frame), 0x31);
     fake_vfu_write(h.vfu, bufs, frame, sizeof(frame));
@@ -3782,7 +3785,7 @@ static void test_eth(void)
     fake_vfu_write(h.vfu, txr, desc, sizeof(desc));
 
     ernic_put_le64(desc, (bufs << 12) | 2U << 8);
-    ernic_put_le16(desc + 8, sizeof(frame));
+    ernic_put_le16(desc + 8, 50);
     fake_vfu_write(h.vfu, txr + 16, desc, sizeof(desc));
     uint8_t sg[2 * 16] = {0};
     ernic_put_le64(sg, bufs + 50);
@@ -3870,10 +3873,11 @@ static void test_eth(void)
 }
 
 /*
- * One Tx descriptor: a frame of @len bytes at the start of the buffers, its
- * last bytes in @nsge SG elements, the first two @sg_len bytes each. @fail is
- * the DMA refused, counted from the doorbell (the descriptor, the SG list,
- * the head, the elements, then the completion), or 0 for none.
+ * One Tx descriptor: a frame whose first @len bytes are at the start of the
+ * buffers and the rest in @nsge SG elements, the first two @sg_len bytes
+ * each. @fail is the DMA refused, counted from the doorbell (the descriptor,
+ * the SG list, the first buffer, the elements, then the completion), or 0
+ * for none.
  */
 struct eth_tx_case {
     const char *what;
@@ -3887,13 +3891,19 @@ struct eth_tx_case {
 
 static const struct eth_tx_case eth_tx_cases[] = {
     {"an unreadable frame", 120, 0, {0, 0}, 2, false, true},
-    {"an unreadable SG list", 200, 2, {100, 50}, 2, false, true},
-    {"an unreadable head", 200, 2, {100, 50}, 3, false, true},
-    {"an unreadable SG element", 200, 2, {100, 50}, 4, false, true},
+    {"an unreadable SG list", 50, 2, {100, 50}, 2, false, true},
+    {"an unreadable first buffer", 50, 2, {100, 50}, 3, false, true},
+    {"an unreadable SG element", 50, 2, {100, 50}, 4, false, true},
     {"an unwritable completion", 120, 0, {0, 0}, 3, true, false},
-    {"SG elements as long as the frame", 150, 2, {100, 50}, 0, false, true},
-    {"an empty SG element", 150, 2, {100, 0}, 0, true, true},
-    {"too long an SG list", 200, TXQ_SG_MAX_ELEMS + 1, {0, 0}, 0, false, true},
+    {"SG elements longer than the first buffer",
+     50,
+     2,
+     {100, 50},
+     0,
+     true,
+     true},
+    {"an empty SG element", 50, 2, {100, 0}, 0, false, true},
+    {"too long an SG list", 50, TXQ_SG_MAX_ELEMS + 1, {0, 0}, 0, false, true},
 };
 
 static void test_eth_dma_faults(void)
@@ -3952,6 +3962,7 @@ static void test_eth_dma_faults(void)
     const struct q_init_cmd txq = {.qtype = IH_QTYPE_ETH_TXQ,
                                    .intr = TX_INTR,
                                    .depth_log2 = 3,
+                                   .flags = IONIC_QINIT_F_SG,
                                    .ring = txr,
                                    .cq = txc,
                                    .sg = txsg};

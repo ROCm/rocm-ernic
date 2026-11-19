@@ -324,9 +324,11 @@ address each other directly across it. Set
 ``ernic_tap_bridge_ip`` if the host needs to join the segment
 for debugging.
 
-The transmit path gathers the head fragment plus any
-scatter-gather elements out of guest memory and writes the
-frame to the TAP file descriptor. The receive path drains the
+The transmit path gathers each frame out of guest memory, the
+descriptor's own buffer and then the elements of its
+scatter-gather list, applies the offload the descriptor asks
+for (see `Transmit offloads`_), and writes the frame to the TAP
+file descriptor. The receive path drains the
 TAP from the server's main loop and DMAs each frame into a
 descriptor the guest has posted on one of its receive queues:
 into the descriptor's buffer, and, when that is too short, on
@@ -356,12 +358,103 @@ endpoint (the S3 store's control plane, or the P4 engine)
 queues for the guest is held until the queue it steers to
 has a buffer, and the queued frames behind it wait too.
 
+Transmit offloads
+^^^^^^^^^^^^^^^^^
+
+The driver asks for offloads with ``LIF_SETATTR`` and enables
+those the completion repeats. The emulated LIF grants transmit
+scatter-gather, the transmit checksum, and TCP segmentation
+over IPv4 and IPv6 with ECN, when the driver asks for them, and
+nothing else, so the guest's ``ethtool -k`` shows
+``scatter-gather``, ``tx-checksum-ip-generic``,
+``tx-tcp-segmentation``, ``tx-tcp6-segmentation`` and
+``tx-tcp-ecn-segmentation`` on. ``ethtool -K`` turns each off
+and on again.
+
+Scatter-gather
+   A frame is the descriptor's buffer, whose length is the
+   descriptor's ``len``, followed by the elements of its
+   scatter-gather list. ``Q_IDENTIFY`` offers version 1 of the
+   transmit queue, whose lists hold 15 elements in 256 bytes,
+   to a driver that knows it, as Linux does; a driver that
+   asks for version 0 gets 8 elements in 128 bytes. No buffer
+   may be empty, and a frame is at most 9600 bytes.
+
+Checksum
+   For a ``CSUM_PARTIAL`` descriptor the device sums the frame
+   from ``csum_start`` to its end and stores the Internet
+   checksum ``csum_offset`` bytes further on, a computed zero
+   as ``0xffff``. This is what the stack's software fallback
+   does, so it serves TCP and UDP over IPv4 and IPv6 alike,
+   with or without a VLAN tag in the frame.
+
+TCP segmentation
+   A ``TSO`` packet is a chain of descriptors, one per
+   segment, from the one flagged ``TSO_SOT`` to the one
+   flagged ``TSO_EOT``. The first brings ``hdr_len`` bytes of
+   headers and up to ``mss`` bytes of payload, the others
+   payload alone. Each goes out behind a copy of the headers
+   with its own IPv4 total length, identification (counting
+   up from the packet's) and header checksum or IPv6 payload
+   length, TCP sequence number and TCP checksum; FIN and PSH
+   stay only on the last segment and CWR only on the first.
+   The checksums are computed from nothing, whatever the
+   driver left in the fields. The headers may carry one
+   802.1Q or 802.1ad tag, IPv4 and TCP options, and IPv6
+   hop-by-hop, destination-options and routing headers (a
+   routing header only with no segments left); they are at
+   most 256 bytes, and a chain carries at most 65535 bytes of
+   payload. The chain gets one completion, naming its last
+   descriptor, once every segment has been read; a chain
+   whose end the guest has not posted yet waits for it, each
+   doorbell until then reading the descriptors posted so far
+   and none of their buffers.
+
+A descriptor the device cannot make sense of is not sent cut
+to fit or as something else: an empty buffer, more
+scatter-gather elements than the queue's lists hold or any on
+a queue initialized without ``IONIC_QINIT_F_SG`` or with an
+``sg_ring_base`` of 0, a frame over 9600 bytes, a checksum
+field outside the frame, a TSO chain with a malformed
+descriptor or headers that are not TCP over IPv4 or IPv6, and
+anything that needs an offload the LIF did not grant
+(``CSUM_HW``, a VLAN tag to insert, tunnel headers to
+rewrite). It is counted in ``tx_desc_data_error`` and still
+completed, since the driver reads no status from a transmit
+completion: the guest is not told, and the counter is the
+only sign. A refused TSO chain counts once.
+
+A TSO chain is checked whole before any of it is sent, and
+one that fails the check sends nothing. The buffers of the
+descriptors after the first are read only as each segment
+goes out, and the descriptors are read again then. So a chain
+with a buffer that cannot be read (``tx_dma_error``), or one
+the guest rewrites meanwhile into something the check would
+have refused, stops part-way: the segments before that one
+have been sent, the rest are not, and the chain counts once.
+
 .. note::
 
-   The emulated LIF advertises no checksum, TSO, or transmit
-   scatter-gather offloads, so the guest stack always hands
-   down linear skbs. This keeps the descriptor handling
-   simple at the cost of transmit throughput. Receive
+   The Linux driver can hand the device TSO sends it refuses.
+   The guest's stack takes segmentation away from a send with
+   IPv6 extension headers only for a device with
+   ``NETIF_F_IPV6_CSUM``, and ionic has ``NETIF_F_HW_CSUM``.
+   So a TCP flow over IPv6 with a routing header that has
+   segments left (segment routing with the SRH in the packet),
+   an extension header other than hop-by-hop,
+   destination-options and routing, or more than 256 bytes of
+   headers has every TSO send dropped, without an error, and
+   advances only by TCP's retransmissions of single segments,
+   which are not TSO. ``tx_desc_data_error`` climbing with
+   such a flow is the sign; ``ethtool -K <dev>
+   tx-tcp6-segmentation off`` in the guest has its stack
+   segment instead.
+
+.. note::
+
+   Receive checksum and hash, VLAN insertion, stripping and
+   filtering, and segmentation through tunnels are not
+   offered, so the guest's stack does those itself. Receive
    scatter-gather is not an offload: the driver posts an SG
    list whenever a frame may not fit in one buffer.
 
@@ -406,7 +499,8 @@ is unicast. What moves:
      - ``{tx,rx}_dma_error``
    * - the host backend refused a transmit
      - ``tx_*_drop_*``
-   * - descriptor unreadable, or nonsensical
+   * - descriptor or its scatter-gather list unreadable, or
+       nonsensical (see `Transmit offloads`_)
      - ``tx_desc_fetch_error``, ``tx_desc_data_error``
    * - doorbell on a queue that was never initialized
      - ``tx_queue_disabled``

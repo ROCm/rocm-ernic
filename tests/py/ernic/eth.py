@@ -29,12 +29,24 @@ Q_ENABLE = 1
 ETH_DESC_SIZE = 16
 ETH_COMP_SIZE = 16
 ETH_COMP_COLOR = 0x80  # bit set in the last byte of a new completion
-ETH_SG_MAX_ELEMS = 8
+# A Tx queue is created as version 1, as the Linux driver creates it: each
+# descriptor's SG list is 16 elements long, of which it can use 15. An Rx
+# queue's is 8 elements long.
+ETH_TXQ_VERSION = 1
 ETH_SG_ELEM_SIZE = 16
-ETH_SG_STRIDE = ETH_SG_MAX_ELEMS * ETH_SG_ELEM_SIZE  # per descriptor index
+ETH_TXQ_SG_MAX_ELEMS = 15
+ETH_TXQ_SG_STRIDE = 16 * ETH_SG_ELEM_SIZE  # per descriptor index
+ETH_RXQ_SG_STRIDE = 8 * ETH_SG_ELEM_SIZE
+QINIT_F_IRQ = 0x01
+QINIT_F_SG = 0x04  # the queue has an SG ring
 ETH_QCOUNT = 4  # IONIC_EMU_ETH_QCOUNT: queues per qtype
 ETH_MAX_DEPTH_LOG2 = 15  # the emulator rejects ring_size >= 16
 ETH_MTU_MAX = 9600  # IONIC_ETH_NET_MTU_MAX
+
+
+def sg_stride(qtype):
+    """Bytes between the SG lists of two descriptors of a queue of @qtype."""
+    return ETH_TXQ_SG_STRIDE if qtype == QTYPE_ETH_TXQ else ETH_RXQ_SG_STRIDE
 
 
 # A record plus its ring bookkeeping; the attributes are the interface.
@@ -118,7 +130,7 @@ class EthQueue:
 
     def sg_slot(self, index):
         """Guest physical address of the SG block for descriptor @index."""
-        return self.sg_ring + (index % self.depth) * ETH_SG_STRIDE
+        return self.sg_ring + (index % self.depth) * sg_stride(self.qtype)
 
     def advance_cq(self):
         """Step the completion consumer, flipping colour on wrap."""
@@ -154,13 +166,16 @@ class EthQueueMixin:
         depth = 1 << depth_log2
         ring = self.mem.alloc(depth * ETH_DESC_SIZE)
         cq_ring = self.mem.alloc(depth * ETH_COMP_SIZE)
-        sg_ring = self.mem.alloc(depth * ETH_SG_STRIDE) if sg else 0
+        sg_ring = self.mem.alloc(depth * sg_stride(qtype)) if sg else 0
 
         cmd = bytearray(64)
         cmd[0] = CMD_Q_INIT
         cmd[4] = qtype
+        if qtype == QTYPE_ETH_TXQ:
+            cmd[5] = ETH_TXQ_VERSION
         struct.pack_into("<I", cmd, 8, index)
         struct.pack_into("<H", cmd, 14, intr)
+        struct.pack_into("<H", cmd, 16, QINIT_F_IRQ | (QINIT_F_SG if sg else 0))
         cmd[19] = depth_log2
         struct.pack_into("<Q", cmd, 20, ring)
         struct.pack_into("<Q", cmd, 28, cq_ring)
@@ -197,9 +212,10 @@ class EthQueueMixin:
         """Transmit @frame as the guest driver would.
 
         With @split, a list of trailing fragment lengths, the frame is sent
-        through the scatter-gather ring: the head fragment carries what is
-        left once those are subtracted. The queue must then have been
-        created with sg=True.
+        through the scatter-gather ring: the descriptor's own buffer carries
+        what is left once those are subtracted, and its ``len`` is that
+        buffer's length alone, as ionic_tx_calc_no_csum() writes it. The
+        queue must then have been created with sg=True.
         """
         queue = self.eth_tx
         if queue is None:
@@ -208,12 +224,14 @@ class EthQueueMixin:
             raise ValueError(f"frame of {len(frame)} bytes is out of range")
 
         split = list(split or [])
-        if len(split) > ETH_SG_MAX_ELEMS:
-            raise ValueError(f"at most {ETH_SG_MAX_ELEMS} SG elements")
+        if len(split) > ETH_TXQ_SG_MAX_ELEMS:
+            raise ValueError(f"at most {ETH_TXQ_SG_MAX_ELEMS} SG elements")
         if split and not queue.sg_ring:
             raise DeviceError("Tx queue was not created with sg=True")
-        tail = sum(split)
-        if tail >= len(frame):
+        if any(flen <= 0 for flen in split):
+            raise ValueError("an SG fragment is empty")
+        head = len(frame) - sum(split)
+        if head <= 0:
             raise ValueError("the SG fragments cover the whole frame")
 
         index = queue.claim()
@@ -223,12 +241,12 @@ class EthQueueMixin:
         desc = bytearray(ETH_DESC_SIZE)
         # addr is stored shifted, with the SG element count beside it.
         struct.pack_into("<Q", desc, 0, (buf << 12) | (len(split) << 8))
-        struct.pack_into("<H", desc, 8, len(frame))
+        struct.pack_into("<H", desc, 8, head)
         self.mem.write(queue.desc_slot(index), bytes(desc))
 
         if split:
-            sg = bytearray(ETH_SG_STRIDE)
-            off = len(frame) - tail
+            sg = bytearray(ETH_TXQ_SG_STRIDE)
+            off = head
             for i, flen in enumerate(split):
                 struct.pack_into("<Q", sg, i * ETH_SG_ELEM_SIZE, buf + off)
                 struct.pack_into("<H", sg, i * ETH_SG_ELEM_SIZE + 8, flen)

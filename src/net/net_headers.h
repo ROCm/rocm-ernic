@@ -4,7 +4,9 @@
  * Ethernet, ARP, IPv4, ICMP and TCP headers, for the S3 target's TCP/IP
  * endpoint; the IPv6 header and the RoCEv2 global route header, for the
  * ionic datapath; and the Internet checksum, which the ionic datapath also
- * uses to build a GRH.  Every multi-byte field is big-endian.
+ * uses to build a GRH.  The emulated NIC's Tx offloads (ionic_eth_tx.h) use
+ * the Ethernet, IPv4, IPv6 and TCP headers and the checksum.  Every
+ * multi-byte field is big-endian.
  *
  * Offsets are spelled out as macros rather than packed structs: a frame is
  * a byte buffer, a header in it can start at any alignment, and a struct
@@ -138,6 +140,10 @@ static inline void eth_addr_str(const uint8_t *mac, char *out)
 #define IP_SRC_OFF                12
 #define IP_DST_OFF                16
 
+/* Of the flags and fragment offset: more fragments follow, or this is not
+ * the first.  Either makes the datagram a fragment. */
+#define IP_FRAGMENT_MASK 0x3fff
+
 #define IP_PROTOCOL_TCP  6
 #define IP_PROTOCOL_UDP  17
 #define IP_PROTOCOL_ICMP 1
@@ -177,6 +183,20 @@ static inline void ip_addr_str(uint32_t addr, char *out)
 
 #define IP6_VERSION       6
 #define IP6_VERSION_SHIFT 4 /* of the first byte */
+
+/*
+ * IPv6 extension headers that start with a next header byte and then their
+ * own length, in 8-byte units beyond the first 8 bytes.  A routing header's
+ * fourth byte counts the segments still to visit.
+ */
+#define IP6_NEXT_HDR_HOP_BY_HOP 0
+#define IP6_NEXT_HDR_ROUTING    43
+#define IP6_NEXT_HDR_DST_OPTS   60
+
+#define IP6_EXT_NEXT_HDR_OFF      0
+#define IP6_EXT_LEN_OFF           1
+#define IP6_EXT_LEN_UNIT          8
+#define IP6_ROUTING_SEGS_LEFT_OFF 3
 
 /* -------------------------------------------------------------------------
  * ICMP echo header; the echoed data follows it
@@ -230,6 +250,9 @@ static inline void ip_addr_str(uint32_t addr, char *out)
 #define TCP_FLAG_RST 0x04
 #define TCP_FLAG_PSH 0x08
 #define TCP_FLAG_ACK 0x10
+#define TCP_FLAG_CWR 0x80
+
+#define TCP_DATA_OFFSET_SHIFT 4 /* of the header length byte */
 
 /* -------------------------------------------------------------------------
  * RoCEv2 global route header

@@ -155,6 +155,51 @@
 
 ### Added
 
+* **The emulated ionic NIC has transmit offloads: scatter-gather,
+  checksum, and TCP segmentation (TSO) over IPv4 and IPv6.** A Linux
+  guest's `ethtool -k` now shows `scatter-gather`,
+  `tx-checksum-ip-generic`, `tx-tcp-segmentation`, `tx-tcp6-segmentation`
+  and `tx-tcp-ecn-segmentation` on, where all were off, and its stack
+  hands the device paged frames, frames whose TCP or UDP checksum the
+  device fills in, and TCP sends of up to 64 KB, which the device cuts
+  into segments, each with its own lengths, IPv4 identification,
+  sequence number, flags and checksums. Guests need no change, and
+  `ethtool -K <dev> tso off`, `tx off` or `sg off` turns each off.
+  Scatter-gather and the checksum are also what the guest's stack needs
+  from a device before it will transmit from device memory (devmem TCP).
+  The device grants only the offloads the driver asks for, and none for
+  receive checksum or hash, VLAN tags or tunnels. A TSO send may have one
+  VLAN tag in the frame and IPv6 hop-by-hop, destination-options and
+  routing headers. The device refuses a TSO send with an IPv6 routing
+  header that has segments left (segment routing with the SRH in the
+  packet), any other IPv6 extension header, or more than 256 bytes of
+  headers, and the Linux driver does post those: the send is dropped
+  without an error, shows only in `tx_desc_data_error`, and the flow
+  advances only by retransmissions. Run `ethtool -K <dev>
+  tx-tcp6-segmentation off` in a guest with such a flow. See "Transmit
+  offloads" in `docs/ionic.rst`.
+* `Q_IDENTIFY` now offers version 1 of the Ethernet Tx queue, whose
+  scatter-gather lists hold 15 elements in 256 bytes, to a driver that
+  knows it, and `Q_INIT` takes that version. The Linux driver posts up to
+  15 elements whichever version it is given, so it needs version 1 once
+  it has scatter-gather. A driver that asks for version 0 still gets it.
+  A Tx queue `Q_INIT` naming a later version is refused with
+  `IONIC_RC_EVERSION`.
+* **Experimental: an optional ionic patch series for transmitting from
+  device memory (devmem TCP)**, `ansible/files/patches/devmem-tx/`. A
+  guest whose ionic is built with it can bind a dma-buf to the netdev for
+  transmit and send from it, once the device grants transmit
+  scatter-gather and checksum, and `ethtool -S` gains
+  `tx_unreadable_drop` counters. It is a backport to `v7.2.6` of an RFC
+  that is not upstream. On a v7.2.15 kernel, two guests of this emulator
+  have sent and verified 64 GiB from a dma-buf with it; no ionic hardware
+  has run it.
+  Nothing applies it by default: give it to `fetch-ionic-sources.sh` as
+  the last `--patches-dir`, or add `patches/devmem-tx` to
+  `ernic_guest_ionic_extra_patches`. Its first patch is upstream's fix to
+  the Tx queue stop in `ionic_tx()`, which v7.2.15 has and v7.2.6 does
+  not. The `ionic-patches` CI job checks that the series applies. See the
+  directory's `README.md`.
 * **The Ansible collection is published as a GitHub release**, tagged
   `ernic-ansible-v<VERSION>`, with the built collection attached, when
   that tag is pushed. Install it with `ansible-galaxy collection install`
@@ -740,6 +785,19 @@
 
 ### Changed
 
+* **Breaking for a vfio-user client of your own that posts Ethernet Tx
+  descriptors:** a Tx descriptor's `len` is now the length of its own
+  buffer, as in the ionic interface and the Linux driver, not of the
+  whole frame: the frame is that plus every scatter-gather element. A
+  descriptor is now refused, counted in `tx_desc_data_error` and
+  completed, rather than sent, if it has an empty buffer or
+  scatter-gather element (an empty element used to be skipped), has
+  scatter-gather elements on a queue whose `Q_INIT` did not set
+  `IONIC_QINIT_F_SG` or gave an `sg_ring_base` of 0 (an Rx queue's SG
+  descriptor is refused the same way), or has an opcode or flag the
+  device does not
+  implement (`CSUM_HW`, the VLAN flag); the opcode and flags used to be
+  ignored. The Linux driver posted none of these.
 * The GitHub workflows and composite actions are named `ernic-*`, the
   names they keep in rocm-systems, where they share `.github/` with other
   projects': `build-and-test.yml` is `ernic-build-and-test.yml`,

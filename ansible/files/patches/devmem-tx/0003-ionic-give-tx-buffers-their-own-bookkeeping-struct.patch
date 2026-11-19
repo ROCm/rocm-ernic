@@ -1,0 +1,146 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Stephen Bates <sbates@raithlin.com>
+Date: Wed, 18 Nov 2026 19:00:57 -0500
+Subject: [PATCH] ionic: give Tx buffers their own bookkeeping struct
+
+struct ionic_tx_desc_info records the buffers of a Tx descriptor in an
+array of struct ionic_buf_info, the struct the Rx path uses for its page
+pool buffers. Tx needs only two of its four members: dma_addr and len.
+The skb path never writes page and page_offset, and the XDP path writes
+them but nothing on the Tx side reads them back.
+
+Add struct ionic_tx_buf_info with just the address and the length, and
+use it for the Tx descriptor info. This lets the next patch add per-buffer
+unmap state for Tx without growing every Rx buffer, and it shrinks
+struct ionic_tx_desc_info by 8 bytes per buffer for now.
+
+No functional change.
+
+[ rocm-ernic: backport of patch 2/6 of the RFC series "ionic: support
+  netmem TX" (based on v7.4-rc3, not posted) to v7.2.6 with patches/srq
+  and patches/p4. The diff is unchanged. ]
+---
+ drivers/net/ethernet/pensando/ionic/ionic_dev.h  |  7 ++++++-
+ drivers/net/ethernet/pensando/ionic/ionic_txrx.c | 19 ++++++++-----------
+ 2 files changed, 14 insertions(+), 12 deletions(-)
+
+diff --git a/drivers/net/ethernet/pensando/ionic/ionic_dev.h b/drivers/net/ethernet/pensando/ionic/ionic_dev.h
+index db90e39a1442..8df0b3a3c30c 100644
+--- a/drivers/net/ethernet/pensando/ionic/ionic_dev.h
++++ b/drivers/net/ethernet/pensando/ionic/ionic_dev.h
+@@ -210,6 +210,11 @@ struct ionic_buf_info {
+ 	u32 len;
+ };
+ 
++struct ionic_tx_buf_info {
++	dma_addr_t dma_addr;
++	u32 len;
++};
++
+ #define IONIC_TX_MAX_FRAGS			(1 + IONIC_TX_MAX_SG_ELEMS_V1)
+ #define IONIC_RX_MAX_FRAGS			(1 + IONIC_RX_MAX_SG_ELEMS)
+ 
+@@ -219,7 +224,7 @@ struct ionic_tx_desc_info {
+ 	struct sk_buff *skb;
+ 	struct xdp_frame *xdpf;
+ 	enum xdp_action act;
+-	struct ionic_buf_info bufs[MAX_SKB_FRAGS + 1];
++	struct ionic_tx_buf_info bufs[MAX_SKB_FRAGS + 1];
+ };
+ 
+ struct ionic_rx_desc_info {
+diff --git a/drivers/net/ethernet/pensando/ionic/ionic_txrx.c b/drivers/net/ethernet/pensando/ionic/ionic_txrx.c
+index 2733a65bd1d5..e27e2095190e 100644
+--- a/drivers/net/ethernet/pensando/ionic/ionic_txrx.c
++++ b/drivers/net/ethernet/pensando/ionic/ionic_txrx.c
+@@ -306,7 +306,7 @@ static int ionic_xdp_post_frame(struct ionic_queue *q, struct xdp_frame *frame,
+ 				bool ring_doorbell)
+ {
+ 	struct ionic_tx_desc_info *desc_info;
+-	struct ionic_buf_info *buf_info;
++	struct ionic_tx_buf_info *buf_info;
+ 	struct ionic_tx_stats *stats;
+ 	struct ionic_txq_desc *desc;
+ 	size_t len = frame->len;
+@@ -331,15 +331,13 @@ static int ionic_xdp_post_frame(struct ionic_queue *q, struct xdp_frame *frame,
+ 
+ 	buf_info->dma_addr = dma_addr;
+ 	buf_info->len = len;
+-	buf_info->page = page;
+-	buf_info->page_offset = off;
+ 
+ 	desc_info->nbufs = 1;
+ 
+ 	if (xdp_frame_has_frags(frame)) {
+ 		struct ionic_txq_sg_elem *elem;
+ 		struct skb_shared_info *sinfo;
+-		struct ionic_buf_info *bi;
++		struct ionic_tx_buf_info *bi;
+ 		skb_frag_t *frag;
+ 		int i;
+ 
+@@ -366,7 +364,6 @@ static int ionic_xdp_post_frame(struct ionic_queue *q, struct xdp_frame *frame,
+ 			}
+ 			bi->dma_addr = dma_addr;
+ 			bi->len = skb_frag_size(frag);
+-			bi->page = skb_frag_page(frag);
+ 
+ 			elem->addr = cpu_to_le64(bi->dma_addr);
+ 			elem->len = cpu_to_le16(bi->len);
+@@ -1121,7 +1118,7 @@ static dma_addr_t ionic_tx_map_frag(struct ionic_queue *q,
+ static int ionic_tx_map_skb(struct ionic_queue *q, struct sk_buff *skb,
+ 			    struct ionic_tx_desc_info *desc_info)
+ {
+-	struct ionic_buf_info *buf_info = desc_info->bufs;
++	struct ionic_tx_buf_info *buf_info = desc_info->bufs;
+ 	struct device *dev = q->dev;
+ 	dma_addr_t dma_addr;
+ 	unsigned int nfrags;
+@@ -1166,7 +1163,7 @@ dma_fail:
+ static void ionic_tx_desc_unmap_bufs(struct ionic_queue *q,
+ 				     struct ionic_tx_desc_info *desc_info)
+ {
+-	struct ionic_buf_info *buf_info = desc_info->bufs;
++	struct ionic_tx_buf_info *buf_info = desc_info->bufs;
+ 	struct device *dev = q->dev;
+ 	unsigned int i;
+ 
+@@ -1438,7 +1435,7 @@ static int ionic_tx_tso(struct net_device *netdev, struct ionic_queue *q,
+ {
+ 	struct ionic_tx_stats *stats = q_to_tx_stats(q);
+ 	struct ionic_tx_desc_info *desc_info;
+-	struct ionic_buf_info *buf_info;
++	struct ionic_tx_buf_info *buf_info;
+ 	struct ionic_txq_sg_elem *elem;
+ 	struct ionic_txq_desc *desc;
+ 	unsigned int chunk_len;
+@@ -1560,7 +1557,7 @@ static void ionic_tx_calc_csum(struct ionic_queue *q, struct sk_buff *skb,
+ 			       struct ionic_tx_desc_info *desc_info)
+ {
+ 	struct ionic_txq_desc *desc = &q->txq[q->head_idx];
+-	struct ionic_buf_info *buf_info = desc_info->bufs;
++	struct ionic_tx_buf_info *buf_info = desc_info->bufs;
+ 	struct ionic_tx_stats *stats = q_to_tx_stats(q);
+ 	bool has_vlan;
+ 	u8 flags = 0;
+@@ -1599,7 +1596,7 @@ static void ionic_tx_calc_no_csum(struct ionic_queue *q, struct sk_buff *skb,
+ 				  struct ionic_tx_desc_info *desc_info)
+ {
+ 	struct ionic_txq_desc *desc = &q->txq[q->head_idx];
+-	struct ionic_buf_info *buf_info = desc_info->bufs;
++	struct ionic_tx_buf_info *buf_info = desc_info->bufs;
+ 	struct ionic_tx_stats *stats = q_to_tx_stats(q);
+ 	bool has_vlan;
+ 	u8 flags = 0;
+@@ -1634,7 +1631,7 @@ static void ionic_tx_calc_no_csum(struct ionic_queue *q, struct sk_buff *skb,
+ static void ionic_tx_skb_frags(struct ionic_queue *q, struct sk_buff *skb,
+ 			       struct ionic_tx_desc_info *desc_info)
+ {
+-	struct ionic_buf_info *buf_info = &desc_info->bufs[1];
++	struct ionic_tx_buf_info *buf_info = &desc_info->bufs[1];
+ 	struct ionic_tx_stats *stats = q_to_tx_stats(q);
+ 	struct ionic_txq_sg_elem *elem;
+ 	unsigned int i;
+-- 
+2.43.0
+

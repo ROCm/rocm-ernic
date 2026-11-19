@@ -110,7 +110,10 @@ def test_scatter_gather_frame(suite, server_factory):
     """A frame split over SG elements arrives at the pipeline as one frame."""
     with server_factory(["--p4"]) as server:
         frame = bytes(range(256)) * 2
-        run_frames(server, [(frame, [100, 50])], sg=True)
+        # Most of the frame is in the SG elements, as it is for a frame the
+        # guest's stack built from pages: the descriptor's own length is
+        # that of its first buffer, 112 bytes here.
+        run_frames(server, [(frame, [200, 200])], sg=True)
         stats = stop_server(server)
 
     suite.check_eq(stats["host_in"], 1, "the gathered frame counted once")

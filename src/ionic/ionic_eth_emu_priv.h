@@ -358,9 +358,38 @@ _Static_assert(ADMIN_CMD_SIZE == IONIC_DEVCMD_CMD_LEN &&
 #define ETH_DESC_SIZE 16U
 #define ETH_COMP_SIZE 16U
 
-/* struct ionic_txq_sg_elem: le64 addr, le16 len, le16 rsvd[3]. */
-#define TXQ_SG_ELEM_SIZE 16U
-#define TXQ_SG_MAX_ELEMS 8U
+/*
+ * struct ionic_txq_sg_elem, one buffer of a Tx descriptor after its first:
+ *
+ *   [0:7]   le64 addr
+ *   [8:9]   le16 len
+ *   [10:15] reserved
+ *
+ * Descriptor i's elements are in slot i of the SG ring, whose layout goes
+ * by the queue's version: struct ionic_txq_sg_desc, 8 elements in 128
+ * bytes, for version 0, and struct ionic_txq_sg_desc_v1, 16 elements in
+ * 256 bytes of which a descriptor can use 15 (its count is 4 bits), for
+ * version 1.  The driver writes up to 15 elements whichever it was given,
+ * so only version 1 is safe for a guest with scatter-gather on.
+ */
+#define TXQ_SG_ELEM_SIZE     16U
+#define TXQ_SG_ELEM_ADDR_OFF 0U
+#define TXQ_SG_ELEM_LEN_OFF  8U
+
+#define TXQ_SG_MAX_ELEMS    8U
+#define TXQ_SG_DESC_SIZE    128U
+#define TXQ_SG_V1_MAX_ELEMS 15U
+#define TXQ_SG_V1_STRIDE    16U /* elements a version 1 slot has room for */
+#define TXQ_SG_V1_DESC_SIZE 256U
+_Static_assert(TXQ_SG_DESC_SIZE == TXQ_SG_MAX_ELEMS * TXQ_SG_ELEM_SIZE,
+               "a version 0 Tx SG list is TXQ_SG_MAX_ELEMS elements");
+_Static_assert(TXQ_SG_V1_DESC_SIZE == TXQ_SG_V1_STRIDE * TXQ_SG_ELEM_SIZE,
+               "a version 1 Tx SG list is TXQ_SG_V1_STRIDE elements");
+
+/* The highest Tx queue version Q_IDENTIFY offers and Q_INIT takes, and
+ * Q_IDENTIFY's bitmap of the versions up to it. */
+#define TXQ_VERSION_MAX        1U
+#define TXQ_VERSIONS_SUPPORTED 0x3U
 
 /* struct ionic_rxq_sg_desc: 8 of struct ionic_rxq_sg_elem, each le64 addr,
  * le16 len, le16 rsvd[3].  The driver sizes the SG ring by the struct, so
@@ -374,10 +403,68 @@ _Static_assert(RXQ_SG_DESC_SIZE == RXQ_SG_MAX_ELEMS * RXQ_SG_ELEM_SIZE,
 /* ionic_q_init_cmd flags: the queue has an SG ring at sg_ring_base. */
 #define IONIC_QINIT_F_SG 0x04U
 
-/* encode_txq_desc_cmd(): flags[3:0] opcode[7:4] nsge[11:8] addr[63:12]. */
-#define TXQ_DESC_NSGE_SHIFT  8
-#define TXQ_DESC_ADDR_SHIFT  12
-#define TXQ_DESC_NIBBLE_MASK 0xfU
+/*
+ * struct ionic_txq_desc, every field little-endian:
+ *
+ *   [0:7]   le64 cmd: flags in bits 3:0, the opcode in 7:4, the number of
+ *           SG elements in 11:8, and the address of the first buffer in
+ *           63:12 (encode_txq_desc_cmd())
+ *   [8:9]   le16 len: the length of the first buffer only.  The frame, or
+ *           for TSO the segment, is that plus every SG element's length.
+ *   [10:11] le16 vlan_tci
+ *   [12:13] le16 csum_start (CSUM_PARTIAL) or hdr_len (TSO)
+ *   [14:15] le16 csum_offset (CSUM_PARTIAL) or mss (TSO)
+ */
+#define TXQ_DESC_CMD_OFF    0U
+#define TXQ_DESC_LEN_OFF    8U
+#define TXQ_DESC_HWORD1_OFF 12U
+#define TXQ_DESC_HWORD2_OFF 14U
+
+#define TXQ_DESC_FLAGS_SHIFT  0
+#define TXQ_DESC_OPCODE_SHIFT 4
+#define TXQ_DESC_NSGE_SHIFT   8
+#define TXQ_DESC_ADDR_SHIFT   12
+#define TXQ_DESC_NIBBLE_MASK  0xfU
+
+/* enum ionic_txq_desc_opcode */
+#define TXQ_DESC_OPCODE_CSUM_NONE    0U
+#define TXQ_DESC_OPCODE_CSUM_PARTIAL 1U
+#define TXQ_DESC_OPCODE_CSUM_HW      2U
+#define TXQ_DESC_OPCODE_TSO          3U
+
+/* IONIC_TXQ_DESC_FLAG_*.  Bits 2 and 3 are the first and last descriptor
+ * of a chain for TSO, and which checksums to fill in for CSUM_HW. */
+#define TXQ_DESC_FLAG_VLAN    0x1U
+#define TXQ_DESC_FLAG_ENCAP   0x2U
+#define TXQ_DESC_FLAG_TSO_SOT 0x4U
+#define TXQ_DESC_FLAG_TSO_EOT 0x8U
+
+/*
+ * enum ionic_eth_hw_features, as LIF_SETATTR(FEATURES) negotiates them.
+ * These are all the emulator has: no Rx checksum or hash, no VLAN insertion
+ * or stripping, no TSO through a tunnel.
+ */
+#define IONIC_ETH_HW_TX_SG    (UINT64_C(1) << 5)
+#define IONIC_ETH_HW_TX_CSUM  (UINT64_C(1) << 7)
+#define IONIC_ETH_HW_TSO      (UINT64_C(1) << 8)
+#define IONIC_ETH_HW_TSO_IPV6 (UINT64_C(1) << 9)
+#define IONIC_ETH_HW_TSO_ECN  (UINT64_C(1) << 10)
+
+#define IONIC_EMU_ETH_HW_FEATURES                                   \
+    (IONIC_ETH_HW_TX_SG | IONIC_ETH_HW_TX_CSUM | IONIC_ETH_HW_TSO | \
+     IONIC_ETH_HW_TSO_IPV6 | IONIC_ETH_HW_TSO_ECN)
+
+/*
+ * Bounds on a TSO chain.  Its headers, Ethernet to the end of TCP, are at
+ * most this long: 14 + 4 + 60 + 60 for IPv4 with every option, and room
+ * for 100 bytes of IPv6 extension headers.  Its payload is at most what
+ * one TCP send can be: Linux builds no larger TSO packet for a device
+ * that, like this one, raises no limit of its own.  Both are checked
+ * before any of a chain is sent, and the payload again as each segment
+ * is, since the guest can rewrite its descriptors in between.
+ */
+#define TXQ_TSO_HDR_MAX     256U
+#define TXQ_TSO_PAYLOAD_MAX 65535U
 
 /* struct ionic_intr is 32 bytes: coal_init, mask, credits, mask_assert, coal.
  * mask and mask_assert take IONIC_INTR_MASK_SET/CLEAR; a write to credits
@@ -418,7 +505,13 @@ struct eth_queue {
     uint64_t ring_base;
     uint64_t cq_ring_base;
     uint64_t sg_ring_base;
-    bool sg; /* Q_INIT set IONIC_QINIT_F_SG; Rx reads SG lists only then */
+    /* Q_INIT set IONIC_QINIT_F_SG and gave an sg_ring_base other than 0; SG
+     * lists are read only then */
+    bool sg;
+    /* Q_INIT's version, which for a Tx queue selects the SG ring's layout:
+     * at most TXQ_VERSION_MAX there, and whatever the driver sent elsewhere,
+     * where nothing reads it. */
+    uint8_t ver;
     uint16_t depth;
     uint16_t head; /* next descriptor to consume */
     /* Last producer index the driver rang for.  The admin and Tx queues run

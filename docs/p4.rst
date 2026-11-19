@@ -821,7 +821,7 @@ The ionic modules running in the guest must carry the P4 patch series
 (``ansible/files/patches/p4/``), which registers the auxiliary device
 that ``ernic_p4.ko`` binds to. ``fetch-ionic-sources.sh`` applies the
 ``*.patch`` files of each ``--patches-dir`` it is given, in order, and
-not those of a directory's subdirectories. There are three series:
+not those of a directory's subdirectories. There are four series:
 
 - ``ansible/files/patches/`` — the base series: the UC address-handle
   fix only. ``ernic_guest_setup`` always applies it.
@@ -833,6 +833,11 @@ not those of a directory's subdirectories. There are three series:
 - ``ansible/files/patches/p4/`` — the P4 series, which creates the
   auxiliary device ``ernic_p4.ko`` binds to. It applies after either the
   base series or the SRQ series.
+- ``ansible/files/patches/devmem-tx/`` — the experimental netmem Tx
+  series, with which a guest can transmit from a dma-buf (devmem TCP).
+  It is optional, and applies last, after any of the others; see its
+  ``README.md``. A guest built with it builds ``ernic_p4.ko`` against a
+  tree that has it too (``ernic_p4_dkms_patches_dirs``).
 
 Because ``ernic_guest_setup`` applies the base series first, listing
 ``patches/srq`` in its ``ernic_guest_ionic_extra_patches`` fails. No role

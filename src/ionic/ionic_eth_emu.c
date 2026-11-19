@@ -50,6 +50,7 @@
 #include "ionic/ionic_emu_stats.h"
 #include "ionic/ionic_eth_net.h"
 #include "ionic/ionic_eth_steer.h"
+#include "ionic/ionic_eth_tx.h"
 #include "ionic/ionic_profile.h"
 #include "ionic/ionic_datapath.h"
 #include "ionic/ionic_adminq.h"
@@ -1130,17 +1131,17 @@ void ionic_eth_emu_handle_lif_identify(struct ionic_eth_emu *emu,
     /* Absolute offsets into union ionic_lif_identity, from offsetof() against
      * the real ionic_if.h.  The struct is packed, so nothing here is aligned
      * and every field goes through the byteorder.h accessors. */
-#define LIFID_ETH_VERSION_OFF    0x008U
-#define LIFID_MAX_UCAST_OFF      0x00cU
-#define LIFID_MAX_MCAST_OFF      0x010U
-#define LIFID_RSS_IND_TBL_SZ_OFF 0x014U
-#define LIFID_MIN_FRAME_SIZE_OFF 0x016U
-#define LIFID_MAX_FRAME_SIZE_OFF 0x01aU
-#define LIFID_CONFIG_NAME_OFF    0x08cU
-#define LIFID_CONFIG_MTU_OFF     0x09cU
-#define LIFID_CONFIG_MAC_OFF     0x0a0U
-/* features is at 0x0a8; left zero, no offloads are emulated. */
-#define LIFID_CONFIG_QCOUNT_OFF 0x0b0U /* le32 queue_count[16], by qtype */
+#define LIFID_ETH_VERSION_OFF     0x008U
+#define LIFID_MAX_UCAST_OFF       0x00cU
+#define LIFID_MAX_MCAST_OFF       0x010U
+#define LIFID_RSS_IND_TBL_SZ_OFF  0x014U
+#define LIFID_MIN_FRAME_SIZE_OFF  0x016U
+#define LIFID_MAX_FRAME_SIZE_OFF  0x01aU
+#define LIFID_CONFIG_NAME_OFF     0x08cU
+#define LIFID_CONFIG_MTU_OFF      0x09cU
+#define LIFID_CONFIG_MAC_OFF      0x0a0U
+#define LIFID_CONFIG_FEATURES_OFF 0x0a8U
+#define LIFID_CONFIG_QCOUNT_OFF   0x0b0U /* le32 queue_count[16], by qtype */
 
     data[LIFID_ETH_VERSION_OFF] = 1;
 
@@ -1154,6 +1155,11 @@ void ionic_eth_emu_handle_lif_identify(struct ionic_eth_emu *emu,
      * VLAN_ETH_HLEN (ionic_lif.c), so this is link.mtu_max plus 18. */
     ernic_put_le32(data + LIFID_MAX_FRAME_SIZE_OFF,
                    emu->profile.link.mtu_max + IONIC_PROFILE_FRAME_OVERHEAD);
+
+    /* The offloads LIF_SETATTR(FEATURES) will grant.  The driver takes its
+     * features from that command's completion, and reads only the timestamp
+     * bits here, which stay clear. */
+    ernic_put_le64(data + LIFID_CONFIG_FEATURES_OFF, IONIC_EMU_ETH_HW_FEATURES);
 
     /* ionic_lif_config.  queue_count[] is not advisory: ionic_lif_size() reads
      * TXQ/RXQ straight out of it and hands the result to alloc_etherdev_mqs(),
@@ -1515,7 +1521,8 @@ void ionic_eth_emu_handle_lif_init(struct ionic_eth_emu *emu,
  * -------------------------------------------------------------------------
  */
 /* enum ionic_lif_attr */
-#define IONIC_LIF_ATTR_MAC 3
+#define IONIC_LIF_ATTR_MAC      3
+#define IONIC_LIF_ATTR_FEATURES 4
 
 /* struct ionic_lif_{get,set}attr_{cmd,comp}: opcode, attr, __le16 index,
  * then the attribute union at byte 4 in both directions. */
@@ -1530,6 +1537,16 @@ static void handle_lif_setattr(struct ionic_eth_emu *emu, const uint8_t *cmd,
             attr);
     if (attr == IONIC_LIF_ATTR_MAC) {
         memcpy(emu->mac, cmd + LIF_ATTR_CMD_OFF, sizeof(emu->mac));
+    } else if (attr == IONIC_LIF_ATTR_FEATURES) {
+        /* le64 features in both directions: the driver asks for a mask of
+         * enum ionic_eth_hw_features and enables what the completion
+         * repeats (ionic_set_nic_features()).  Nothing is kept: each Tx
+         * descriptor says which offload it wants, and a guest that was
+         * refused one never asks for it.  A bit it did not ask for is never
+         * granted. */
+        ernic_put_le64(comp + LIF_ATTR_COMP_OFF,
+                       ernic_get_le64(cmd + LIF_ATTR_CMD_OFF) &
+                           IONIC_EMU_ETH_HW_FEATURES);
     }
     comp[0] = IONIC_RC_SUCCESS;
 }
@@ -1562,10 +1579,12 @@ void ionic_eth_emu_handle_q_identify(const struct ionic_eth_emu *emu,
 {
     /* struct ionic_q_identify_cmd (packed): opcode @0, rsvd @1,
      * le16 lif_type @2, type @4 (ionic_logical_qtype), ver @5 (the highest
-     * version the driver supports; every driver supports the version 0 we
-     * answer). */
+     * version the driver supports). */
 #define QID_CMD_TYPE_OFF 4U
+#define QID_CMD_VER_OFF  5U
     uint8_t qtype = cmd[QID_CMD_TYPE_OFF];
+    uint8_t max_ver = cmd[QID_CMD_VER_OFF];
+#undef QID_CMD_VER_OFF
 #undef QID_CMD_TYPE_OFF
     bool known = qtype == IONIC_QTYPE_ADMINQ || qtype == IONIC_QTYPE_NOTIFYQ ||
                  qtype == IONIC_QTYPE_RXQ || qtype == IONIC_QTYPE_TXQ;
@@ -1602,20 +1621,36 @@ void ionic_eth_emu_handle_q_identify(const struct ionic_eth_emu *emu,
         comp[0] = IONIC_RC_EQTYPE;
         return;
     }
-    data[0] = 0; /* version 0: the base descriptor formats */
+    /*
+     * Version 0, the base descriptor formats, for every queue but Tx.  A Tx
+     * queue also has version 1, whose SG list is twice the size, and is
+     * given the highest of the two the driver supports: Linux asks for
+     * version 3 and gets 1, and then posts up to 15 SG elements per
+     * descriptor, which only a version 1 list has room for.  Q_INIT is told
+     * which was chosen.
+     */
+    uint8_t ver = 0;
     data[1] = 1; /* supported: bit 0 = version 0 */
+    if (qtype == IONIC_QTYPE_TXQ) {
+        ver = max_ver < TXQ_VERSION_MAX ? max_ver : TXQ_VERSION_MAX;
+        data[1] = TXQ_VERSIONS_SUPPORTED;
+    }
+    data[0] = ver;
 
     ernic_put_le16(data + QID_DESC_SZ_OFF, ETH_DESC_SIZE);
     ernic_put_le16(data + QID_COMP_SZ_OFF, ETH_COMP_SIZE);
 
-    /* sg_desc_stride is the number of elements in one descriptor's SG
-     * list, so it is max_sg_elems here, not a byte stride. */
-    if (qtype == IONIC_QTYPE_TXQ) {
-        ernic_put_le16(data + QID_SG_DESC_SZ_OFF,
-                       TXQ_SG_MAX_ELEMS * TXQ_SG_ELEM_SIZE);
-        ernic_put_le16(data + QID_MAX_SG_ELEMS_OFF, TXQ_SG_MAX_ELEMS);
-        ernic_put_le16(data + QID_SG_DESC_STRIDE_OFF, TXQ_SG_MAX_ELEMS);
-    } else if (qtype == IONIC_QTYPE_RXQ) {
+    /* sg_desc_stride is the number of elements one descriptor's SG list
+     * has room for, not a byte stride. */
+    if (qtype == IONIC_QTYPE_TXQ && ver >= 1) {
+        ernic_put_le16(data + QID_SG_DESC_SZ_OFF, TXQ_SG_V1_DESC_SIZE);
+        ernic_put_le16(data + QID_MAX_SG_ELEMS_OFF, TXQ_SG_V1_MAX_ELEMS);
+        ernic_put_le16(data + QID_SG_DESC_STRIDE_OFF, TXQ_SG_V1_STRIDE);
+    } else if (qtype == IONIC_QTYPE_TXQ || qtype == IONIC_QTYPE_RXQ) {
+        /* A version 0 Tx list is laid out as an Rx list is. */
+        _Static_assert(TXQ_SG_DESC_SIZE == RXQ_SG_DESC_SIZE &&
+                           TXQ_SG_MAX_ELEMS == RXQ_SG_MAX_ELEMS,
+                       "version 0 Tx and Rx SG lists are the same size");
         ernic_put_le16(data + QID_SG_DESC_SZ_OFF, RXQ_SG_DESC_SIZE);
         ernic_put_le16(data + QID_MAX_SG_ELEMS_OFF, RXQ_SG_MAX_ELEMS);
         ernic_put_le16(data + QID_SG_DESC_STRIDE_OFF, RXQ_SG_MAX_ELEMS);
@@ -1638,7 +1673,7 @@ void ionic_eth_emu_handle_q_identify(const struct ionic_eth_emu *emu,
 
     /* struct ionic_q_identify_comp: status@0, rsvd@1, comp_index@2, ver@4. */
     comp[0] = 0;
-    comp[4] = 0;
+    comp[4] = ver;
 }
 
 /* -------------------------------------------------------------------------
@@ -1695,6 +1730,7 @@ void ionic_eth_emu_handle_q_init(struct ionic_eth_emu *emu, const uint8_t *cmd,
      * flags le16 @16, cos @18, ring_size @19 (log2 depth), ring_base le64
      * @20, cq_ring_base le64 @28, sg_ring_base le64 @36. */
 #define Q_INIT_TYPE_OFF         4
+#define Q_INIT_VER_OFF          5
 #define Q_INIT_INDEX_OFF        8
 #define Q_INIT_INTR_INDEX_OFF   14
 #define Q_INIT_FLAGS_OFF        16
@@ -1703,6 +1739,7 @@ void ionic_eth_emu_handle_q_init(struct ionic_eth_emu *emu, const uint8_t *cmd,
 #define Q_INIT_CQ_RING_BASE_OFF 28
 #define Q_INIT_SG_RING_BASE_OFF 36
     uint8_t qtype = cmd[Q_INIT_TYPE_OFF];
+    uint8_t ver = cmd[Q_INIT_VER_OFF];
     uint32_t index = ernic_get_le32(cmd + Q_INIT_INDEX_OFF);
     uint16_t intr_index = ernic_get_le16(cmd + Q_INIT_INTR_INDEX_OFF);
     uint16_t flags = ernic_get_le16(cmd + Q_INIT_FLAGS_OFF);
@@ -1726,15 +1763,20 @@ void ionic_eth_emu_handle_q_init(struct ionic_eth_emu *emu, const uint8_t *cmd,
         status = IONIC_RC_EQID;
     } else if (ring_size > ETH_Q_MAX_RING_SIZE) {
         status = IONIC_RC_ERANGE;
+    } else if (qtype == IONIC_QTYPE_TXQ && ver > TXQ_VERSION_MAX) {
+        /* A version Q_IDENTIFY never offered, with an SG ring laid out in
+         * a way the Tx path would misread.  The other queue types have one
+         * layout, and their version is not looked at. */
+        status = IONIC_RC_EVERSION;
     }
 
     if (status != IONIC_RC_SUCCESS) {
         vfu_log(emu->vfu_ctx, LOG_ERR,
-                "ionic_eth_emu: Q_INIT qtype=%u index=%" PRIu32
+                "ionic_eth_emu: Q_INIT qtype=%u ver=%u index=%" PRIu32
                 " depth=2^%u refused (qtype below %d, index below %" PRIu32
-                ", depth at most 2^%u)",
-                qtype, index, ring_size, IONIC_QTYPE_ETH_MAX, eth_qcount(emu),
-                ETH_Q_MAX_RING_SIZE);
+                ", depth at most 2^%u, Tx version at most %u)",
+                qtype, ver, index, ring_size, IONIC_QTYPE_ETH_MAX,
+                eth_qcount(emu), ETH_Q_MAX_RING_SIZE, TXQ_VERSION_MAX);
         comp[0] = status;
         return;
     }
@@ -1745,7 +1787,10 @@ void ionic_eth_emu_handle_q_init(struct ionic_eth_emu *emu, const uint8_t *cmd,
         .ring_base = ring_base,
         .cq_ring_base = cq_ring_base,
         .sg_ring_base = sg_ring_base,
-        .sg = (flags & IONIC_QINIT_F_SG) != 0,
+        /* A queue that names no SG ring has none, whatever its flags say:
+         * its lists are not read from where guest memory starts. */
+        .sg = (flags & IONIC_QINIT_F_SG) != 0 && sg_ring_base != 0,
+        .ver = ver,
         .depth = (uint16_t)(1U << ring_size),
         /* ionic_cq_init() starts with done_color = 1. */
         .cq_color = 1,
@@ -1927,91 +1972,436 @@ static void eth_cq_advance(struct eth_queue *q)
     }
 }
 
-/* Pull one transmitted frame out of guest memory into emu->frame.  Returns
- * the assembled length, or 0 if the descriptor cannot be gathered. */
-static size_t eth_tx_gather(struct ionic_eth_emu *emu, struct eth_queue *q,
-                            uint16_t index, enum ionic_emu_drop *why)
+/* A Tx descriptor, struct ionic_txq_desc, decoded. */
+struct eth_tx_desc {
+    uint64_t addr; /* the first buffer */
+    uint16_t len;  /* and its length */
+    uint8_t opcode;
+    uint8_t flags;
+    uint8_t nsge;
+    uint16_t hword1; /* csum_start, or hdr_len for TSO */
+    uint16_t hword2; /* csum_offset, or mss for TSO */
+};
+
+/* Read and decode the descriptor at @index of Tx queue @q. */
+static bool eth_tx_desc_read(struct ionic_eth_emu *emu,
+                             const struct eth_queue *q, uint16_t index,
+                             struct eth_tx_desc *d)
 {
     uint8_t desc[ETH_DESC_SIZE];
 
-    *why = IONIC_EMU_DROP_DESC_FETCH;
     if (ernic_dma_read(emu->dma, emu->vfu_ctx,
                        q->ring_base + ((uint64_t)index * ETH_DESC_SIZE), desc,
                        sizeof(desc)) < 0) {
-        return 0;
+        return false;
     }
 
-    uint64_t cmd = ernic_get_le64(desc);
-    uint16_t len = ernic_get_le16(desc + 8);
+    uint64_t cmd = ernic_get_le64(desc + TXQ_DESC_CMD_OFF);
 
-    uint8_t nsge =
-        (uint8_t)((cmd >> TXQ_DESC_NSGE_SHIFT) & TXQ_DESC_NIBBLE_MASK);
-    uint64_t addr = cmd >> TXQ_DESC_ADDR_SHIFT;
+    d->addr = cmd >> TXQ_DESC_ADDR_SHIFT;
+    d->len = ernic_get_le16(desc + TXQ_DESC_LEN_OFF);
+    d->opcode =
+        (uint8_t)((cmd >> TXQ_DESC_OPCODE_SHIFT) & TXQ_DESC_NIBBLE_MASK);
+    d->flags = (uint8_t)((cmd >> TXQ_DESC_FLAGS_SHIFT) & TXQ_DESC_NIBBLE_MASK);
+    d->nsge = (uint8_t)((cmd >> TXQ_DESC_NSGE_SHIFT) & TXQ_DESC_NIBBLE_MASK);
+    d->hword1 = ernic_get_le16(desc + TXQ_DESC_HWORD1_OFF);
+    d->hword2 = ernic_get_le16(desc + TXQ_DESC_HWORD2_OFF);
+    return true;
+}
 
-    /* len is the whole frame; the head descriptor carries the first fragment
-     * and the SG ring carries the rest.  We advertise no offloads, so the
-     * driver never posts a TSO descriptor whose len exceeds one frame. */
+/*
+ * Read the SG list of descriptor @d, at @index of Tx queue @q, into @sg,
+ * and add up what the descriptor brings: its first buffer, then each
+ * element.  It may bring at most @limit bytes.  Returns the total, or 0
+ * with @why set if the descriptor is refused; no data is read.
+ */
+static size_t eth_tx_sizes(struct ionic_eth_emu *emu, const struct eth_queue *q,
+                           uint16_t index, const struct eth_tx_desc *d,
+                           size_t limit,
+                           uint8_t sg[TXQ_SG_V1_MAX_ELEMS * TXQ_SG_ELEM_SIZE],
+                           enum ionic_emu_drop *why)
+{
+    /* The driver sizes the SG ring by the list, so descriptor i's is at
+     * sg_ring_base + i * the list's size. */
+    uint8_t max_nsge = q->ver >= 1 ? TXQ_SG_V1_MAX_ELEMS : TXQ_SG_MAX_ELEMS;
+    uint64_t sg_off = (uint64_t)index *
+                      (q->ver >= 1 ? TXQ_SG_V1_DESC_SIZE : TXQ_SG_DESC_SIZE);
+
+    /* No buffer is empty: the driver never posts one, so an empty one is a
+     * descriptor gone wrong, not a fragment to skip. */
     *why = IONIC_EMU_DROP_DESC_DATA;
-    if (!len || len > sizeof(emu->frame)) {
+    if (d->len == 0 || d->len > limit || d->nsge > max_nsge ||
+        (d->nsge != 0 && !q->sg)) {
         return 0;
     }
 
-    if (!nsge) {
-        *why = IONIC_EMU_DROP_DMA;
-        if (ernic_dma_read(emu->dma, emu->vfu_ctx, addr, emu->frame, len) < 0) {
+    if (d->nsge != 0) {
+        /* The guest chose sg_ring_base, so the list's address may wrap. */
+        *why = IONIC_EMU_DROP_DESC_FETCH;
+        if (q->sg_ring_base > UINT64_MAX - sg_off ||
+            ernic_dma_read(emu->dma, emu->vfu_ctx, q->sg_ring_base + sg_off, sg,
+                           (size_t)d->nsge * TXQ_SG_ELEM_SIZE) < 0) {
             return 0;
         }
-        return len;
     }
 
-    if (nsge > TXQ_SG_MAX_ELEMS) {
-        return 0;
-    }
+    size_t total = d->len;
 
-    *why = IONIC_EMU_DROP_DESC_FETCH;
-
-    uint8_t sg[TXQ_SG_MAX_ELEMS * TXQ_SG_ELEM_SIZE];
-    uint64_t sg_gpa = q->sg_ring_base +
-                      ((uint64_t)index * TXQ_SG_MAX_ELEMS * TXQ_SG_ELEM_SIZE);
-    if (ernic_dma_read(emu->dma, emu->vfu_ctx, sg_gpa, sg,
-                       (size_t)nsge * TXQ_SG_ELEM_SIZE) < 0) {
-        return 0;
-    }
-
-    /* The head descriptor's own fragment length is len minus everything the
-     * SG elements contribute. */
-    size_t sg_total = 0;
-    for (uint8_t i = 0; i < nsge; i++) {
-        sg_total += ernic_get_le16(sg + ((size_t)i * TXQ_SG_ELEM_SIZE) + 8);
-    }
     *why = IONIC_EMU_DROP_DESC_DATA;
-    if (sg_total >= len) {
+    for (uint8_t i = 0; i < d->nsge; i++) {
+        uint16_t elen = ernic_get_le16(sg + ((size_t)i * TXQ_SG_ELEM_SIZE) +
+                                       TXQ_SG_ELEM_LEN_OFF);
+
+        if (elen == 0 || elen > limit - total) {
+            return 0;
+        }
+        total += elen;
+    }
+    return total;
+}
+
+/*
+ * Copy the buffers of descriptor @d, at @index of Tx queue @q, out of guest
+ * memory to @off bytes into emu->frame: its first buffer, then each element
+ * of its SG list.  The descriptor may bring at most @limit bytes, which the
+ * caller has checked fit there.  Returns how many it brought, or 0 with
+ * @why set if they cannot be gathered: nothing the guest wrote is cut short
+ * or skipped to make it fit, and every length is checked before any of the
+ * data is read.
+ */
+static size_t eth_tx_gather(struct ionic_eth_emu *emu,
+                            const struct eth_queue *q, uint16_t index,
+                            const struct eth_tx_desc *d, size_t off,
+                            size_t limit, enum ionic_emu_drop *why)
+{
+    uint8_t sg[TXQ_SG_V1_MAX_ELEMS * TXQ_SG_ELEM_SIZE];
+    size_t total = eth_tx_sizes(emu, q, index, d, limit, sg, why);
+
+    if (total == 0) {
         return 0;
     }
 
     *why = IONIC_EMU_DROP_DMA;
-    size_t head_len = len - sg_total;
-    if (ernic_dma_read(emu->dma, emu->vfu_ctx, addr, emu->frame, head_len) <
-        0) {
+    if (ernic_dma_read(emu->dma, emu->vfu_ctx, d->addr, emu->frame + off,
+                       d->len) < 0) {
         return 0;
     }
-
-    size_t off = head_len;
-    for (uint8_t i = 0; i < nsge; i++) {
+    off += d->len;
+    for (uint8_t i = 0; i < d->nsge; i++) {
         const uint8_t *e = sg + ((size_t)i * TXQ_SG_ELEM_SIZE);
-        uint64_t eaddr = ernic_get_le64(e);
-        uint16_t elen = ernic_get_le16(e + 8);
-        if (!elen) {
-            continue;
-        }
-        if (ernic_dma_read(emu->dma, emu->vfu_ctx, eaddr, emu->frame + off,
-                           elen) < 0) {
+        uint16_t elen = ernic_get_le16(e + TXQ_SG_ELEM_LEN_OFF);
+
+        if (ernic_dma_read(emu->dma, emu->vfu_ctx,
+                           ernic_get_le64(e + TXQ_SG_ELEM_ADDR_OFF),
+                           emu->frame + off, elen) < 0) {
             return 0;
         }
         off += elen;
     }
 
-    return off;
+    return total;
+}
+
+/*
+ * Assemble the frame a descriptor that is a frame by itself asks for into
+ * emu->frame: gather it, and fill in the checksum if it wants one.  Returns
+ * its length, or 0 with @why set if the descriptor is refused.
+ */
+static size_t eth_tx_frame(struct ionic_eth_emu *emu, const struct eth_queue *q,
+                           uint16_t index, const struct eth_tx_desc *d,
+                           enum ionic_emu_drop *why)
+{
+    /*
+     * What the guest can't have been granted is refused rather than sent
+     * as something else: a VLAN tag to insert, the first-and-last-of-a-chain
+     * bits outside TSO, CSUM_HW, which the Linux driver never posts and
+     * which would have the device choose the checksums, and an opcode
+     * there isn't.  TSO has a path of its own, eth_tx_tso().
+     *
+     * ENCAP is let through.  The driver sets it for a tunnelled frame, where
+     * a real device may fill in the outer checksums; Linux has done those
+     * itself by then, and what is left is the inner one CSUM_PARTIAL names.
+     */
+    *why = IONIC_EMU_DROP_DESC_DATA;
+    if ((d->opcode != TXQ_DESC_OPCODE_CSUM_NONE &&
+         d->opcode != TXQ_DESC_OPCODE_CSUM_PARTIAL) ||
+        (d->flags & (TXQ_DESC_FLAG_VLAN | TXQ_DESC_FLAG_TSO_SOT |
+                     TXQ_DESC_FLAG_TSO_EOT)) != 0) {
+        return 0;
+    }
+
+    size_t len = eth_tx_gather(emu, q, index, d, 0, sizeof(emu->frame), why);
+
+    if (len != 0 && d->opcode == TXQ_DESC_OPCODE_CSUM_PARTIAL &&
+        !ionic_eth_tx_csum_partial(emu->frame, len, d->hword1, d->hword2)) {
+        *why = IONIC_EMU_DROP_DESC_DATA;
+        return 0;
+    }
+    return len;
+}
+
+/*
+ * Send the @len bytes in emu->frame.  A registered filter sees the frame
+ * first and may claim it; what it leaves goes to the host network backend
+ * when one is attached.  With neither, Tx is a sink, and the frame is still
+ * counted as sent: a NIC with nothing on the far end of its link counts too.
+ */
+static void eth_tx_send(struct ionic_eth_emu *emu, size_t len)
+{
+    if (ionic_fault_event(emu->tx_fault)) {
+        /* eth_tx drop: lost on the wire, so the guest still gets its
+         * completion and only the drop counters see it. */
+        ionic_emu_stats_drop(&emu->stats, emu->frame, len, true,
+                             IONIC_EMU_DROP_INJECTED);
+        return;
+    }
+
+    bool taken = emu->tx_filter != NULL &&
+                 emu->tx_filter(emu->tx_filter_ctx, emu->frame, len);
+    if (!taken && emu->net &&
+        ionic_eth_net_send(emu->net, emu->frame, len) < 0) {
+        ionic_emu_stats_drop(&emu->stats, emu->frame, len, true,
+                             IONIC_EMU_DROP_SEND);
+    } else {
+        ionic_emu_stats_frame(&emu->stats, emu->frame, len, true);
+        ionic_emu_port_frame(&emu->stats, emu->frame, len, true, 0);
+    }
+    if (emu->net || emu->tx_filter) {
+        ernic_stats_eth_bytes(emu->stats_sink, len, true);
+    }
+}
+
+/* Whether @d can follow @first, the descriptor that starts a TSO chain: it
+ * repeats its hdr_len and mss, and asks for nothing the chain can't have. */
+static bool eth_tx_tso_follows(const struct eth_tx_desc *first,
+                               const struct eth_tx_desc *d)
+{
+    return d->opcode == TXQ_DESC_OPCODE_TSO &&
+           (d->flags & (TXQ_DESC_FLAG_VLAN | TXQ_DESC_FLAG_ENCAP |
+                        TXQ_DESC_FLAG_TSO_SOT)) == 0 &&
+           d->hword1 == first->hword1 && d->hword2 == first->hword2;
+}
+
+/*
+ * Read the descriptor at @index of Tx queue @q into @d, one after the first
+ * of the TSO chain @first starts, and check that it can be there: that it
+ * follows @first, and ends the chain if and only if it is the chain's
+ * @last.  The guest can write to its ring at any time, so this is asked
+ * again each time the descriptor is read.  Returns false with @why set if
+ * not.
+ */
+static bool eth_tx_tso_next(struct ionic_eth_emu *emu,
+                            const struct eth_queue *q,
+                            const struct eth_tx_desc *first, uint16_t index,
+                            bool last, struct eth_tx_desc *d,
+                            enum ionic_emu_drop *why)
+{
+    *why = IONIC_EMU_DROP_DESC_FETCH;
+    if (!eth_tx_desc_read(emu, q, index, d)) {
+        return false;
+    }
+    *why = IONIC_EMU_DROP_DESC_DATA;
+    bool eot = (d->flags & TXQ_DESC_FLAG_TSO_EOT) != 0;
+
+    return eth_tx_tso_follows(first, d) && eot == last;
+}
+
+/*
+ * Find the end of the TSO chain that @first, the descriptor at the head of
+ * Tx queue @q, starts: the first descriptor with TSO_EOT.  Returns how many
+ * descriptors the chain is, or 0 if the producer index comes before its
+ * end.
+ *
+ * This reads the descriptors and nothing they point to, so a chain that is
+ * waiting for its end costs each doorbell one 16-byte read for each
+ * descriptor posted, as a ring of single frames does.
+ *
+ * @whole says whether the chain has an end.  One that is cut off, with @why
+ * saying how, is to be refused: by a descriptor that can't be read, which
+ * is taken for its last since whether it goes on can't be known, or by one
+ * that is not part of a chain or starts another, which it ends before.
+ */
+static uint16_t eth_tx_tso_end(struct ionic_eth_emu *emu,
+                               const struct eth_queue *q,
+                               const struct eth_tx_desc *first, bool *whole,
+                               enum ionic_emu_drop *why)
+{
+    /* head is not prod, and the loop stops at prod: count stays below the
+     * ring's depth. */
+    uint16_t count = 1;
+    uint16_t index = q->head;
+    bool eot = (first->flags & TXQ_DESC_FLAG_TSO_EOT) != 0;
+
+    *whole = false;
+    while (!eot) {
+        struct eth_tx_desc d;
+
+        index = (uint16_t)((index + 1) % q->depth);
+        if (index == q->prod) {
+            return 0;
+        }
+        if (!eth_tx_desc_read(emu, q, index, &d)) {
+            *why = IONIC_EMU_DROP_DESC_FETCH;
+            return (uint16_t)(count + 1);
+        }
+        if (d.opcode != TXQ_DESC_OPCODE_TSO ||
+            (d.flags & TXQ_DESC_FLAG_TSO_SOT) != 0) {
+            *why = IONIC_EMU_DROP_DESC_DATA;
+            return count;
+        }
+        count++;
+        eot = (d.flags & TXQ_DESC_FLAG_TSO_EOT) != 0;
+    }
+    *whole = true;
+    return count;
+}
+
+/*
+ * Send the segments of the TSO chain of @count descriptors at the head of
+ * Tx queue @q, whose first is @first.  emu->frame holds the first segment,
+ * @seg0 bytes, as its descriptor brought it, and @t what its headers say,
+ * which are at most TXQ_TSO_HDR_MAX bytes.  Each later descriptor brings one
+ * segment's payload, which goes behind a copy of those headers.  Returns false
+ * with @why set if a descriptor can no longer be read as it was when the chain
+ * was checked; the segments before it have been sent.
+ */
+static bool eth_tx_tso_send(struct ionic_eth_emu *emu,
+                            const struct eth_queue *q,
+                            const struct eth_tx_desc *first, uint16_t count,
+                            const struct ionic_eth_tso *t, size_t seg0,
+                            enum ionic_emu_drop *why)
+{
+    uint8_t hdr[TXQ_TSO_HDR_MAX];
+    uint16_t mss = first->hword2;
+    uint16_t index = q->head;
+    uint32_t payload_off = 0; /* at most TXQ_TSO_PAYLOAD_MAX */
+    size_t len = seg0;
+
+    memcpy(hdr, emu->frame, t->hdr_len);
+    for (uint16_t i = 0; i < count; i++) {
+        bool last = i == count - 1;
+
+        if (i != 0) {
+            struct eth_tx_desc d;
+
+            /* The guest may have rewritten it since it was checked, so
+             * every check made then is made again. */
+            index = (uint16_t)((index + 1) % q->depth);
+            if (!eth_tx_tso_next(emu, q, first, index, last, &d, why)) {
+                return false;
+            }
+            memcpy(emu->frame, hdr, t->hdr_len);
+            len = eth_tx_gather(emu, q, index, &d, t->hdr_len, mss, why);
+            if (len == 0) {
+                return false;
+            }
+            if (len > TXQ_TSO_PAYLOAD_MAX - payload_off) {
+                *why = IONIC_EMU_DROP_DESC_DATA;
+                return false;
+            }
+            len += t->hdr_len;
+        }
+
+        ionic_eth_tso_segment(t, emu->frame, len, i, payload_off, last);
+        eth_tx_send(emu, len);
+        payload_off += (uint32_t)(len - t->hdr_len);
+    }
+    return true;
+}
+
+/*
+ * TSO: the descriptor at the head of Tx queue @q, @first, has opcode TSO,
+ * and so starts a chain that runs to the first descriptor with TSO_EOT.
+ * Each descriptor of the chain is one TCP segment: the first brings
+ * hdr_len bytes of headers and then payload, the others payload alone, at
+ * most mss bytes each, and each goes out behind the first's headers with
+ * the lengths, IPv4 identification, sequence number, flags and checksums
+ * of a segment of its own (ionic_eth_tso_segment()).
+ *
+ * Returns how many descriptors the chain is, or 0 if the guest has not
+ * posted its end yet: the chain then waits for the doorbell that does, and
+ * nothing is sent or completed (eth_tx_tso_end() says what the wait costs).
+ * The driver rings only after the last, and frees every buffer of the chain
+ * when its first descriptor completes, so the chain is completed once, by
+ * its last descriptor, after all of it has been read.
+ *
+ * @sent says whether the segments went out.  A chain is checked whole
+ * before any of it is sent, and refused whole, @why saying why: one that
+ * doesn't begin with TSO_SOT, or asks for a VLAN tag or tunnel headers
+ * (offloads that were not granted), has no mss, has headers that are too
+ * long, are not TCP over IPv4 or IPv6, or don't end where hdr_len says, a
+ * descriptor that brings no payload or more than mss, or changes hdr_len
+ * or mss, or more payload than one TCP send can be.  A chain cut off by a
+ * descriptor that is not part of one ends before it.
+ *
+ * That holds for a chain the guest leaves alone.  The descriptors after the
+ * first are read again, and what their buffers hold is read for the first
+ * time, as each segment is sent.  So a chain with a buffer that can't be
+ * read, or one the guest rewrites meanwhile into something that would have
+ * been refused, stops there, with the segments before it sent.
+ */
+static uint16_t eth_tx_tso(struct ionic_eth_emu *emu, const struct eth_queue *q,
+                           const struct eth_tx_desc *first, bool *sent,
+                           enum ionic_emu_drop *why)
+{
+    uint8_t sg[TXQ_SG_V1_MAX_ELEMS * TXQ_SG_ELEM_SIZE];
+    struct ionic_eth_tso t;
+    uint16_t hdr_len = first->hword1;
+    uint16_t mss = first->hword2;
+    bool whole;
+    uint16_t count = eth_tx_tso_end(emu, q, first, &whole, why);
+
+    *sent = false;
+    if (count == 0 || !whole) {
+        return count;
+    }
+
+    *why = IONIC_EMU_DROP_DESC_DATA;
+    if ((first->flags & TXQ_DESC_FLAG_TSO_SOT) == 0 ||
+        (first->flags & (TXQ_DESC_FLAG_VLAN | TXQ_DESC_FLAG_ENCAP)) != 0 ||
+        mss == 0 || hdr_len > TXQ_TSO_HDR_MAX ||
+        mss > sizeof(emu->frame) - hdr_len) {
+        return count;
+    }
+
+    /* The first segment, which emu->frame keeps until it is sent. */
+    size_t seg0 =
+        eth_tx_gather(emu, q, q->head, first, 0, (size_t)hdr_len + mss, why);
+
+    if (seg0 == 0) {
+        return count;
+    }
+    *why = IONIC_EMU_DROP_DESC_DATA;
+    if (seg0 <= hdr_len || !ionic_eth_tso_parse(emu->frame, hdr_len, &t)) {
+        return count;
+    }
+
+    /* Then what each of the others says it brings. */
+    size_t payload = seg0 - hdr_len;
+    uint16_t index = q->head;
+
+    for (uint16_t i = 1; i < count; i++) {
+        struct eth_tx_desc d;
+
+        index = (uint16_t)((index + 1) % q->depth);
+        if (!eth_tx_tso_next(emu, q, first, index, i == count - 1, &d, why)) {
+            return count;
+        }
+
+        size_t bytes = eth_tx_sizes(emu, q, index, &d, mss, sg, why);
+
+        if (bytes == 0) {
+            return count;
+        }
+        if (bytes > TXQ_TSO_PAYLOAD_MAX - payload) {
+            *why = IONIC_EMU_DROP_DESC_DATA;
+            return count;
+        }
+        payload += bytes;
+    }
+
+    *sent = eth_tx_tso_send(emu, q, first, count, &t, seg0, why);
+    return count;
 }
 
 /* A doorbell for Tx queue @qid: note the producer index, and drain the ring
@@ -2036,48 +2426,51 @@ static void eth_txq_doorbell(struct ionic_eth_emu *emu, uint32_t qid,
     }
 }
 
-/* Drain Tx queue @qid, which is valid, up to its last doorbell.  A
- * registered filter sees each frame first and may claim it; what it leaves
- * goes to the host network backend when one is attached.  With neither, Tx
- * is a sink, which is still necessary -- without a completion the netdev
- * watchdog fires every five seconds and resets the queues. */
+/*
+ * Drain Tx queue @qid, which is valid, up to its last doorbell.  Every
+ * descriptor is completed whatever became of its frame, since the driver
+ * reads no status from a Tx completion, and without one the netdev watchdog
+ * fires every five seconds and resets the queues: a frame that is refused
+ * shows only in the LIF's counters.  A completion names the last descriptor
+ * it covers, and the driver takes every one up to it as done, so a TSO
+ * chain gets one, for its last descriptor.
+ */
 static void eth_txq_service(struct ionic_eth_emu *emu, uint32_t qid)
 {
     struct eth_queue *q = &emu->eth_q[IONIC_QTYPE_TXQ][qid];
+    unsigned n = 0;
 
-    for (unsigned n = 0; q->head != q->prod && n < q->depth; n++) {
-        /* Gathered even when Tx is a sink, so the frame is still counted as
-         * sent: a NIC with nothing on the far end of its link counts too. */
-        enum ionic_emu_drop why;
-        size_t len = eth_tx_gather(emu, q, q->head, &why);
-        if (!len) {
-            ionic_emu_stats_drop(&emu->stats, NULL, 0, true, why);
-        } else if (ionic_fault_event(emu->tx_fault)) {
-            /* eth_tx drop: lost on the wire, so the guest still gets its
-             * completion and only the drop counters see it. */
-            ionic_emu_stats_drop(&emu->stats, emu->frame, len, true,
-                                 IONIC_EMU_DROP_INJECTED);
-        } else {
-            bool taken = emu->tx_filter != NULL &&
-                         emu->tx_filter(emu->tx_filter_ctx, emu->frame, len);
-            if (!taken && emu->net &&
-                ionic_eth_net_send(emu->net, emu->frame, len) < 0) {
-                {
-                    ionic_emu_stats_drop(&emu->stats, emu->frame, len, true,
-                                         IONIC_EMU_DROP_SEND);
-                }
-            } else {
-                ionic_emu_stats_frame(&emu->stats, emu->frame, len, true);
-                ionic_emu_port_frame(&emu->stats, emu->frame, len, true, 0);
+    while (q->head != q->prod && n < q->depth) {
+        struct eth_tx_desc d;
+        enum ionic_emu_drop why = IONIC_EMU_DROP_DESC_FETCH;
+        uint16_t count = 1; /* descriptors this pass consumes */
+        bool sent = false;
+
+        if (!eth_tx_desc_read(emu, q, q->head, &d)) {
+            /* Dropped, for the reason above. */
+        } else if (d.opcode == TXQ_DESC_OPCODE_TSO) {
+            count = eth_tx_tso(emu, q, &d, &sent, &why);
+            if (count == 0) {
+                break;
             }
-            if (emu->net || emu->tx_filter) {
-                ernic_stats_eth_bytes(emu->stats_sink, len, true);
+        } else {
+            size_t len = eth_tx_frame(emu, q, q->head, &d, &why);
+
+            if (len != 0) {
+                eth_tx_send(emu, len);
+                sent = true;
             }
         }
+        if (!sent) {
+            ionic_emu_stats_drop(&emu->stats, NULL, 0, true, why);
+        }
+
+        /* A chain is shorter than the ring, so this is its last. */
+        uint16_t last = (uint16_t)(((uint32_t)q->head + count - 1U) % q->depth);
 
         /* struct ionic_txq_comp: status @0, comp_index le16 @2, colour @15. */
         uint8_t comp[ETH_COMP_SIZE] = {0};
-        ernic_put_le16(comp + 2, q->head);
+        ernic_put_le16(comp + 2, last);
         comp[ETH_COMP_SIZE - 1] =
             q->cq_color ? (uint8_t)ADMIN_COMP_COLOR_MASK : 0;
 
@@ -2089,8 +2482,9 @@ static void eth_txq_service(struct ionic_eth_emu *emu, uint32_t qid)
                                  IONIC_EMU_DROP_DMA);
         }
 
-        q->head = (uint16_t)((q->head + 1) % q->depth);
+        q->head = (uint16_t)((last + 1U) % q->depth);
         eth_cq_advance(q);
+        n += count;
     }
 
     ionic_eth_emu_trigger_irq(emu, q->intr_index);

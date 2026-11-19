@@ -1,0 +1,133 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Stephen Bates <sbates@raithlin.com>
+Date: Wed, 18 Nov 2026 19:00:59 -0500
+Subject: [PATCH] ionic: count the unreadable skbs dropped on Tx
+
+Add a Tx counter, per queue and summed for the lif, to the ethtool
+stats:
+
+  tx_unreadable_drop  skbs marked unreadable (skb_frags_readable() is
+                      false, e.g. a devmem skb) that the driver freed
+                      in its xmit path, for whatever reason
+
+Any skb can be dropped there: when it needs more buffers than a
+descriptor has and can't be linearized, when mapping it fails, when the
+headers of a TSO skb can't be made writable, or when the timestamping
+queue is full. For an unreadable skb the first of these is not a corner
+case. A descriptor takes the head and 15 SG elements, a devmem sendmsg()
+makes one frag per iovec entry per page and nothing merges them, and
+skb_linearize() can't copy such frags, so a sender whose pieces average
+under about MSS/16 (90 bytes at an MTU of 1500) has those packets
+dropped, and a retransmit is made of the same frags (tcp_can_collapse()
+refuses unreadable skbs). Today a drop in the xmit path shows only in
+the "drop" count of the queue in debugfs, and to the sender it is a
+connection that stalls.
+
+Both drop paths of ionic_start_xmit() and ionic_start_hwstamp_xmit() now
+go through one helper, which does the counting.
+
+The counter stays at 0 until the driver sets netdev->netmem_tx.
+
+[ rocm-ernic: backport of patch 4/6 of the RFC series "ionic: support
+  netmem TX" (based on v7.4-rc3, not posted) to v7.2.6 with patches/srq
+  and patches/p4. The change to Documentation/.../pensando/ionic.rst is
+  left out, since the DKMS sources don't include that file; the rest of
+  the diff is unchanged. ]
+---
+ drivers/net/ethernet/pensando/ionic/ionic_lif.h   |  2 ++
+ drivers/net/ethernet/pensando/ionic/ionic_stats.c |  3 +++
+ drivers/net/ethernet/pensando/ionic/ionic_txrx.c  | 18 ++++++++++++------
+ 3 files changed, 17 insertions(+), 6 deletions(-)
+
+diff --git a/drivers/net/ethernet/pensando/ionic/ionic_lif.h b/drivers/net/ethernet/pensando/ionic/ionic_lif.h
+index 60985536e903..3cca0bda1d77 100644
+--- a/drivers/net/ethernet/pensando/ionic/ionic_lif.h
++++ b/drivers/net/ethernet/pensando/ionic/ionic_lif.h
+@@ -39,6 +39,7 @@ struct ionic_tx_stats {
+ 	u64 hwstamp_valid;
+ 	u64 hwstamp_invalid;
+ 	u64 xdp_frames;
++	u64 unreadable_drop;
+ };
+ 
+ struct ionic_rx_stats {
+@@ -147,6 +148,7 @@ struct ionic_lif_sw_stats {
+ 	u64 xdp_tx;
+ 	u64 xdp_redirect;
+ 	u64 xdp_frames;
++	u64 tx_unreadable_drop;
+ };
+ 
+ enum ionic_lif_state_flags {
+diff --git a/drivers/net/ethernet/pensando/ionic/ionic_stats.c b/drivers/net/ethernet/pensando/ionic/ionic_stats.c
+index 428d5cca930f..146987d530eb 100644
+--- a/drivers/net/ethernet/pensando/ionic/ionic_stats.c
++++ b/drivers/net/ethernet/pensando/ionic/ionic_stats.c
+@@ -33,6 +33,7 @@ static const struct ionic_stat_desc ionic_lif_stats_desc[] = {
+ 	IONIC_LIF_STAT_DESC(xdp_tx),
+ 	IONIC_LIF_STAT_DESC(xdp_redirect),
+ 	IONIC_LIF_STAT_DESC(xdp_frames),
++	IONIC_LIF_STAT_DESC(tx_unreadable_drop),
+ };
+ 
+ static const struct ionic_stat_desc ionic_port_stats_desc[] = {
+@@ -142,6 +143,7 @@ static const struct ionic_stat_desc ionic_tx_stats_desc[] = {
+ 	IONIC_TX_STAT_DESC(csum),
+ 	IONIC_TX_STAT_DESC(vlan_inserted),
+ 	IONIC_TX_STAT_DESC(xdp_frames),
++	IONIC_TX_STAT_DESC(unreadable_drop),
+ };
+ 
+ static const struct ionic_stat_desc ionic_rx_stats_desc[] = {
+@@ -185,6 +187,7 @@ static void ionic_add_lif_txq_stats(struct ionic_lif *lif, int q_num,
+ 	stats->tx_hwstamp_valid += txstats->hwstamp_valid;
+ 	stats->tx_hwstamp_invalid += txstats->hwstamp_invalid;
+ 	stats->xdp_frames += txstats->xdp_frames;
++	stats->tx_unreadable_drop += txstats->unreadable_drop;
+ }
+ 
+ static void ionic_add_lif_rxq_stats(struct ionic_lif *lif, int q_num,
+diff --git a/drivers/net/ethernet/pensando/ionic/ionic_txrx.c b/drivers/net/ethernet/pensando/ionic/ionic_txrx.c
+index a4d176f6bf59..5a06fde24992 100644
+--- a/drivers/net/ethernet/pensando/ionic/ionic_txrx.c
++++ b/drivers/net/ethernet/pensando/ionic/ionic_txrx.c
+@@ -1788,6 +1788,16 @@ linearize:
+ 	return ndescs;
+ }
+ 
++static netdev_tx_t ionic_tx_drop(struct ionic_queue *q, struct sk_buff *skb)
++{
++	if (unlikely(!skb_frags_readable(skb)))
++		q_to_tx_stats(q)->unreadable_drop++;
++
++	q->drop++;
++	dev_kfree_skb(skb);
++	return NETDEV_TX_OK;
++}
++
+ static netdev_tx_t ionic_start_hwstamp_xmit(struct sk_buff *skb,
+ 					    struct net_device *netdev)
+ {
+@@ -1820,9 +1830,7 @@ static netdev_tx_t ionic_start_hwstamp_xmit(struct sk_buff *skb,
+ 	return NETDEV_TX_OK;
+ 
+ err_out_drop:
+-	q->drop++;
+-	dev_kfree_skb(skb);
+-	return NETDEV_TX_OK;
++	return ionic_tx_drop(q, skb);
+ }
+ 
+ netdev_tx_t ionic_start_xmit(struct sk_buff *skb, struct net_device *netdev)
+@@ -1866,7 +1874,5 @@ netdev_tx_t ionic_start_xmit(struct sk_buff *skb, struct net_device *netdev)
+ 	return NETDEV_TX_OK;
+ 
+ err_out_drop:
+-	q->drop++;
+-	dev_kfree_skb(skb);
+-	return NETDEV_TX_OK;
++	return ionic_tx_drop(q, skb);
+ }
+-- 
+2.43.0
+

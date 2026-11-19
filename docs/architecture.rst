@@ -638,8 +638,10 @@ the data window, and sets ``done``.
        only to enabled receive queues
    * - Q_IDENTIFY
      - Reports descriptor and scatter-gather sizes for the
-       admin, notify, receive and transmit queues; advertises
-       no features: no offloads, and no express doorbell, even
+       admin, notify, receive and transmit queues, and offers
+       version 1 of the transmit queue, with 15-element
+       scatter-gather lists, to a driver that knows it;
+       advertises no queue features: no express doorbell, even
        with ``--cmb`` (see `Queues in the CMB`_). Fails for any
        other queue type
    * - DISCOVER_CMB
@@ -1319,8 +1321,11 @@ it goes through the data path described above.
   one queue (``src/ionic/ionic_eth_steer.c``). A TAP frame
   whose queue has no buffer posted is dropped, as on a real
   NIC.
-- No checksum, TSO, or scatter-gather offloads are advertised,
-  so the guest always sends simple linear frames.
+- Transmit scatter-gather, checksum and TCP segmentation
+  offloads are granted to a driver that asks for them, so the
+  guest sends frames in several buffers, frames whose checksum
+  the device fills in, and TCP sends the device cuts into
+  segments (see :doc:`ionic`).
 - Before a transmitted frame goes to the TAP, an in-process
   endpoint can claim it, and one can likewise claim a frame
   received from the TAP (the S3 target and the P4 engine use
@@ -1601,9 +1606,11 @@ What Is Not Emulated
   back (see `A Remote Request, Step by Step`_).
 - **One outstanding RDMA READ or atomic per QP** is what
   QUERY_QP reports.
-- **Ethernet offloads** (checksum, TSO, scatter-gather) are not
-  offered, and the guest's RSS key and indirection table are
-  accepted but ignored.
+- **Ethernet receive offloads** (checksum, hash), VLAN offloads
+  and segmentation through tunnels are not offered, and the
+  guest's RSS key and indirection table are accepted but
+  ignored. Transmit scatter-gather, checksum and TCP
+  segmentation are (see :doc:`ionic`).
 - **Counters with no emulator event behind them**, such as
   packet sequence errors, duplicates, CNPs, and ECN marks, read
   zero (see :doc:`ionic`).
@@ -1637,6 +1644,10 @@ Where to Look in the Source
    * - ``src/ionic/ionic_eth_emu.c``
      - Registers, device commands, LIF, Ethernet queues,
        interrupt controller, doorbell decode, the CMB
+   * - ``src/ionic/ionic_eth_tx.c``
+     - Transmit offloads: the ``CSUM_PARTIAL`` checksum, and
+       parsing a TSO chain's headers and rewriting them for
+       each segment
    * - ``src/ionic/ionic_eth_net.c``
      - Host TAP interface
    * - ``src/ionic/ionic_eth_steer.c``

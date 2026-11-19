@@ -24,13 +24,14 @@ set_source_files_properties(${PROJECT_SOURCE_DIR}/src/ernic_map.c PROPERTIES
 # needing a different set lists its own.
 
 # The ionic Ethernet emulator and what it calls: guest DMA, NIC profiles,
-# the LIF counters, Rx steering, fault injection, and the CMB's shared
-# memory and the GNU extensions it's made with
+# the LIF counters, Rx steering, Tx offloads, fault injection, and the
+# CMB's shared memory and the GNU extensions it's made with
 set(ERNIC_TEST_IONIC_ETH_SOURCES
     ${PROJECT_SOURCE_DIR}/src/ernic_dma.c
     ${PROJECT_SOURCE_DIR}/src/ernic_gnu.c
     ${PROJECT_SOURCE_DIR}/src/ernic_shm.c
     ${PROJECT_SOURCE_DIR}/src/ionic/ionic_eth_emu.c
+    ${PROJECT_SOURCE_DIR}/src/ionic/ionic_eth_tx.c
     ${PROJECT_SOURCE_DIR}/src/ionic/ionic_profile.c
     ${PROJECT_SOURCE_DIR}/src/ionic/ionic_profiles.c
     ${PROJECT_SOURCE_DIR}/src/ionic/ionic_emu_stats.c
@@ -500,6 +501,18 @@ ernic_add_test_program(test_ionic_stats_publish
 ernic_add_test_program(test_ionic_queues
     SOURCES
         test_ionic_queues.c
+        ${ERNIC_TEST_IONIC_ETH_SOURCES}
+    HEADER_DEPS vfio-user ibverbs
+)
+
+# ionic Ethernet Tx offload test. It links the eth emulator, writes Tx
+# descriptors and SG lists into a fake guest memory as the Linux driver lays
+# them out, and compares the frames the device sends with the literals in
+# golden/ionic_eth_tx_frames.h: scatter-gather, CSUM_PARTIAL, TSO, and each
+# descriptor the device refuses.
+ernic_add_test_program(test_ionic_eth_tx
+    SOURCES
+        test_ionic_eth_tx.c
         ${ERNIC_TEST_IONIC_ETH_SOURCES}
     HEADER_DEPS vfio-user ibverbs
 )
@@ -1087,6 +1100,11 @@ ernic_add_unit_test(ionic-stats-publish-unit test_ionic_stats_publish
 # ionic queues unit test: the queue, EQ and MSI-X vector counts each NIC
 # profile advertises, and whether the driver's vector budget fits them.
 ernic_add_unit_test(ionic-queues-unit test_ionic_queues TIMEOUT 30)
+
+# ionic Ethernet Tx offload unit test: the frames a guest's scatter-gather,
+# checksum and TSO descriptors turn into, byte for byte, and the features
+# and queue versions the driver negotiates first.
+ernic_add_unit_test(ionic-eth-tx-unit test_ionic_eth_tx TIMEOUT 30)
 
 # ionic QUERY_QP unit test: asserts the command writes the QP's real state
 # into the side buffers the driver reads, rather than leaving them zeroed and
