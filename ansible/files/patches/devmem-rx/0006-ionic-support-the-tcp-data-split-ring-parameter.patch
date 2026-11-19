@@ -1,0 +1,212 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Stephen Bates <sbates@raithlin.com>
+Date: Wed, 18 Nov 2026 23:29:05 -0500
+Subject: [RFC PATCH 6/8] ionic: support the tcp-data-split ring parameter
+
+Let "ethtool -G <dev> tcp-data-split on" turn header split on, if the
+device offers IONIC_RXQ_F_HDS together with the double size completion
+and Rx scatter-gather in its Rx queue identity. The Rx queues are then
+rebuilt with those features, by the same path as a ring size change,
+and the previous patch does the rest.
+
+The setting is reported as unknown for a device without the feature,
+and an attempt to set it there, to on or to off, fails with
+-EOPNOTSUPP, as it did when the driver did not claim the parameter.
+There is no hds-thresh: the
+device splits every TCP packet it can, which is what a threshold of
+zero means, and zero is what the core has for a driver that never
+sets one.
+
+Header split is refused together with:
+
+ - XDP, in both directions. The XDP path reads the first buffer and
+   expects the whole packet behind it. The core already refuses a
+   single buffer program with header split; ionic refuses any.
+
+ - hardware timestamps on all Rx packets (as opposed to the PTP
+   filters, which use their own queue). That would need the timestamp
+   and the header length in the same completion, and nothing says a
+   device can do that.
+
+ - rx-push. Nothing is known about header split with the descriptor
+   ring in the controller memory buffer.
+---
+ .../net/ethernet/pensando/ionic/ionic_ethtool.c    | 61 ++++++++++++++++++++
+ drivers/net/ethernet/pensando/ionic/ionic_lif.c    | 12 ++++
+ drivers/net/ethernet/pensando/ionic/ionic_lif.h    | 16 +++++
+ 3 files changed, 88 insertions(+), 1 deletion(-)
+
+diff --git a/drivers/net/ethernet/pensando/ionic/ionic_ethtool.c b/drivers/net/ethernet/pensando/ionic/ionic_ethtool.c
+index 6c9d7bf30e21..c3c04e2bff25 100644
+--- a/drivers/net/ethernet/pensando/ionic/ionic_ethtool.c
++++ b/drivers/net/ethernet/pensando/ionic/ionic_ethtool.c
+@@ -681,6 +681,38 @@ static void ionic_get_ringparam(struct net_device *netdev,
+ 	ring->rx_pending = lif->nrxq_descs;
+ 	kernel_ring->tx_push = test_bit(IONIC_LIF_F_CMB_TX_RINGS, lif->state);
+ 	kernel_ring->rx_push = test_bit(IONIC_LIF_F_CMB_RX_RINGS, lif->state);
++
++	if (!ionic_lif_hds_capable(lif))
++		kernel_ring->tcp_data_split = ETHTOOL_TCP_DATA_SPLIT_UNKNOWN;
++	else if (ionic_lif_hds_enabled(lif))
++		kernel_ring->tcp_data_split = ETHTOOL_TCP_DATA_SPLIT_ENABLED;
++	else
++		kernel_ring->tcp_data_split = ETHTOOL_TCP_DATA_SPLIT_DISABLED;
++}
++
++static int ionic_validate_hds_config(struct ionic_lif *lif,
++				     struct kernel_ethtool_ringparam *kernel_ring,
++				     struct netlink_ext_ack *extack)
++{
++	if (lif->xdp_prog) {
++		NL_SET_ERR_MSG_MOD(extack,
++				   "tcp-data-split not available with XDP");
++		return -EOPNOTSUPP;
++	}
++
++	if (lif->rxq_features & IONIC_RXQ_F_HWSTAMP) {
++		NL_SET_ERR_MSG_MOD(extack,
++				   "tcp-data-split not available with Rx timestamps on all packets");
++		return -EOPNOTSUPP;
++	}
++
++	if (kernel_ring->rx_push) {
++		NL_SET_ERR_MSG_MOD(extack,
++				   "tcp-data-split not available with rx-push");
++		return -EOPNOTSUPP;
++	}
++
++	return 0;
+ }
+ 
+ static int ionic_set_ringparam(struct net_device *netdev,
+@@ -690,6 +722,7 @@ static int ionic_set_ringparam(struct net_device *netdev,
+ {
+ 	struct ionic_lif *lif = netdev_priv(netdev);
+ 	struct ionic_queue_params qparam;
++	bool hds;
+ 	int err;
+ 
+ 	if (test_bit(IONIC_LIF_F_FW_RESET, lif->state))
+@@ -697,6 +730,25 @@ static int ionic_set_ringparam(struct net_device *netdev,
+ 
+ 	ionic_init_queue_params(lif, &qparam);
+ 
++	/* A device without header split reports the setting as unknown and
++	 * takes neither on nor off, as when the driver did not claim the
++	 * parameter at all.
++	 */
++	if (kernel_ring->tcp_data_split != ETHTOOL_TCP_DATA_SPLIT_UNKNOWN &&
++	    !ionic_lif_hds_capable(lif)) {
++		NL_SET_ERR_MSG_MOD(extack,
++				   "Device does not support tcp-data-split");
++		return -EOPNOTSUPP;
++	}
++
++	/* Anything but an explicit request is the default, which is off */
++	hds = kernel_ring->tcp_data_split == ETHTOOL_TCP_DATA_SPLIT_ENABLED;
++	if (hds) {
++		err = ionic_validate_hds_config(lif, kernel_ring, extack);
++		if (err)
++			return err;
++	}
++
+ 	if (ring->rx_mini_pending || ring->rx_jumbo_pending) {
+ 		netdev_info(netdev, "Changing jumbo or mini descriptors not supported\n");
+ 		return -EINVAL;
+@@ -711,6 +763,7 @@ static int ionic_set_ringparam(struct net_device *netdev,
+ 	/* if nothing to do return success */
+ 	if (ring->tx_pending == lif->ntxq_descs &&
+ 	    ring->rx_pending == lif->nrxq_descs &&
++	    hds == ionic_lif_hds_enabled(lif) &&
+ 	    kernel_ring->tx_push == test_bit(IONIC_LIF_F_CMB_TX_RINGS, lif->state) &&
+ 	    kernel_ring->rx_push == test_bit(IONIC_LIF_F_CMB_RX_RINGS, lif->state))
+ 		return 0;
+@@ -719,6 +772,10 @@ static int ionic_set_ringparam(struct net_device *netdev,
+ 	qparam.nrxq_descs = ring->rx_pending;
+ 	qparam.cmb_tx = kernel_ring->tx_push;
+ 	qparam.cmb_rx = kernel_ring->rx_push;
++	if (hds)
++		qparam.rxq_features = IONIC_RXQ_HDS_FEATURES;
++	else if (ionic_lif_hds_enabled(lif))
++		qparam.rxq_features &= ~IONIC_RXQ_HDS_FEATURES;
+ 
+ 	err = ionic_validate_cmb_config(lif, &qparam);
+ 	if (err < 0)
+@@ -744,6 +801,7 @@ static int ionic_set_ringparam(struct net_device *netdev,
+ 	if (!netif_running(lif->netdev)) {
+ 		lif->ntxq_descs = ring->tx_pending;
+ 		lif->nrxq_descs = ring->rx_pending;
++		lif->rxq_features = qparam.rxq_features;
+ 		return 0;
+ 	}
+ 
+@@ -1148,7 +1206,8 @@ static const struct ethtool_ops ionic_ethtool_ops = {
+ 				     ETHTOOL_COALESCE_USE_ADAPTIVE_RX |
+ 				     ETHTOOL_COALESCE_USE_ADAPTIVE_TX,
+ 	.supported_ring_params = ETHTOOL_RING_USE_TX_PUSH |
+-				 ETHTOOL_RING_USE_RX_PUSH,
++				 ETHTOOL_RING_USE_RX_PUSH |
++				 ETHTOOL_RING_USE_TCP_DATA_SPLIT,
+ 	.op_needs_rtnl = ETHTOOL_OP_NEEDS_RTNL_GLINK |
+ 			 ETHTOOL_OP_NEEDS_RTNL_SRINGPARAM |
+ 			 ETHTOOL_OP_NEEDS_RTNL_SCHANNELS,
+diff --git a/drivers/net/ethernet/pensando/ionic/ionic_lif.c b/drivers/net/ethernet/pensando/ionic/ionic_lif.c
+index dacb4746a4c5..0d6b34ae7ee2 100644
+--- a/drivers/net/ethernet/pensando/ionic/ionic_lif.c
++++ b/drivers/net/ethernet/pensando/ionic/ionic_lif.c
+@@ -1150,6 +1150,12 @@ int ionic_lif_config_hwstamp_rxq_all(struct ionic_lif *lif, bool rx_all)
+ {
+ 	struct ionic_queue_params qparam;
+ 
++	/* A header split queue has the double size completion already, but
++	 * nothing says that a device can put a timestamp in it as well.
++	 */
++	if (ionic_lif_hds_enabled(lif))
++		return rx_all ? -EOPNOTSUPP : 0;
++
+ 	ionic_init_queue_params(lif, &qparam);
+ 
+ 	if (rx_all)
+@@ -2810,6 +2816,12 @@ static int ionic_xdp_config(struct net_device *netdev, struct netdev_bpf *bpf)
+ 	struct bpf_prog *old_prog;
+ 	u32 maxfs;
+ 
++	if (bpf->prog && ionic_lif_hds_enabled(lif)) {
++		NL_SET_ERR_MSG_MOD(bpf->extack,
++				   "XDP not available with tcp-data-split");
++		return -EOPNOTSUPP;
++	}
++
+ 	if (test_bit(IONIC_LIF_F_SPLIT_INTR, lif->state)) {
+ #define XDP_ERR_SPLIT "XDP not available with split Tx/Rx interrupts"
+ 		NL_SET_ERR_MSG_MOD(bpf->extack, XDP_ERR_SPLIT);
+diff --git a/drivers/net/ethernet/pensando/ionic/ionic_lif.h b/drivers/net/ethernet/pensando/ionic/ionic_lif.h
+index 2b9a32c55d08..14ae611f1f15 100644
+--- a/drivers/net/ethernet/pensando/ionic/ionic_lif.h
++++ b/drivers/net/ethernet/pensando/ionic/ionic_lif.h
+@@ -345,6 +345,22 @@ static inline bool ionic_txq_hwstamp_enabled(struct ionic_queue *q)
+ 	return q->features & IONIC_TXQ_F_HWSTAMP;
+ }
+ 
++/* The features of an Rx queue that splits headers from payload */
++#define IONIC_RXQ_HDS_FEATURES	(IONIC_Q_F_2X_CQ_DESC | IONIC_RXQ_F_HDS)
++
++static inline bool ionic_lif_hds_capable(struct ionic_lif *lif)
++{
++	struct ionic_qtype_info *qti = &lif->qtype_info[IONIC_QTYPE_RXQ];
++
++	return (qti->features & IONIC_RXQ_HDS_FEATURES) ==
++	       IONIC_RXQ_HDS_FEATURES && qti->max_sg_elems;
++}
++
++static inline bool ionic_lif_hds_enabled(struct ionic_lif *lif)
++{
++	return lif->rxq_features & IONIC_RXQ_F_HDS;
++}
++
+ void ionic_link_status_check_request(struct ionic_lif *lif, bool can_sleep);
+ void ionic_get_stats64(struct net_device *netdev,
+ 		       struct rtnl_link_stats64 *ns);
+-- 
+2.43.0
+

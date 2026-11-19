@@ -1,0 +1,499 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Stephen Bates <sbates@raithlin.com>
+Date: Wed, 18 Nov 2026 23:29:00 -0500
+Subject: [RFC PATCH 1/8] ionic: run the netdev ops under the instance lock
+
+The queue management API, which a later patch implements, makes the core
+call a driver's ndos and ethtool ops with the netdev instance lock held,
+and so does request_ops_lock. ionic can't be called that way today:
+napi_enable(), napi_disable(), netif_napi_add() and netif_napi_del()
+take that lock themselves, and ionic calls them from ndo_open, ndo_stop,
+ndo_change_mtu, ndo_bpf, ndo_hwtstamp_set and the ring and channel
+ethtool ops. The first "ip link set up" would deadlock.
+
+Set request_ops_lock, and make the instance lock the outer lock for
+everything that brings queues up or down:
+
+ - Use the _locked NAPI helpers in the functions that are now only
+   reached with the lock held: ionic_qcq_enable(), ionic_qcq_disable(),
+   ionic_lif_qcq_deinit(), ionic_lif_txq_init(), ionic_lif_rxq_init()
+   and ionic_lif_adminq_init().
+
+ - Take the lock, before lif->queue_lock, in the paths that reach those
+   functions from outside the core: the link check (which runs from the
+   deferred work, from ionic_lif_register() and at the end of
+   ionic_restart_lif()), the Tx timeout work, FW down and FW up
+   (ionic_restart_lif(), also the PCI reset_done handler), the hwstamp
+   replay after FW up, and the PCI reset_prepare handler.
+
+ - The Tx timeout work is not cancelled by a firmware or PCI reset, so
+   it can be waiting for the lock while the reset frees the queues.
+   Have it look at netif_running() and IONIC_LIF_F_FW_RESET once it
+   holds the lock, where both stand still, rather than before.
+
+ - The adminq NAPI is added and enabled by ionic_lif_init() and removed
+   by ionic_lif_deinit(), which run both from probe and remove, without
+   the lock, and from the FW recovery paths, which now hold it. Split
+   each in two: ionic_lif_init() and ionic_lif_deinit() take the lock for
+   probe and remove, and the _locked variants are for the recovery paths.
+
+ - ionic_lif_deinit() cancels the deferred work and the Tx timeout work.
+   Both now take the instance lock, so that can't be done with the lock
+   held. Only the callers without IONIC_LIF_F_FW_RESET get as far as the
+   cancel, and those are probe and remove, so the cancel stays in the
+   unlocked ionic_lif_deinit(), ahead of the lock.
+
+The lock order is the instance lock, then lif->queue_lock, then the
+locks that were already taken inside queue_lock. Registering and
+unregistering the auxiliary device stay outside the instance lock, as
+they are outside queue_lock today: the RDMA driver's probe and remove
+run from there.
+
+For an ops locked driver the ethtool ops run without rtnl_lock unless
+the driver asks for it. get_link needs it: ethtool_op_get_link() syncs
+the link watch, see commit 1105ef941c1a ("net: ethtool: keep rtnl_lock
+for ops using ethtool_op_get_link()"). Ask for it for set_ringparam and
+set_channels as well. They rebuild the queues and, for the channels,
+change the number of real queues, and keeping rtnl_lock there is the
+cautious choice, which gve, bnxt and fbnic made too. The other ops only
+talk to the device and touch driver state that the instance lock now
+covers.
+
+The core refuses to register an ops locked netdev that still has
+ndo_set_rx_mode ("ops-locked drivers should use ndo_set_rx_mode_async"),
+so convert it: the async op runs in process context under the instance
+lock with snapshots of the address lists, which lets it sync the filters
+and the rx_mode to the device directly instead of through the deferred
+work.
+
+This follows what bnxt did before it could use the queue API, in
+commit 004b5008016a ("eth: bnxt: remove most dependencies on RTNL") and
+commit eaca6e5dc6ba ("eth: bnxt: request unconditional ops lock").
+---
+ .../net/ethernet/pensando/ionic/ionic_bus_pci.c    |   4 +
+ .../net/ethernet/pensando/ionic/ionic_ethtool.c    |   3 +
+ drivers/net/ethernet/pensando/ionic/ionic_lif.c    | 120 ++++++++++++++------
+ drivers/net/ethernet/pensando/ionic/ionic_lif.h    |   1 
+ drivers/net/ethernet/pensando/ionic/ionic_phc.c    |   2 
+ 5 files changed, 91 insertions(+), 39 deletions(-)
+
+diff --git a/drivers/net/ethernet/pensando/ionic/ionic_bus_pci.c b/drivers/net/ethernet/pensando/ionic/ionic_bus_pci.c
+index ddc2f9770df4..a8411ec97ee4 100644
+--- a/drivers/net/ethernet/pensando/ionic/ionic_bus_pci.c
++++ b/drivers/net/ethernet/pensando/ionic/ionic_bus_pci.c
+@@ -454,13 +454,15 @@ static void ionic_reset_prepare(struct pci_dev *pdev)
+ 	cancel_work_sync(&lif->deferred.work);
+ 
+ 	ionic_auxbus_unregister(ionic->lif);
++	netdev_lock(lif->netdev);
+ 	mutex_lock(&lif->queue_lock);
+ 	ionic_stop_queues_reconfig(lif);
+ 	ionic_txrx_free(lif);
+-	ionic_lif_deinit(lif);
++	ionic_lif_deinit_locked(lif);
+ 	ionic_qcqs_free(lif);
+ 	ionic_debugfs_del_lif(lif);
+ 	mutex_unlock(&lif->queue_lock);
++	netdev_unlock(lif->netdev);
+ 
+ 	ionic_dev_teardown(ionic);
+ 	ionic_clear_pci(ionic);
+diff --git a/drivers/net/ethernet/pensando/ionic/ionic_ethtool.c b/drivers/net/ethernet/pensando/ionic/ionic_ethtool.c
+index 119ac720c078..6c9d7bf30e21 100644
+--- a/drivers/net/ethernet/pensando/ionic/ionic_ethtool.c
++++ b/drivers/net/ethernet/pensando/ionic/ionic_ethtool.c
+@@ -1149,6 +1149,9 @@ static const struct ethtool_ops ionic_ethtool_ops = {
+ 				     ETHTOOL_COALESCE_USE_ADAPTIVE_TX,
+ 	.supported_ring_params = ETHTOOL_RING_USE_TX_PUSH |
+ 				 ETHTOOL_RING_USE_RX_PUSH,
++	.op_needs_rtnl = ETHTOOL_OP_NEEDS_RTNL_GLINK |
++			 ETHTOOL_OP_NEEDS_RTNL_SRINGPARAM |
++			 ETHTOOL_OP_NEEDS_RTNL_SCHANNELS,
+ 	.get_drvinfo		= ionic_get_drvinfo,
+ 	.get_regs_len		= ionic_get_regs_len,
+ 	.get_regs		= ionic_get_regs,
+diff --git a/drivers/net/ethernet/pensando/ionic/ionic_lif.c b/drivers/net/ethernet/pensando/ionic/ionic_lif.c
+index f1deee4a4499..32dde9bbac3b 100644
+--- a/drivers/net/ethernet/pensando/ionic/ionic_lif.c
++++ b/drivers/net/ethernet/pensando/ionic/ionic_lif.c
+@@ -13,6 +13,7 @@
+ #include <linux/cpumask.h>
+ #include <linux/crash_dump.h>
+ #include <linux/vmalloc.h>
++#include <net/netdev_lock.h>
+ #include <net/page_pool/helpers.h>
+ 
+ #include "ionic.h"
+@@ -41,6 +42,7 @@ static void ionic_link_status_check(struct ionic_lif *lif);
+ static void ionic_lif_handle_fw_down(struct ionic_lif *lif);
+ static void ionic_lif_handle_fw_up(struct ionic_lif *lif);
+ static void ionic_lif_set_netdev_info(struct ionic_lif *lif);
++static int ionic_lif_init_locked(struct ionic_lif *lif);
+ 
+ static void ionic_txrx_deinit(struct ionic_lif *lif);
+ static int ionic_txrx_init(struct ionic_lif *lif);
+@@ -138,6 +140,7 @@ void ionic_lif_deferred_enqueue(struct ionic_lif *lif,
+ 	queue_work(lif->ionic->wq, &lif->deferred.work);
+ }
+ 
++/* Takes the netdev instance lock: the caller must not hold it */
+ static void ionic_link_status_check(struct ionic_lif *lif)
+ {
+ 	struct ionic_dev *idev = &lif->ionic->idev;
+@@ -162,6 +165,7 @@ static void ionic_link_status_check(struct ionic_lif *lif)
+ 	if (link_up) {
+ 		int err = 0;
+ 
++		netdev_lock(netdev);
+ 		if (netdev->flags & IFF_UP && netif_running(netdev)) {
+ 			mutex_lock(&lif->queue_lock);
+ 			err = ionic_start_queues(lif);
+@@ -173,6 +177,7 @@ static void ionic_link_status_check(struct ionic_lif *lif)
+ 			}
+ 			mutex_unlock(&lif->queue_lock);
+ 		}
++		netdev_unlock(netdev);
+ 
+ 		if (!err && !netif_carrier_ok(netdev)) {
+ 			ionic_port_identify(lif->ionic);
+@@ -186,11 +191,13 @@ static void ionic_link_status_check(struct ionic_lif *lif)
+ 			netif_carrier_off(netdev);
+ 		}
+ 
++		netdev_lock(netdev);
+ 		if (netdev->flags & IFF_UP && netif_running(netdev)) {
+ 			mutex_lock(&lif->queue_lock);
+ 			ionic_stop_queues(lif);
+ 			mutex_unlock(&lif->queue_lock);
+ 		}
++		netdev_unlock(netdev);
+ 	}
+ 
+ 	clear_bit(IONIC_LIF_F_LINK_CHECK_REQUESTED, lif->state);
+@@ -322,7 +329,7 @@ static int ionic_qcq_enable(struct ionic_qcq *qcq)
+ 		return ret;
+ 
+ 	if (qcq->flags & IONIC_QCQ_F_INTR) {
+-		napi_enable(&qcq->napi);
++		napi_enable_locked(&qcq->napi);
+ 		irq_set_affinity_notifier(qcq->intr.vector,
+ 					  &qcq->intr.aff_notify);
+ 		irq_set_affinity_hint(qcq->intr.vector,
+@@ -364,7 +371,7 @@ static int ionic_qcq_disable(struct ionic_lif *lif, struct ionic_qcq *qcq, int f
+ 		synchronize_irq(qcq->intr.vector);
+ 		irq_set_affinity_notifier(qcq->intr.vector, NULL);
+ 		irq_set_affinity_hint(qcq->intr.vector, NULL);
+-		napi_disable(&qcq->napi);
++		napi_disable_locked(&qcq->napi);
+ 	}
+ 
+ 	/* If there was a previous fw communcation error, don't bother with
+@@ -396,7 +403,7 @@ static void ionic_lif_qcq_deinit(struct ionic_lif *lif, struct ionic_qcq *qcq)
+ 	if (qcq->flags & IONIC_QCQ_F_INTR) {
+ 		ionic_intr_mask(idev->intr_ctrl, qcq->intr.index,
+ 				IONIC_INTR_MASK_SET);
+-		netif_napi_del(&qcq->napi);
++		netif_napi_del_locked(&qcq->napi);
+ 	}
+ 
+ 	qcq->flags &= ~IONIC_QCQ_F_INITED;
+@@ -888,7 +895,7 @@ static int ionic_lif_txq_init(struct ionic_lif *lif, struct ionic_qcq *qcq)
+ 	q->dbell_jiffies = jiffies;
+ 
+ 	if (test_bit(IONIC_LIF_F_SPLIT_INTR, lif->state))
+-		netif_napi_add(lif->netdev, &qcq->napi, ionic_tx_napi);
++		netif_napi_add_locked(lif->netdev, &qcq->napi, ionic_tx_napi);
+ 
+ 	qcq->flags |= IONIC_QCQ_F_INITED;
+ 
+@@ -970,12 +977,12 @@ static int ionic_lif_rxq_init(struct ionic_lif *lif, struct ionic_qcq *qcq)
+ 	q->dbell_jiffies = jiffies;
+ 
+ 	if (test_bit(IONIC_LIF_F_SPLIT_INTR, lif->state))
+-		netif_napi_add(lif->netdev, &qcq->napi, ionic_rx_napi);
++		netif_napi_add_locked(lif->netdev, &qcq->napi, ionic_rx_napi);
+ 	else
+-		netif_napi_add(lif->netdev, &qcq->napi, ionic_txrx_napi);
++		netif_napi_add_locked(lif->netdev, &qcq->napi, ionic_txrx_napi);
+ 	err = ionic_register_rxq_info(q, qcq->napi.napi_id);
+ 	if (err) {
+-		netif_napi_del(&qcq->napi);
++		netif_napi_del_locked(&qcq->napi);
+ 		return err;
+ 	}
+ 
+@@ -1430,26 +1437,22 @@ void ionic_lif_rx_mode(struct ionic_lif *lif)
+ 	mutex_unlock(&lif->config_lock);
+ }
+ 
+-static void ionic_ndo_set_rx_mode(struct net_device *netdev)
++static int ionic_ndo_set_rx_mode(struct net_device *netdev,
++				 struct netdev_hw_addr_list *uc,
++				 struct netdev_hw_addr_list *mc)
+ {
+ 	struct ionic_lif *lif = netdev_priv(netdev);
+-	struct ionic_deferred_work *work;
+ 
+ 	/* Sync the kernel filter list with the driver filter list */
+-	__dev_uc_sync(netdev, ionic_addr_add, ionic_addr_del);
+-	__dev_mc_sync(netdev, ionic_addr_add, ionic_addr_del);
++	__hw_addr_sync_dev(uc, netdev, ionic_addr_add, ionic_addr_del);
++	__hw_addr_sync_dev(mc, netdev, ionic_addr_add, ionic_addr_del);
+ 
+-	/* Shove off the rest of the rxmode work to the work task
+-	 * which will include syncing the filters to the firmware.
++	/* Process context, under the instance lock: sync the filters and
++	 * the rx_mode to the firmware right away.
+ 	 */
+-	work = kzalloc_obj(*work, GFP_ATOMIC);
+-	if (!work) {
+-		netdev_err(lif->netdev, "rxmode change dropped\n");
+-		return;
+-	}
+-	work->type = IONIC_DW_TYPE_RX_MODE;
+-	netdev_dbg(lif->netdev, "deferred: rx_mode\n");
+-	ionic_lif_deferred_enqueue(lif, work);
++	ionic_lif_rx_mode(lif);
++
++	return 0;
+ }
+ 
+ static __le64 ionic_netdev_features_to_nic(netdev_features_t features)
+@@ -1860,19 +1863,23 @@ static void ionic_tx_timeout_work(struct work_struct *ws)
+ 	struct ionic_lif *lif = container_of(ws, struct ionic_lif, tx_timeout_work);
+ 	int err;
+ 
+-	if (test_bit(IONIC_LIF_F_FW_RESET, lif->state))
+-		return;
++	netdev_lock(lif->netdev);
+ 
+-	/* if we were stopped before this scheduled job was launched,
+-	 * don't bother the queues as they are already stopped.
++	/* if we were stopped or the FW went down before this scheduled job
++	 * was launched, don't bother the queues: they are already stopped,
++	 * or gone.  Both are only stable under the instance lock.
+ 	 */
+-	if (!netif_running(lif->netdev))
++	if (!netif_running(lif->netdev) ||
++	    test_bit(IONIC_LIF_F_FW_RESET, lif->state)) {
++		netdev_unlock(lif->netdev);
+ 		return;
++	}
+ 
+ 	mutex_lock(&lif->queue_lock);
+ 	ionic_stop_queues_reconfig(lif);
+ 	err = ionic_start_queues_reconfig(lif);
+ 	mutex_unlock(&lif->queue_lock);
++	netdev_unlock(lif->netdev);
+ 
+ 	if (err)
+ 		dev_err(lif->ionic->dev, "%s: Restarting queues failed\n", __func__);
+@@ -2834,7 +2841,7 @@ static const struct net_device_ops ionic_netdev_ops = {
+ 	.ndo_bpf		= ionic_xdp,
+ 	.ndo_xdp_xmit		= ionic_xdp_xmit,
+ 	.ndo_get_stats64	= ionic_get_stats64,
+-	.ndo_set_rx_mode	= ionic_ndo_set_rx_mode,
++	.ndo_set_rx_mode_async	= ionic_ndo_set_rx_mode,
+ 	.ndo_set_features	= ionic_set_features,
+ 	.ndo_set_mac_address	= ionic_set_mac_address,
+ 	.ndo_validate_addr	= eth_validate_addr,
+@@ -3269,6 +3276,7 @@ int ionic_lif_alloc(struct ionic *ionic)
+ 	ionic->lif = lif;
+ 	lif->ionic = ionic;
+ 	netdev->netdev_ops = &ionic_netdev_ops;
++	netdev->request_ops_lock = true;
+ 	ionic_ethtool_set_ops(netdev);
+ 
+ 	netdev->watchdog_timeo = 5 * HZ;
+@@ -3407,6 +3415,7 @@ static void ionic_lif_handle_fw_down(struct ionic_lif *lif)
+ 	netif_device_detach(lif->netdev);
+ 
+ 	ionic_auxbus_unregister(ionic->lif);
++	netdev_lock(lif->netdev);
+ 	mutex_lock(&lif->queue_lock);
+ 	if (test_bit(IONIC_LIF_F_UP, lif->state)) {
+ 		dev_info(ionic->dev, "Surprise FW stop, stopping queues\n");
+@@ -3417,11 +3426,12 @@ static void ionic_lif_handle_fw_down(struct ionic_lif *lif)
+ 		ionic_txrx_deinit(lif);
+ 		ionic_txrx_free(lif);
+ 	}
+-	ionic_lif_deinit(lif);
++	ionic_lif_deinit_locked(lif);
+ 	ionic_reset(ionic);
+ 	ionic_qcqs_free(lif);
+ 
+ 	mutex_unlock(&lif->queue_lock);
++	netdev_unlock(lif->netdev);
+ 
+ 	clear_bit(IONIC_LIF_F_FW_STOPPING, lif->state);
+ 	dev_info(ionic->dev, "FW Down: LIFs stopped\n");
+@@ -3432,6 +3442,7 @@ int ionic_restart_lif(struct ionic_lif *lif)
+ 	struct ionic *ionic = lif->ionic;
+ 	int err;
+ 
++	netdev_lock(lif->netdev);
+ 	mutex_lock(&lif->queue_lock);
+ 
+ 	if (test_and_clear_bit(IONIC_LIF_F_BROKEN, lif->state))
+@@ -3441,7 +3452,7 @@ int ionic_restart_lif(struct ionic_lif *lif)
+ 	if (err)
+ 		goto err_unlock;
+ 
+-	err = ionic_lif_init(lif);
++	err = ionic_lif_init_locked(lif);
+ 	if (err)
+ 		goto err_qcqs_free;
+ 
+@@ -3463,6 +3474,7 @@ int ionic_restart_lif(struct ionic_lif *lif)
+ 	}
+ 
+ 	mutex_unlock(&lif->queue_lock);
++	netdev_unlock(lif->netdev);
+ 
+ 	clear_bit(IONIC_LIF_F_FW_RESET, lif->state);
+ 	ionic_link_status_check_request(lif, CAN_SLEEP);
+@@ -3476,11 +3488,12 @@ int ionic_restart_lif(struct ionic_lif *lif)
+ err_txrx_free:
+ 	ionic_txrx_free(lif);
+ err_lifs_deinit:
+-	ionic_lif_deinit(lif);
++	ionic_lif_deinit_locked(lif);
+ err_qcqs_free:
+ 	ionic_qcqs_free(lif);
+ err_unlock:
+ 	mutex_unlock(&lif->queue_lock);
++	netdev_unlock(lif->netdev);
+ 
+ 	return err;
+ }
+@@ -3560,20 +3573,24 @@ void ionic_lif_free(struct ionic_lif *lif)
+ 	free_netdev(lif->netdev);
+ }
+ 
+-void ionic_lif_deinit(struct ionic_lif *lif)
++/* The caller holds the netdev instance lock.  The deferred and the Tx timeout
++ * work take that lock, so they can't be cancelled from in here: without
++ * IONIC_LIF_F_FW_RESET use ionic_lif_deinit().
++ */
++void ionic_lif_deinit_locked(struct ionic_lif *lif)
+ {
++	netdev_assert_locked(lif->netdev);
++
+ 	if (!test_and_clear_bit(IONIC_LIF_F_INITED, lif->state))
+ 		return;
+ 
+ 	if (!test_bit(IONIC_LIF_F_FW_RESET, lif->state)) {
+-		cancel_work_sync(&lif->deferred.work);
+-		cancel_work_sync(&lif->tx_timeout_work);
+ 		ionic_rx_filters_deinit(lif);
+ 		if (lif->netdev->features & NETIF_F_RXHASH)
+ 			ionic_lif_rss_deinit(lif);
+ 	}
+ 
+-	napi_disable(&lif->adminqcq->napi);
++	napi_disable_locked(&lif->adminqcq->napi);
+ 	ionic_lif_qcq_deinit(lif, lif->notifyqcq);
+ 	ionic_lif_qcq_deinit(lif, lif->adminqcq);
+ 
+@@ -3583,6 +3600,20 @@ void ionic_lif_deinit(struct ionic_lif *lif)
+ 	ionic_lif_reset(lif);
+ }
+ 
++/* Takes the netdev instance lock: the caller must not hold it */
++void ionic_lif_deinit(struct ionic_lif *lif)
++{
++	if (test_bit(IONIC_LIF_F_INITED, lif->state) &&
++	    !test_bit(IONIC_LIF_F_FW_RESET, lif->state)) {
++		cancel_work_sync(&lif->deferred.work);
++		cancel_work_sync(&lif->tx_timeout_work);
++	}
++
++	netdev_lock(lif->netdev);
++	ionic_lif_deinit_locked(lif);
++	netdev_unlock(lif->netdev);
++}
++
+ static int ionic_lif_adminq_init(struct ionic_lif *lif)
+ {
+ 	struct device *dev = lif->ionic->dev;
+@@ -3616,9 +3647,9 @@ static int ionic_lif_adminq_init(struct ionic_lif *lif)
+ 	q->dbell_deadline = IONIC_ADMIN_DOORBELL_DEADLINE;
+ 	q->dbell_jiffies = jiffies;
+ 
+-	netif_napi_add(lif->netdev, &qcq->napi, ionic_adminq_napi);
++	netif_napi_add_locked(lif->netdev, &qcq->napi, ionic_adminq_napi);
+ 
+-	napi_enable(&qcq->napi);
++	napi_enable_locked(&qcq->napi);
+ 
+ 	if (qcq->flags & IONIC_QCQ_F_INTR) {
+ 		irq_set_affinity_hint(qcq->intr.vector,
+@@ -3748,7 +3779,8 @@ static int ionic_station_set(struct ionic_lif *lif)
+ 	return 0;
+ }
+ 
+-int ionic_lif_init(struct ionic_lif *lif)
++/* The caller holds the netdev instance lock */
++static int ionic_lif_init_locked(struct ionic_lif *lif)
+ {
+ 	struct ionic_dev *idev = &lif->ionic->idev;
+ 	struct device *dev = lif->ionic->dev;
+@@ -3818,7 +3850,7 @@ int ionic_lif_init(struct ionic_lif *lif)
+ 	return 0;
+ 
+ err_out_notifyq_deinit:
+-	napi_disable(&lif->adminqcq->napi);
++	napi_disable_locked(&lif->adminqcq->napi);
+ 	ionic_lif_qcq_deinit(lif, lif->notifyqcq);
+ err_out_adminq_deinit:
+ 	ionic_lif_qcq_deinit(lif, lif->adminqcq);
+@@ -3829,6 +3861,18 @@ err_out_adminq_deinit:
+ 	return err;
+ }
+ 
++/* Takes the netdev instance lock: the caller must not hold it */
++int ionic_lif_init(struct ionic_lif *lif)
++{
++	int err;
++
++	netdev_lock(lif->netdev);
++	err = ionic_lif_init_locked(lif);
++	netdev_unlock(lif->netdev);
++
++	return err;
++}
++
+ static void ionic_lif_set_netdev_info(struct ionic_lif *lif)
+ {
+ 	struct ionic_admin_ctx ctx = {
+diff --git a/drivers/net/ethernet/pensando/ionic/ionic_lif.h b/drivers/net/ethernet/pensando/ionic/ionic_lif.h
+index 263fb9930752..9c3ceee22e13 100644
+--- a/drivers/net/ethernet/pensando/ionic/ionic_lif.h
++++ b/drivers/net/ethernet/pensando/ionic/ionic_lif.h
+@@ -346,6 +346,7 @@ int ionic_lif_alloc(struct ionic *ionic);
+ int ionic_lif_init(struct ionic_lif *lif);
+ void ionic_lif_free(struct ionic_lif *lif);
+ void ionic_lif_deinit(struct ionic_lif *lif);
++void ionic_lif_deinit_locked(struct ionic_lif *lif);
+ 
+ int ionic_lif_addr_add(struct ionic_lif *lif, const u8 *addr);
+ int ionic_lif_addr_del(struct ionic_lif *lif, const u8 *addr);
+diff --git a/drivers/net/ethernet/pensando/ionic/ionic_phc.c b/drivers/net/ethernet/pensando/ionic/ionic_phc.c
+index 388150cbf7e4..8f7a976984ab 100644
+--- a/drivers/net/ethernet/pensando/ionic/ionic_phc.c
++++ b/drivers/net/ethernet/pensando/ionic/ionic_phc.c
+@@ -235,9 +235,11 @@ void ionic_lif_hwstamp_replay(struct ionic_lif *lif)
+ 	    !(lif->hw_features & IONIC_ETH_HW_TIMESTAMP))
+ 		return;
+ 
++	netdev_lock(lif->netdev);
+ 	mutex_lock(&lif->queue_lock);
+ 	err = ionic_lif_hwstamp_set_ts_config(lif, NULL, NULL);
+ 	mutex_unlock(&lif->queue_lock);
++	netdev_unlock(lif->netdev);
+ 	if (err)
+ 		netdev_info(lif->netdev, "hwstamp replay failed: %d\n", err);
+ }
+-- 
+2.43.0
+

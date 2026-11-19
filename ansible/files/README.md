@@ -15,6 +15,9 @@ patches/0002-ionic-allocate-an-address-handle-for-UC-queue-pairs.patch
 patches/srq/          the SRQ series, applied to v7.2.6, plus README.md
 patches/devmem-tx/    the optional netmem (devmem TCP) Tx series, applied
                       to v7.2.6 after the others, plus README.md
+patches/devmem-rx/    the devmem TCP Rx series, for reference only: it is
+                      against v7.4-rc3, so nothing here applies it, plus
+                      README.md
 patches/rdma-core/    linux-rdma/rdma-core#1799 plus two local fixes and
                       README.md
 scripts/fetch-ionic-sources.sh

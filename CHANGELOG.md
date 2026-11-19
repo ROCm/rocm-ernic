@@ -219,6 +219,13 @@
   (`IONIC_RC_ENOSUPP`, or `IONIC_RC_EINVAL` for half of the pair or no SG
   ring) where the features used to be ignored. The server reports the
   mode at startup. See "Receive header split" in `docs/ionic.rst`.
+* The ionic driver series that mode was developed against,
+  `ansible/files/patches/devmem-rx/`, for reference only: it is against
+  `v7.4-rc3`, not the `v7.2.6` that `IONIC_KERNEL_REF` pins, so no role
+  or variable can build a guest with it, and one of its patches defines
+  the invented device interface, which must not go upstream. With it,
+  two guests of this emulator have received 1.5 GB into a dma-buf. See
+  the directory's `README.md`.
 * NIC profiles have an `[rx]` section with one key, `header_split`
   (`off` or `on`; `off` in `compat`), and there is a built-in
   `header-split` profile that sets it. `--print-profile` now prints the

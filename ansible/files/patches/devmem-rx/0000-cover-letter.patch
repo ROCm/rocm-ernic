@@ -1,0 +1,160 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Stephen Bates <sbates@raithlin.com>
+Date: Wed, 18 Nov 2026 23:28:59 -0500
+Subject: [RFC PATCH 0/8] ionic: devmem TCP receive, against an emulated device
+
+This is a proof of concept, not a submission. It lets a dma-buf be
+bound to an ionic Rx queue (NETDEV_CMD_BIND_RX) and received into with
+recvmsg(MSG_SOCK_DEVMEM), on a device that splits headers from
+payload. No ionic firmware does that. The device here is an emulator
+(rocm-ernic) that implements an interface invented for the purpose, and
+patch 2 holds its definitions: placeholders, clearly marked, which must
+not go upstream. What the series shows is the Linux side, and the shape
+of the interface a device would need.
+
+The feature bit in particular, BIT_ULL(17) of the Rx queue features,
+is simply the next one free in ionic_if.h. It was not checked against
+what shipped firmware reports there, and a device that already uses it
+would be taken for one that splits headers.
+
+It sits on top of the netmem Tx RFC series ("ionic: support netmem
+TX"), on v7.4-rc3.
+
+Patch 1 makes ionic an "ops locked" driver: the ndos and ethtool ops
+run under the netdev instance lock, and the work items and recovery
+paths that bring queues up or down take it. It does not depend on
+anything else here and is the part that most needs review and a run
+under lockdep.
+
+Patch 2 has the placeholder definitions.
+
+Patch 3 uses CHECKSUM_UNNECESSARY on header split queues, where
+CHECKSUM_COMPLETE can't be relied on because the payload may be
+unreadable. Other queues are unchanged.
+
+Patch 4 converts the Rx buffer bookkeeping to netmem. No functional
+change, and independent of the device interface as well.
+
+Patch 5 is the header split datapath: a header page pool next to the
+payload pool, headers copied to the linear area, payload only in the
+frags and never looked at.
+
+Patch 6 is the tcp-data-split ring parameter, and the exclusions (XDP,
+Rx timestamps on all packets, rx-push).
+
+Patch 7 keeps an Rx queue receiving when it can't get buffers for the
+whole ring, and looking for buffers when it has none. That is rare with
+pages and ordinary with a dma-buf that is smaller than the ring.
+
+Patch 8 adds the queue management ops and lets the payload pool take a
+memory provider. The queue ops restart every queue rather than one;
+see the patch for why, and for what real firmware would have to
+answer. The dma-buf should cover the ring: one page per descriptor at
+an MTU of 1500, more above a page, plus what the application holds.
+
+What is missing for the upstream selftests: ionic has no n-tuple flow
+steering and no RSS contexts, so nothing can steer a flow to the bound
+queue. ncdevmem has to be run with -n, on one queue or with a source
+port chosen for the emulator's flow hash.
+
+What only a device vendor can say:
+
+ - whether header split can exist, how it is negotiated, and where the
+   header length is reported;
+ - whether one Rx queue can be reinitialised while the LIF is up, and
+   whether Q_CONTROL(DISABLE) is synchronous. For devmem a late write
+   lands in memory already given back to user space;
+ - which packets are split (this series assumes TCP over IPv4 or IPv6
+   without extension headers, and nothing with a bad checksum or
+   padding), and what the checksum flags mean for tunnels;
+ - whether a split queue can also timestamp, or live in the CMB.
+
+Testing: x86_64, gcc 13, W=1 and sparse, at every patch. The whole
+series was run in two KVM guests (v7.4-rc3 with KASAN and
+PROVE_LOCKING, ionic_rdma loaded) on an emulated ionic that implements
+the placeholder interface, and with that interface switched off:
+
+ - ifup/ifdown, ring, channel (shared and split interrupts) and MTU
+   changes, XDP attach and detach, the other ethtool ops, a PCI
+   function reset with the netdev up and down, and module unload, idle
+   and under traffic;
+ - tcp-data-split with ordinary pages: TCP over IPv4, IPv6 and a VLAN,
+   UDP and fragments, with the payload checked at the receiver;
+ - devmem Rx with ncdevmem -n -L -v, over IPv4, IPv6 and a VLAN, on
+   one queue and on one of two, with shared and with split interrupts,
+   from a plain sender and from a devmem Tx sender, and with the
+   binding in place: killing ncdevmem, ifdown/ifup, a ring resize, a
+   PCI function reset and module unload;
+ - devmem Rx with a ring larger than the dma-buf, at an MTU of 1500
+   and of 9000, and with two queues on one dma-buf;
+ - bind and unbind in a loop while ring, channel and MTU changes,
+   ifdown/ifup and PCI function resets ran next to it.
+
+With knobs added to the driver for the purpose, which are not part of
+the series, also: ndo_queue_start() failing once and twice, at bind and
+at unbind; ionic_lif_handle_fw_down() and ionic_lif_handle_fw_up(),
+idle, under traffic, with a binding, and starting in the middle of a
+bind and of an unbind; the Tx timeout work; and the link going down and
+up in the link check. The firmware was alive throughout, so none of
+this saw a command time out.
+
+lockdep stayed quiet. KASAN reported nothing in the code the series
+adds. It did report a use-after-free in page_pool_nl_fill(), from a
+bug that is in ionic today: ionic_reconfigure_queues() leaks the
+temporary queues, with their page pools, when the queue count grows
+("ip link set down; ethtool -L 2; ip link set up; ethtool -L 4"), and a
+leaked pool points at the NAPI of a queue that was freed. The change
+to ionic_swap_queues() in patch 8 happens to take that pointer away,
+and the report with it. The leak is still there; its fix is a patch
+of its own and not in this series.
+
+Every bind logs a DMA-API warning, "mapping sg segment longer than
+device claims to support", when the core maps the dma-buf: ionic sets
+no maximum DMA segment size. Not addressed here.
+
+Not tested:
+
+ - real hardware;
+ - a firmware that really stops: the heartbeat path, commands timing
+   out during recovery, and a link flap reported by the device;
+ - padded frames, frames whose headers overflow the header buffer,
+   IPv4 options and IPv6 extension headers arriving at the driver. The
+   emulator's unit tests cover what it does with them; nothing sent
+   them to a guest;
+ - a dma-buf pool that the application drains by holding its tokens;
+ - Rx timestamps and CMB rings.
+
+Stephen Bates (8):
+  ionic: run the netdev ops under the instance lock
+  ionic: add placeholder definitions for Rx header split
+  ionic: trust the device's L4 checksum on header split queues
+  ionic: track Rx buffers as netmem
+  ionic: put headers in the linear area on header split queues
+  ionic: support the tcp-data-split ring parameter
+  ionic: keep an Rx queue going when its buffers run out
+  ionic: add queue management ops and allow unreadable Rx payload
+
+ .../device_drivers/ethernet/pensando/ionic.rst     |   8 
+ .../net/ethernet/pensando/ionic/ionic_bus_pci.c    |   4 
+ drivers/net/ethernet/pensando/ionic/ionic_dev.h    |  10 
+ .../net/ethernet/pensando/ionic/ionic_ethtool.c    |  64 +++
+ drivers/net/ethernet/pensando/ionic/ionic_if.h     |  50 ++
+ drivers/net/ethernet/pensando/ionic/ionic_lif.c    | 455 +++++++++++++++++---
+ drivers/net/ethernet/pensando/ionic/ionic_lif.h    |  26 +
+ drivers/net/ethernet/pensando/ionic/ionic_phc.c    |   2 
+ drivers/net/ethernet/pensando/ionic/ionic_stats.c  |  12 +
+ drivers/net/ethernet/pensando/ionic/ionic_txrx.c   | 332 +++++++++++----
+ drivers/net/ethernet/pensando/ionic/ionic_txrx.h   |   1 
+ 11 files changed, 806 insertions(+), 158 deletions(-)
+
+
+base-commit: aebb7274476403040d582c61478df8f4a7bf9cd3
+prerequisite-patch-id: 39862b07935b7ac07e79de422daa37c13bc27282
+prerequisite-patch-id: 75ff830d9e48677e62570da6bbe6d04c33a81887
+prerequisite-patch-id: 9128b67d7ec25a7b88de9037e7e98c14fa841e90
+prerequisite-patch-id: 63499139b2b54942ac58219c7ea0d0d53f9437c1
+prerequisite-patch-id: b0a9bae96d4b8fa666c657fae4e4f637a505a2bf
+prerequisite-patch-id: 53e7ca4046f0f1bbaadd66298b6ded1187d93e71
+-- 
+2.43.0
+

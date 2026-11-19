@@ -1,0 +1,14 @@
+# Copyright (c) Advanced Micro Devices, Inc. All rights reserved.
+#
+# SPDX-License-Identifier: MIT
+
+---
+minor_changes:
+  - >-
+    New ionic patch series ``files/patches/devmem-rx``, for reference
+    only: with it and a rocm-ernic server in its ``header-split`` mode, a
+    guest can bind a dma-buf to an ionic receive queue and receive into
+    it (devmem TCP).  It is against ``v7.4-rc3``, not the ``v7.2.6`` the
+    collection's sources are fetched at, so no role or variable applies
+    it, and one of its patches defines a device interface no ionic
+    firmware has.

@@ -1,0 +1,393 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Stephen Bates <sbates@raithlin.com>
+Date: Wed, 18 Nov 2026 23:29:07 -0500
+Subject: [RFC PATCH 8/8] ionic: add queue management ops and allow unreadable Rx payload
+
+With these two pieces a dma-buf can be bound to an ionic Rx queue
+(NETDEV_CMD_BIND_RX) once tcp-data-split is on.
+
+The payload page pool of a header split queue gets
+PP_FLAG_ALLOW_UNREADABLE_NETMEM and its queue index, so that it picks
+up the memory provider of its queue. The header pool does not. All the
+places that create Rx queues run under the netdev instance lock since
+the first patch of this series, as the page pool requires.
+
+The queue management ops are a stub. ionic has no command to take one
+queue down and back up while the others run: there is Q_CONTROL to
+disable and enable a queue and Q_INIT to set it up again, but that has
+only ever been done for all queues at once, between a stop and a start
+of the whole LIF, and Rx queue i shares its interrupt and NAPI with Tx
+queue i. Whether firmware allows it for one queue of a running LIF is a
+question for the firmware team. Until then, restart everything, the way
+a ring size change does:
+
+ - ndo_queue_mem_alloc() builds a second copy of the Rx queue's rings
+   and page pools, which is where the new pool finds the provider.
+
+ - ndo_queue_stop() stops and cleans all the queues.
+
+ - ndo_queue_start() swaps the new rings in and starts all the queues,
+   before it returns: ionic_start_queues_reconfig() leaves the start to
+   the link check work, which would run after the bind was reported as
+   done. If the start fails it swaps the old rings back in. Either way
+   it attaches the netdev again, as ionic_start_queues_reconfig() does:
+   if the core's second try with the old rings fails as well, the
+   queues are down but a down and up of the netdev can still bring
+   them back.
+
+ - The old rings never leave the lif, so there is nothing for
+   ndo_queue_stop() to hand back; ndo_queue_start() frees them once the
+   queues run. A queue memory that holds nothing means "what the lif
+   has", which is what the core passes back to ndo_queue_start() when it
+   has to undo a failed start.
+
+This is correct, but a bind or unbind interrupts all traffic on the
+netdev and drops what was in flight on the Tx queues, as a ring size
+change does.
+
+The queues only exist while the netdev is up, so
+ndo_queue_mem_alloc() fails with -ENETDOWN when it is down or the
+firmware is being reset. A binding that exists when the netdev goes
+down is picked up again when the queues are made on the way up. A
+binding can't be made while it is down, which is what bnxt does as
+well.
+
+IONIC_LIF_F_FW_RESET is set before the reset paths take the instance
+lock, so a reset can begin in the middle of a bind or unbind:
+
+ - ndo_queue_start() that finds the flag set leaves the new rings in
+   the lif and reports success without touching the device. The reset
+   is waiting for the lock to free all the queues, and the recovery
+   makes them again from the provider the queue has by then.
+
+ - ionic_restart_lif() now clears the flag before it drops the
+   instance lock, not after. An unbind in between found live queues
+   with the flag set, was told -ENETDOWN, which the core takes to mean
+   that there is nothing to undo, and left the queue on a provider the
+   core had already forgotten.
+
+ionic_swap_queues() used to point the page pools that go to the
+temporary queue at that queue's NAPI. The temporary queue is freed
+right after its pools are destroyed, and a softirq that returns a
+buffer of such a pool reads the pool's NAPI to decide whether it may
+recycle directly: with an unbind there are buffers still out in
+sockets. Give those pools no NAPI instead; the temporary queue has
+none that could run. This also covers the ring and channel changes,
+which had the same window.
+
+The dma-buf has to be large enough. A header split queue wants one page
+per descriptor, more with an MTU above a page, for as long as the ring
+is full, on top of what the application holds. With less the ring is
+only partly filled and rx_N_alloc_err counts; the previous patch keeps
+the queue receiving with what it has, and looking for buffers when it
+has none.
+
+All of this runs without rtnl_lock. I found nothing in the reconfigure
+path that needs it, but until now it never ran without.
+---
+ drivers/net/ethernet/pensando/ionic/ionic_lif.c | 207 ++++++++++++++++++++++-
+ 1 file changed, 200 insertions(+), 7 deletions(-)
+
+diff --git a/drivers/net/ethernet/pensando/ionic/ionic_lif.c b/drivers/net/ethernet/pensando/ionic/ionic_lif.c
+index 14175acf0000..b35064fc5280 100644
+--- a/drivers/net/ethernet/pensando/ionic/ionic_lif.c
++++ b/drivers/net/ethernet/pensando/ionic/ionic_lif.c
+@@ -14,6 +14,7 @@
+ #include <linux/crash_dump.h>
+ #include <linux/vmalloc.h>
+ #include <net/netdev_lock.h>
++#include <net/netdev_queues.h>
+ #include <net/page_pool/helpers.h>
+ 
+ #include "ionic.h"
+@@ -575,7 +576,7 @@ err_out:
+ }
+ 
+ static int ionic_rxq_pools_create(struct ionic_lif *lif, struct ionic_qcq *qcq,
+-				  unsigned int num_descs,
++				  unsigned int index, unsigned int num_descs,
+ 				  struct bpf_prog *xdp_prog)
+ {
+ 	struct page_pool_params pp_params = {
+@@ -589,11 +590,22 @@ static int ionic_rxq_pools_create(struct ionic_lif *lif, struct ionic_qcq *qcq,
+ 		.max_len = PAGE_SIZE,
+ 		.netdev = lif->netdev,
+ 	};
++	bool hds = qcq->q.features & IONIC_RXQ_F_HDS;
+ 	struct page_pool *pool;
+ 
+ 	if (xdp_prog)
+ 		pp_params.dma_dir = DMA_BIDIRECTIONAL;
+ 
++	/* Only header split keeps the driver, and with the checks in
++	 * ionic_rx_clean() the stack, out of the payload buffers, so only
++	 * then may they come from a memory provider.  The pool looks up the
++	 * provider of its queue, under the netdev instance lock.
++	 */
++	if (hds) {
++		pp_params.flags |= PP_FLAG_ALLOW_UNREADABLE_NETMEM;
++		pp_params.queue_idx = index;
++	}
++
+ 	pool = page_pool_create(&pp_params);
+ 	if (IS_ERR(pool)) {
+ 		netdev_err(lif->netdev, "Cannot create page_pool\n");
+@@ -601,12 +613,14 @@ static int ionic_rxq_pools_create(struct ionic_lif *lif, struct ionic_qcq *qcq,
+ 	}
+ 	qcq->q.page_pool = pool;
+ 
+-	if (!(qcq->q.features & IONIC_RXQ_F_HDS))
++	if (!hds)
+ 		return 0;
+ 
+ 	/* The headers are copied out of their buffers, which are small, so
+-	 * this pool only ever holds a few pages.
++	 * this pool holds one page for every 16 descriptors.  They have to
++	 * be readable.
+ 	 */
++	pp_params.flags &= ~PP_FLAG_ALLOW_UNREADABLE_NETMEM;
+ 	pp_params.pool_size = DIV_ROUND_UP(num_descs,
+ 					   PAGE_SIZE / IONIC_HDS_HDR_BUF_LEN);
+ 
+@@ -658,7 +672,8 @@ static int ionic_qcq_alloc(struct ionic_lif *lif, unsigned int type,
+ 	}
+ 
+ 	if (type == IONIC_QTYPE_RXQ) {
+-		err = ionic_rxq_pools_create(lif, new, num_descs, xdp_prog);
++		err = ionic_rxq_pools_create(lif, new, index, num_descs,
++					     xdp_prog);
+ 		if (err)
+ 			goto err_out_free_q_info;
+ 	}
+@@ -2967,22 +2982,30 @@ err_out:
+ 	return err;
+ }
+ 
++/* Swap the rings of a queue of the lif, a, with those of a temporary one, b,
++ * while both are stopped.
++ */
+ static void ionic_swap_queues(struct ionic_qcq *a, struct ionic_qcq *b)
+ {
+ 	/* only swapping the queues and napi, not flags or other stuff */
+ 	swap(a->napi,         b->napi);
+ 
+ 	if (a->q.type == IONIC_QTYPE_RXQ) {
++		/* The pools that go to the temporary queue get no NAPI.  It
++		 * has none that could run, and it is freed with no grace
++		 * period for a softirq that is returning a buffer and reads
++		 * the pool's NAPI to see if it may recycle directly.
++		 */
+ 		swap(a->q.page_pool, b->q.page_pool);
+ 		a->q.page_pool->p.napi = &a->napi;
+ 		if (b->q.page_pool)  /* is NULL when increasing queue count */
+-			b->q.page_pool->p.napi = &b->napi;
++			WRITE_ONCE(b->q.page_pool->p.napi, NULL);
+ 
+ 		swap(a->q.hdr_pool, b->q.hdr_pool);
+ 		if (a->q.hdr_pool)
+ 			a->q.hdr_pool->p.napi = &a->napi;
+ 		if (b->q.hdr_pool)
+-			b->q.hdr_pool->p.napi = &b->napi;
++			WRITE_ONCE(b->q.hdr_pool->p.napi, NULL);
+ 	}
+ 
+ 	swap(a->q.features,   b->q.features);
+@@ -3270,6 +3293,170 @@ err_out:
+ 	return err;
+ }
+ 
++/* Queue management ops, by way of every queue.
++ *
++ * The device has no command to take one queue down and back up while the
++ * others run, and Rx queue i shares its interrupt and NAPI with Tx queue i.
++ * So until there is a way to restart one queue, do what a ring size change
++ * does: build the new Rx queue next to the old one, stop all the queues,
++ * swap the two, and start all the queues again.
++ *
++ * This means that the memory of the stopped queue is not handed back through
++ * ndo_queue_stop().  The old rings stay in the lif until ndo_queue_start()
++ * swaps the new ones in, and it frees them itself once the queues are
++ * running again, or puts them back if they are not.  A struct ionic_queue_mem
++ * that holds no queue stands for "what the lif has".
++ *
++ * A firmware reset frees the queues and its recovery makes them again, from
++ * the memory provider each queue has by then.  IONIC_LIF_F_FW_RESET is set
++ * outside of the instance lock, so it can turn up between any two of the
++ * callbacks.
++ *
++ * The netdev instance lock is held, but RTNL is not.
++ */
++struct ionic_queue_mem {
++	struct ionic_qcq *qcq;
++};
++
++static void ionic_queue_mem_free(struct net_device *netdev,
++				 void *per_queue_mem)
++{
++	struct ionic_queue_mem *qmem = per_queue_mem;
++	struct ionic_lif *lif = netdev_priv(netdev);
++
++	if (!qmem->qcq)
++		return;
++
++	/* never had an interrupt of its own */
++	qmem->qcq->flags &= ~IONIC_QCQ_F_INTR;
++	ionic_qcq_free(lif, qmem->qcq);
++	devm_kfree(lif->ionic->dev, qmem->qcq);
++	qmem->qcq = NULL;
++}
++
++static int ionic_queue_mem_alloc(struct net_device *netdev,
++				 struct netdev_queue_config *qcfg,
++				 void *per_queue_mem, int idx)
++{
++	struct ionic_queue_mem *qmem = per_queue_mem;
++	struct ionic_lif *lif = netdev_priv(netdev);
++	unsigned int comp_sz, flags;
++	int err;
++
++	/* The queues, and with them their page pools, only exist while the
++	 * netdev is up and the firmware is there.  They are made again from
++	 * the queue's current memory provider when that changes.
++	 */
++	if (!netif_running(netdev) ||
++	    test_bit(IONIC_LIF_F_FW_RESET, lif->state))
++		return -ENETDOWN;
++
++	/* no room in the CMB for a second copy of the rings */
++	if (test_bit(IONIC_LIF_F_CMB_RX_RINGS, lif->state))
++		return -EOPNOTSUPP;
++
++	mutex_lock(&lif->queue_lock);
++
++	if (!lif->rxqcqs || !lif->rxqcqs[idx]) {
++		err = -ENETDOWN;
++		goto out_unlock;
++	}
++
++	comp_sz = sizeof(struct ionic_rxq_comp);
++	if (lif->rxq_features & IONIC_Q_F_2X_CQ_DESC)
++		comp_sz *= 2;
++
++	flags = lif->rxqcqs[idx]->flags & ~IONIC_QCQ_F_INTR;
++	err = ionic_qcq_alloc(lif, IONIC_QTYPE_RXQ, idx, "rx", flags,
++			      lif->nrxq_descs, sizeof(struct ionic_rxq_desc),
++			      comp_sz, sizeof(struct ionic_rxq_sg_desc),
++			      sizeof(struct ionic_rx_desc_info),
++			      lif->kern_pid, lif->xdp_prog,
++			      lif->rxq_features, &qmem->qcq);
++	if (!err)
++		qmem->qcq->q.xdp_prog = lif->xdp_prog;
++
++out_unlock:
++	mutex_unlock(&lif->queue_lock);
++
++	return err;
++}
++
++static int ionic_queue_stop(struct net_device *netdev, void *per_queue_mem,
++			    int idx)
++{
++	struct ionic_lif *lif = netdev_priv(netdev);
++
++	mutex_lock(&lif->queue_lock);
++	ionic_stop_queues_reconfig(lif);
++	mutex_unlock(&lif->queue_lock);
++
++	return 0;
++}
++
++static int ionic_queue_start(struct net_device *netdev,
++			     struct netdev_queue_config *qcfg,
++			     void *per_queue_mem, int idx)
++{
++	struct ionic_queue_mem *qmem = per_queue_mem;
++	struct ionic_lif *lif = netdev_priv(netdev);
++	int err;
++
++	mutex_lock(&lif->queue_lock);
++
++	if (qmem->qcq)
++		ionic_swap_queues(lif->rxqcqs[idx], qmem->qcq);
++
++	/* A firmware reset began after the queues were stopped and waits
++	 * for the instance lock to free them.  Its recovery makes them again
++	 * for the provider the queue has now, so this is as good as done.
++	 * The netdev stays detached until then.
++	 */
++	if (test_bit(IONIC_LIF_F_FW_RESET, lif->state)) {
++		ionic_queue_mem_free(netdev, qmem);
++		mutex_unlock(&lif->queue_lock);
++		return 0;
++	}
++
++	/* Unlike ionic_start_queues_reconfig() this can't leave the start to
++	 * the link check: that would run after the caller has been told
++	 * that the queue is up.
++	 */
++	err = ionic_txrx_init(lif);
++	if (!err && netif_carrier_ok(netdev)) {
++		err = ionic_start_queues(lif);
++		if (err)
++			ionic_txrx_deinit(lif);
++	}
++
++	if (err) {
++		/* give the lif its rings back, for another try */
++		if (qmem->qcq)
++			ionic_swap_queues(lif->rxqcqs[idx], qmem->qcq);
++	} else {
++		/* now holds the rings that were stopped */
++		ionic_queue_mem_free(netdev, qmem);
++	}
++
++	/* This was detached in ionic_queue_stop().  As after a failed
++	 * ionic_start_queues_reconfig(), attach it even if the queues did
++	 * not start, so that a down and up can try again.
++	 */
++	netif_device_attach(netdev);
++
++	mutex_unlock(&lif->queue_lock);
++
++	return err;
++}
++
++static const struct netdev_queue_mgmt_ops ionic_queue_mgmt_ops = {
++	.ndo_queue_mem_size	= sizeof(struct ionic_queue_mem),
++	.ndo_queue_mem_alloc	= ionic_queue_mem_alloc,
++	.ndo_queue_mem_free	= ionic_queue_mem_free,
++	.ndo_queue_start	= ionic_queue_start,
++	.ndo_queue_stop		= ionic_queue_stop,
++};
++
+ static int ionic_affinity_masks_alloc(struct ionic *ionic)
+ {
+ 	cpumask_var_t *affinity_masks;
+@@ -3336,6 +3523,7 @@ int ionic_lif_alloc(struct ionic *ionic)
+ 	ionic->lif = lif;
+ 	lif->ionic = ionic;
+ 	netdev->netdev_ops = &ionic_netdev_ops;
++	netdev->queue_mgmt_ops = &ionic_queue_mgmt_ops;
+ 	netdev->request_ops_lock = true;
+ 	ionic_ethtool_set_ops(netdev);
+ 
+@@ -3533,10 +3721,15 @@ int ionic_restart_lif(struct ionic_lif *lif)
+ 			goto err_txrx_free;
+ 	}
+ 
++	/* The queues exist again.  Say so before the lock is dropped: a
++	 * queue op that finds them with the reset flag still set would leave
++	 * them as they are.
++	 */
++	clear_bit(IONIC_LIF_F_FW_RESET, lif->state);
++
+ 	mutex_unlock(&lif->queue_lock);
+ 	netdev_unlock(lif->netdev);
+ 
+-	clear_bit(IONIC_LIF_F_FW_RESET, lif->state);
+ 	ionic_link_status_check_request(lif, CAN_SLEEP);
+ 	netif_device_attach(lif->netdev);
+ 	ionic_queue_doorbell_check(ionic, IONIC_NAPI_DEADLINE);
+-- 
+2.43.0
+
