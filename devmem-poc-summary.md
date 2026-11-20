@@ -82,6 +82,72 @@ backported (`69ab87acc614`, in `v7.4-rc1`), which allows the peer-to-peer
 attach. A full tree comparison showed the test kernel was stock `v7.2.6` plus
 that one file and nothing else.
 
+## What this gives rocm-ernic today
+
+Within the emulator this is a working capability, both directions, and all of
+it is on the branch. What has to be true for it:
+
+* **The fork QEMU**, which passes a device BAR's file descriptor in its DMA
+  map so the NIC server can reach the GPU's memory. The stock image never
+  advertises the window, and fails silently.
+* **`CONFIG_PCI_P2PDMA` and `ZONE_DEVICE`** in the guest kernel — absent from
+  the bundle kernel's configuration today, which is worth fixing given that
+  the whole point of the fleet is a GPU beside an RDMA NIC.
+* **The backported peer-to-peer attach commit** on any `v7.2.x` kernel, in
+  `tests/devmem/kernel-patches/net-core-devmem-p2p/`.
+* **The patch series**: `devmem-tx` for transmit, `devmem-rx-7.2.6` for
+  receive, with `ionic_rdma.ko` and `ernic_p4.ko` rebuilt against the result.
+* **`--nic-profile header-split`** on the server, for the receive side.
+* An **AMD Zen host**: the peer-to-peer distance check passes there, and on an
+  Intel host the path falls back to system memory without saying so.
+
+Two qualifications on "between two nodes". The demonstration was two guests on
+**one physical host**, their Ethernet crossing a TAP per server on a shared
+bridge. Guests on different hosts should work by the same mechanism — each
+server reaches only its own local guest's GPU BAR, and what passes between
+them is ordinary TCP over the host network — but that has never been run. And
+the receive side is real only because the emulator implements an interface we
+invented: a guest running on rocm-ernic exercises our interface, not a
+firmware one, so if header split is later specified differently, the receive
+series changes with it.
+
+## Sizes, and the three places they bite
+
+Buffer and payload sizes were swept rather than assumed, and three limits
+turned up — two at the bottom of the range, one at the top.
+
+**The smallest receive buffer that works is about 4 MiB.** A 1 MiB dma-buf
+bound for receive starves the page pool against a 1024-entry ring: only 256
+`net_iov`s exist, allocation failed 9,995 times in 100 seconds, the NIC has
+nothing to post, and TCP collapses into retransmission backoff (`cwnd:1
+backoff:7`). Nothing is corrupted — it simply stops making progress. 4 MiB and
+above passed in every repetition.
+
+**Small *pieces* used to kill the connection, and no longer do.** ionic takes
+a header plus 15 fragments per descriptor, and an unreadable skb cannot be
+linearized, so a send built from pieces below roughly MSS/15 was dropped and —
+because TCP retransmits the same skb — never recovered. Measured: at MTU 1500,
+110-byte pieces passed and 100-byte pieces stalled to `ETIMEDOUT`; at MTU
+9000, streams of 128-byte and 512-byte pieces delivered nothing at all. The
+frag-limit patch re-sends such an skb as a TSO chain, and those same cases now
+complete with every byte verified. What is still dropped: anything where the
+device cannot segment — TSO turned off for that IP version, IPv4 without DF,
+non-TCP, or a layout needing more than half the transmit ring.
+
+**At the top, 1020 MiB works and 1024 MiB silently does not.** With 1021 MiB
+of the emulated GPU's 1024 MiB free, a buffer requested at exactly 1024 MiB is
+created, bound and sent — from **system memory**, pinned in GTT, with every
+fragment outside the GPU BAR. The payload is still correct, so only the
+addresses reveal it. 1020 MiB stayed in VRAM. Separately, `hipMalloc` fails at
+1016 MiB with an out-of-memory error, before any bind, where a GEM buffer of
+that size succeeds — HIP's own limit, not the NIC's.
+
+Verified ranges, each repeated: transmit and receive from 4 MiB to 1020 MiB
+for GEM buffers, 16 MiB to 960 MiB for `hipMalloc`. Sustained runs: 655 MiB
+VRAM to VRAM over 200 seconds with 484,668 tokens recycled, 67.3 GiB from a
+GPU buffer over 330 seconds, and 74.1 GiB over 360 seconds from a udmabuf —
+all with zero mismatching bytes and every completion returned.
+
 ## The trap worth knowing
 
 Without that commit the attach is static, amdgpu quietly moves the buffer to
