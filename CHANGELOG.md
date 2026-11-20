@@ -277,6 +277,51 @@
   or hang; the `devmem-rx` series needs the XDP frag offset fix applied
   beneath it; and receiving works against the emulator only. Nothing in it has
   run on ionic hardware.
+* **`docs/devmem.rst` now covers the GPU-to-GPU result, and has a
+  performance section.** What it adds, and what it corrects:
+  * **A stream can go from one guest's GPU VRAM to the other's**, with
+    neither kernel touching the payload. An independent re-run confirmed
+    four things together: the sender's frag addresses and the receiver's
+    posted buffers were both inside the GPU's BAR, both buffers were in
+    VRAM while bound, and the bytes were found in the receiving GPU's
+    memory — with a negative control that differs and a `0xa5` pre-fill
+    whose untouched tail survives.
+  * **It needs one backported upstream commit**, `69ab87acc614`
+    (`v7.4-rc1`), on a `v7.2.x` kernel:
+    `tests/devmem/kernel-patches/net-core-devmem-p2p/`. **Without it the
+    transfer still passes while reading system memory**, because amdgpu
+    moves the buffer out of VRAM for a static attach — so check the
+    placement, not the bytes. The page says so plainly.
+  * **Devmem receive now works on the pinned kernel line**, not only on
+    `v7.4-rc3`, with `ansible/files/patches/devmem-rx-7.2.6/`.
+  * **The small-piece transmit stall is fixed**, so the page no longer
+    says such a send kills its connection for good. It now says what
+    remains: the fix is a TSO descriptor chain, so with the device's TSO
+    off for that IP version — and on IPv4 with DF cleared, on anything
+    but plain TCP, or where the layout needs more than half the transmit
+    ring — the packet is still dropped and the connection still ends in
+    `ETIMEDOUT`.
+  * **Two limits a deployer will meet**, both new: while a devmem
+    binding holds a receiver's only queue, ordinary TCP on that
+    interface receives nothing (an RDMA test run beside it died in its
+    out-of-band exchange, while the same command alone passed), so use
+    more than one channel with queue steering; and a receive dma-buf
+    smaller than the receive ring starves the page pool and stalls the
+    stream (1 MiB against a 1024-entry ring; 4 MiB was the smallest
+    reliable size). Nothing is corrupted in either case.
+  * **A performance section**, which leads with what the numbers are
+    worth: emulation figures from a shared, loaded development host,
+    where identical runs varied by more than 2x, so no difference is
+    read from a single sample. It gives the transmit and receive rate
+    samples, the sustained runs (74.1 GiB in 360 s; 67.3 and 66.2 GiB in
+    330 s from GPU buffers, every completion accounted for) and the
+    upstream quick-start numbers for scale, explains that the
+    VRAM-to-VRAM figure measures the test's readback of emulated VRAM
+    rather than the datapath, and says what has never been measured:
+    ionic hardware, an IOMMU, and any host but this one.
+  The working notes of those runs are in `docs/devmem/notes/`, including
+  the independent verifier's, which the page follows where the notes
+  disagree; their `README.md` says which notes it corrects.
 * The mainline form of the devmem transmit series,
   `ansible/files/patches/devmem-tx-mainline/`: the six patches and cover
   letter against `v7.4-rc3` that `devmem-tx` is the backport of and

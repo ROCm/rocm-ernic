@@ -37,7 +37,13 @@ runbooks. They are the record behind
   `drivers/net/ethernet/pensando/ionic/` or
   `tools/testing/selftests/drivers/net/hw/` shortened with `...`, and
   one image digest was shortened, because a secret scanner took the long
-  strings for keys. Nothing else was changed, so they still say "I",
+  strings for keys. The notes of the last night were edited the same way:
+  in `rocm102-gpu-to-gpu.md` a link that pointed at the working copy of
+  this repository on the development host now points inside this
+  repository, one sha256 of transferred bytes was shortened for the
+  same scanner, and in `impl-rx-backport-7.2.6.md` one abbreviation of
+  IPv6 neighbour discovery was spelt out for the spelling check. Nothing else was changed, so they still
+  say "I",
   name the person the work was for, and contradict each other where a
   correction says so.
 - The emulator changes they describe as uncommitted, or as living in
@@ -70,8 +76,11 @@ excludes the directory.
 | `patches/scripts/`, `patches-rx/scripts/`, `backport-scratch/scripts/` | `tests/devmem/tools/patch-series/` |
 | `test/emu-golden*/`, `test/emu-mutate/`, `test/emu-rx-mutate/` | `tests/devmem/tools/` |
 | `test/evidence/tx-verify/SUMMARY-*.txt` | `tx-verify-summary-*.md` here |
+| `overnight2/e2e/src/`, `overnight2/e2e/scripts/`, the Rx and verifier probes | `tests/devmem/src/`, `tests/devmem/scripts/stack3/`, `tests/devmem/probes/` (`rx-probe.bt`, `vprobe.bt`) |
+| `overnight2/kernel/0001-net-devmem-allow-peer-to-peer-*.patch` | `tests/devmem/kernel-patches/net-core-devmem-p2p/` |
+| `overnight2/rx-backport/patches/`, `overnight2/frag/patches/` | `ansible/files/patches/devmem-rx-7.2.6/`, `devmem-tx/0008` and `devmem-tx/on-devmem-rx/0009` |
 | `rocm-ernic-pin`, `rocm-ernic-rx`, `test/ernic/*/src` | snapshots of this repository; the work is on its branch now |
-| `linux`, `linux-rx`, `k74`, `k726`, `linux-7.2.*`, `test/kbuild`, `test/images`, `test/ionic-mod`, every `evidence` directory, `qemu-minimal*`, `kernel-tools`, `test-rocm102` | not kept |
+| `linux`, `linux-rx`, `k74`, `k726`, `linux-7.2.*`, `test/kbuild`, `test/images`, `test/ionic-mod`, every `evidence` directory, `qemu-minimal*`, `kernel-tools`, `test-rocm102`, the rest of `overnight2` (its kernel build trees, staged module trees and evidence) | not kept |
 
 `tests/devmem/scripts/work-area.map` has the same mapping file by file,
 and `tests/devmem/scripts/deploy.sh` recreates the scripts' places in a
@@ -110,6 +119,8 @@ Design and implementation:
 | `rx-interface.md` | **The device interface of the `header-split` mode**, as the emulator and the Rx series implement it. Invented for the proof of concept; no ionic firmware has it |
 | `impl-emulator-rx.md` | The emulator's header-split mode |
 | `impl-driver-rx.md` | The Rx driver series, with two review rounds |
+| `impl-rx-backport-7.2.6.md` | The backport of the Rx series to `v7.2.6`, which is `ansible/files/patches/devmem-rx-7.2.6`. Compile-tested only; `rocm102-rx.md` is the run |
+| `impl-frag-limit.md` | The patch that sends an over-limit unreadable skb as a TSO chain, and the userspace model behind its mss choice. Compile-tested only; `rocm102-frag-limit.md` is the run |
 
 Test reports:
 
@@ -135,16 +146,33 @@ Runbooks and the third stack:
 | `qemu-tool-2.1-rocm102.md` | What qemu-minimal's `qemu-tool` v2.1.0 and its ROCm 10.2 guest image provide |
 | `rocm102-baseline.md` | Stack 3 on that image, before any change |
 | `rocm102-devmem.md` | The server of this branch and the devmem Tx series on stack 3 |
-| `rocm102-gpu.md` | GPU buffers as the Tx source on stack 3: system memory on the stock kernel, VRAM with a hand backport of core commit `69ab87acc614`. The backport's diff was in stack 3's directory and is not in this repository |
-| `rocm102-verification.md` | An independent check of the three stack 3 reports. Read it with them: it refutes no pass, marks four claims as overstated, and its F1 says what the frag limit does to a connection |
+| `rocm102-gpu.md` | GPU buffers as the Tx source on stack 3: system memory on the stock kernel, VRAM with a hand backport of core commit `69ab87acc614`. **Superseded on two points** by `rocm102-p2p-kernel.md`: that backport is `tests/devmem/kernel-patches/net-core-devmem-p2p` now, and the kernel it ran on was rebuilt from the guest's full configuration |
+| `rocm102-verification.md` | An independent check of the three stack 3 reports. Read it with them: it refutes no pass, marks four claims as overstated, and its F1 says what the frag limit does to a connection. **Its F1 describes the behaviour before the fix**; see `rocm102-frag-limit.md` |
 
-Other work went on while these files were copied, on the evening of
-2026-11-19 and the night after. Every note was compared with the work
-area again late that evening and was the same apart from the edits
-listed above. **The stack 3 notes may still be incomplete**
-(`qemu-tool-2.1-rocm102.md` and the four `rocm102-*.md`): work on that
-stack was still running, so they may be behind their authors' last
-version. `rx-xdp-frag-fix.md` and `test-ionic-fixes-7.2.6.md` were
+The night of 2026-11-19 to 2026-11-20, on the same stack. Read these
+with `rocm102-verification-2.md`, which was written last and corrects
+the others where they disagree:
+
+| Note | What it is |
+| --- | --- |
+| `rocm102-p2p-kernel.md` | Both guests moved onto `7.2.6-devmemp2p` = stock `v7.2.6` plus `69ab87acc614` and nothing else: how it was built, the whole upstream regression on it, devmem Tx from GPU buffers up to 1020 MiB, the 330 s sustained runs, and 4130 bind/unbind cycles |
+| `impl-rx-backport-7.2.6.md` | (above) the Rx series on `v7.2.6`, as written |
+| `rocm102-rx.md` | devmem Rx brought up on that kernel line: ops locking, header split with ordinary pages, receive into a dma-buf up to 1 GiB, teardown and stress, and a lockdep boot that reported nothing |
+| `rocm102-frag-limit.md` | The frag-limit fix run on the ROCm 10.2 guests: every send that stalled without it completes with it, on the wire and in the stress matrix, and what is still dropped |
+| `rocm102-gpu-to-gpu.md` | GPU VRAM to GPU VRAM end to end, the size sweep, the stock-kernel control, and the rate samples. **Its bookkeeping is corrected** by `rocm102-verification-2.md` section 4: two table numbers come from the wrong run, "every Rx payload descriptor in BAR0" is not true as written (64 per run are in system RAM, benignly), its "no `dma_sync` on a P2P address" was unfalsifiable as instrumented, and its host-side hash proves placement rather than an independent arrival |
+| `rocm102-verification-2.md` | **The independent verifier of all five.** It confirms the five headline results, re-running the GPU-to-GPU case with its own tools and adding a real negative control and a poison check; it lists what the evidence does not support; and its section 6 has cases nobody had run, including ordinary TCP dying on a receiver that holds a devmem binding on its only queue |
+
+Other work went on while the first batch of these files was copied, on
+the evening of 2026-11-19. Every note was compared with the work area
+again late that evening and was the same apart from the edits listed
+above. **The stack 3 notes of that batch may still be incomplete**
+(`qemu-tool-2.1-rocm102.md`, `rocm102-baseline.md`,
+`rocm102-devmem.md`, `rocm102-gpu.md` and `rocm102-verification.md`):
+work on that stack was still running, so they may be behind their
+authors' last version. The seven notes of the night after were copied
+on 2026-11-20 after the work they report had finished, and the work
+area's copies and these agreed. `rx-xdp-frag-fix.md` and
+`test-ionic-fixes-7.2.6.md` were
 finished; they, and the last sections of `test-rx.md`,
 `impl-driver-rx.md` and `testbed.md`, point at an `overnight` directory
 of the work area that, like the rest of it, was not kept.

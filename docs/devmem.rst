@@ -50,12 +50,19 @@ What works
        peer-to-peer (commit ``69ab87acc614``, first in ``v7.4-rc1``),
        and only with the pieces listed under
        `Sending from GPU memory`_. Shown on ``v7.4-rc3``, and on
-       ``v7.2.6`` with a hand backport of that commit which is not in
-       this repository. On an unpatched ``v7.2.x`` the transfer works
-       but the data is read from system memory.
+       ``v7.2.6`` with that commit backported
+       (:project-file:`tests/devmem/kernel-patches/net-core-devmem-p2p`).
+       On an unpatched ``v7.2.x`` the transfer works but the data is
+       read from system memory.
    * - Receive into a dma-buf
      - Works against the emulator's ``header-split`` mode only, on
-       ``v7.4-rc3``. The device interface is invented.
+       ``v7.4-rc3`` and on the ``v7.2.6`` line the project's guests use,
+       with ``devmem-rx-7.2.6``. The device interface is invented.
+   * - GPU VRAM to GPU VRAM
+     - Works on ``v7.2.6`` with that one backported commit: a stream
+       that starts in one guest's GPU memory ends in the other guest's
+       GPU memory, with neither kernel touching the payload. See
+       `GPU memory, end to end`_.
    * - ionic hardware
      - Not tested. A runbook exists and has not been run.
 
@@ -132,28 +139,92 @@ with KASAN and lockdep (``test-rx.md``):
   changes, and a PCI function reset in mid-stream.
 - With the mode off the device and the driver behave as before.
 
+The same eight patches, backported to the ``v7.2.6`` that
+``IONIC_KERNEL_REF`` pins
+(:project-file:`ansible/files/patches/devmem-rx-7.2.6`, whose
+``README.md`` says what it is based on), needed no code change and ran
+the same ground on that kernel line (``rocm102-rx.md``): header split
+with ordinary pages, a 1 GiB receive into a dma-buf with nothing
+through the linear area, devmem transmit into devmem receive, bind and
+unbind raced against ring, channel, MTU and reset operations, about
+320 binds with no page pool left behind, and a lockdep boot that
+reported nothing. An independent pass re-ran the udmabuf receive case
+and the "feature off" case with its own tools and confirmed both, and
+checked the eight patches line by line against their mainline form
+(``rocm102-verification-2.md``, sections 2.1 and 3.2).
+
 Limits
 ------
 
-A send in small pieces can stall
+A send in small pieces needs the eighth transmit patch, and the device's TSO
    ionic sends at most 16 buffers per packet: the head and 15
    scatter-gather elements. A devmem ``sendmsg()`` makes one frag per
    iovec entry per page it touches, and the driver cannot copy
-   unreadable frags together, so it drops a packet with more than 15
-   and counts it in ``tx_unreadable_drop``. TCP retransmits the same
-   packet, so the connection does not recover: the sender blocks, or
-   its ``sendmsg()`` ends with ``ETIMEDOUT``. At MTU 1500, sends of
-   110-byte pieces passed and 100-byte pieces stalled; at MTU 9000,
-   pieces of 128 and of 512 bytes stalled and 1024-byte pieces
-   passed. A piece that crosses a page boundary counts twice, and TCP
-   can join sends issued back to back into one packet. The pieces at
-   risk are those smaller than about a fifteenth of the MSS (roughly
-   97 bytes at MTU 1500 and 600 at MTU 9000), and somewhat larger
-   when pieces cross page boundaries. Only the sender's own
-   connection is affected. The series' commit messages and cover
-   letter say a sixteenth; the tests are later.
-   (``test-tx-verification.md``, findings V1 and V2;
-   ``rocm102-verification.md``, finding F1.)
+   unreadable frags together. Before the eighth patch of
+   :project-file:`ansible/files/patches/devmem-tx` it dropped such a
+   packet and counted it in ``tx_unreadable_drop``, and because TCP
+   retransmits the same packet the connection never recovered: the
+   sender blocked, or its ``sendmsg()`` ended with ``ETIMEDOUT``. The
+   pieces at risk were those smaller than about a fifteenth of the MSS
+   (roughly 97 bytes at MTU 1500 and 600 at MTU 9000), and somewhat
+   larger when pieces cross page boundaries, since a piece that
+   crosses a page boundary counts twice and TCP can join sends issued
+   back to back into one packet.
+
+   **That stall is fixed.** The driver now sends an over-limit
+   unreadable skb with the TSO opcode and an mss small enough that
+   every descriptor fits, which is the same bytes in shorter segments,
+   and counts the skb in ``tx_unreadable_reseg``. Every send that
+   stalled without the patch completed with it, with the receiver's
+   sha256 equal to the sender's, on the ``v7.2.6`` guests
+   (``rocm102-frag-limit.md``). An independent run of a matched pair —
+   the same settings on both sides, which the first table did not have
+   — reproduced it: 15 pieces of 64 bytes gave ``ETIMEDOUT`` after
+   13.1 s with 0 bytes at the receiver before, and 288000 bytes with
+   equal hashes and 300 of 300 completions after
+   (``rocm102-verification-2.md``, section 3.4).
+
+   **What remains:** the fix needs the device's TSO for that IP
+   version, because it is a TSO descriptor chain. With TSO off
+   (``ethtool -K tso off``, or ``tx-tcp6-segmentation off`` for IPv6),
+   on IPv4 with DF cleared, on anything but plain TCP, or where the
+   layout needs more than half the transmit ring in descriptors, the
+   over-limit packet is still dropped, still counted in
+   ``tx_unreadable_drop``, and the connection still ends in
+   ``ETIMEDOUT``. Only the sender's own connection is affected.
+   Whether real firmware accepts an mss as small as 15 is unknown.
+
+Ordinary TCP on a receiver stops while a devmem binding holds its only queue
+   With one combined channel and ``tcp-data-split on``, every flow
+   lands on the bound queue, whose payload buffers are net_iovs, so a
+   socket that did not ask for ``MSG_SOCK_DEVMEM`` sees nothing: 4 MiB
+   sent to an ordinary listener on such a receiver, with no devmem
+   sender running at all, delivered **0 bytes**, and
+   ``rx_unreadable_drop`` did not move. This bounds "devmem and RDMA
+   on the same NIC": a ROCm RDMA dma-buf test run during a devmem
+   transfer died in its out-of-band TCP exchange with a connection
+   reset, while the same command alone, in the same configuration,
+   passed; the devmem transfer itself was unaffected. ssh, a health
+   check or a control connection on that interface would stop the same
+   way. It follows from the design, and the answer is more than one
+   channel with queue steering, not a change to the binding.
+   (``rocm102-verification-2.md``, finding N1.)
+
+A receive dma-buf too small for the ring starves the page pool
+   A 1 MiB receive dma-buf is 256 pages, against a 1024-entry receive
+   ring: the provider's allocation failed 9995 times in 100 s, the NIC
+   had nothing to post, TCP fell into retransmission backoff, and the
+   receiver ended on its idle timeout after 26406984 of 33554432
+   bytes. The failure is clean — 0 mismatches, every token returned,
+   no leak and no corruption; the stream merely stops, and the other
+   of the two runs at that size did finish, slowly. 4 MiB, which
+   matches the ring, was the smallest size that worked in both
+   repetitions, and
+   even there the pool momentarily ran dry. The same mechanism appears
+   under genuine pressure (450 allocation failures on a guest sending
+   and receiving at once) and that transfer still completed and
+   verified. (``rocm102-gpu-to-gpu.md``, finding F2, confirmed in
+   ``rocm102-verification-2.md``, section 4.)
 
 Unloading ionic with a live transmit binding crashes the kernel
    On a kernel without net-next commit ``ede1618064a9`` ("net:
@@ -230,15 +301,24 @@ devmem: allow peer-to-peer dma-buf attach for bindings"), first in
 
   - On ``v7.4-rc3``: 5.6 GB in 30 s, every byte verified, with the
     emulator's ``tx_dma_error`` at 0 (``test-gpu-vram.md``).
-  - On ``v7.2.6`` with a hand backport of the commit, in one guest of
-    the ROCm 10.2 stack: GEM and ``hipMalloc`` buffers stayed in
-    VRAM, every frag address was inside the GPU's BAR, up to 4.4 GB
-    per run verified, and the sending NIC server's own mapping of
-    the VRAM held the pattern (``rocm102-gpu.md``, section 5.2).
-    That kernel was built from a reduced configuration, the rest of
-    the test matrix was not run on it, the independent pass over
-    that stack did not re-run these cases, and **the backport is not
-    in this repository**.
+  - On ``v7.2.6`` with the commit backported
+    (:project-file:`tests/devmem/kernel-patches/net-core-devmem-p2p`),
+    in both guests of the ROCm 10.2 stack: GEM and ``hipMalloc``
+    buffers stayed in VRAM, every frag address was inside the GPU's
+    BAR, buffers up to 1020 MiB (GEM) and 960 MiB (``hipMalloc``)
+    worked, 4130 bind and unbind cycles left nothing behind, and a
+    GPU kernel rewriting the buffer between sends was seen by the
+    peer, with no stale copy anywhere. Two 330 s runs from GPU
+    buffers verified 67.3 GiB and 66.2 GiB with no mismatching byte
+    (``rocm102-gpu.md`` section 5.2, ``rocm102-p2p-kernel.md``). That
+    kernel is stock ``v7.2.6`` plus that one commit and nothing else,
+    built from the guest image's own configuration; the upstream
+    quick-start tests and the 35-case transmit matrix give it the
+    stock kernel's verdict in every case. An independent pass
+    confirmed the kernel's identity by diffing the whole tree it was
+    built from against pristine ``v7.2.6`` — one file differs — and
+    the patch against upstream's commit
+    (``rocm102-verification-2.md``, section 1.1).
 
 The second case needs all of:
 
@@ -265,6 +345,141 @@ The second case needs all of:
 A control run with the buffer in system memory, the same program with
 one flag changed, put the addresses in system RAM instead, which
 shows the probe tells the two apart.
+
+GPU memory, end to end
+----------------------
+
+With that one commit on both guests, and the emulator's
+``header-split`` mode on the receiver, a stream that starts in one
+guest's GPU VRAM arrives in the other guest's GPU VRAM, and neither
+kernel reads the payload. The one commit covers both directions: no
+receive-specific core change was needed.
+
+A second engineer re-ran the headline case with their own random seed,
+their own expected-byte generator, their own placement probe and their
+own host-side hash, and confirmed four links in a single run
+(``rocm102-verification-2.md`` section 3.1, ``rocm102-gpu-to-gpu.md``):
+
+- **the sender's frag addresses are in the GPU's BAR**: 17533 of them,
+  with no address outside it;
+- **the receiver's posted buffers are in the GPU's BAR**: 38059
+  net_iov addresses, again with no other bucket;
+- **both buffers are in VRAM while bound**: ``VRAM VISIBLE pin
+  count 1`` on both guests, with a dynamic, peer-to-peer dma-buf
+  attach on each;
+- **the bytes are in the receiving GPU's memory**: three fragments,
+  hashed on the host from the *receiving* NIC server's own mapping of
+  that GPU's BAR, at the address the driver had given the device, all
+  equal to what the host computed for the sent stream.
+
+The receiver checked every byte in the dma-buf's own memory rather
+than from the socket, with nothing through the linear area
+(``linear_cmsgs=0``), every token returned, and the emulator's error
+counters at 0 on both servers. Of the receive payload descriptors, a
+fixed 64 per run are in system RAM — the same 64 in the independent
+run, from the fill before the binding — and the rest are in the BAR.
+
+Two further checks make the result credible:
+
+- **a negative control**: one fragment's expected bytes hashed against
+  a different fragment's address differ, as they must;
+- **a poison pre-fill**: the receive buffer was filled with ``0xa5``
+  before the transfer, and its last 64 KiB still hashes as 64 KiB of
+  ``0xa5`` afterwards, so the NIC wrote the plan's bytes where the
+  plan said and nothing else. The result cannot be a wholesale fill.
+
+What the host-side hash does **not** show is an independent arrival:
+the server's mapping and the receiver's are the same backing store. It
+proves placement — the address the driver handed the device maps to
+exactly where the correct bytes are — and not a second observation of
+the data.
+
+Around that run: killing the receiver mid-transfer with a live VRAM
+binding left no dma-buf, no pinned buffer object and no page pool
+behind, and a fresh binding worked straight after; and both guests
+sending from their own VRAM and receiving into another buffer at the
+same time passed in both directions
+(``rocm102-verification-2.md``, findings N2 and N3).
+
+The trap: without the backport it passes anyway
+^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+This is how a reader would fool themselves. On a stock ``v7.2.6``, the
+control run bound the same VRAM-created buffer, the transfer completed
+and **every byte verified** — while the buffer was not in VRAM at all.
+Without ``69ab87acc614`` the core's plain ``dma_buf_attach()`` leaves
+``attach->peer2peer`` false, amdgpu strips VRAM from the pin domains
+of a non-peer-to-peer attachment, the buffer moves to system memory,
+and every net_iov (19103) and every payload descriptor (23330) is in
+system RAM with none in the BAR. A test that checks only the payload
+therefore passes while the data goes nowhere near the GPU. Check the
+placement, not the bytes (``rocm102-gpu-to-gpu.md``, section 7).
+
+Performance
+-----------
+
+.. warning::
+
+   **These are emulation numbers, and they measure the emulator, not
+   ionic hardware.** Every one was taken on a shared, loaded
+   development host — load average between about 7 and 16 during these
+   runs, two of the CPUs being the stack's own servers, which spin at
+   about 99 % of a CPU from start-up — and identical runs varied by
+   more than 2x. The rule the independent pass applied, and this page
+   follows: **never read a difference from a single sample.** Nothing
+   below is a hardware number or a regression.
+
+Devmem transmit and receive, 64 MiB per run, three samples each, as
+sender-side MiB/s (``rocm102-gpu-to-gpu.md``, section 8):
+
+.. list-table::
+   :header-rows: 1
+   :widths: 45 55
+
+   * - Path
+     - Transmit MiB/s, 3 samples
+   * - Copy TCP
+     - 191.5, 226.4, 206.2
+   * - ``MSG_ZEROCOPY``
+     - 240.0, 215.9, 177.1
+   * - devmem transmit (udmabuf) to an ordinary receive
+     - 184.1, 218.3, 195.7
+   * - devmem transmit to devmem receive, udmabuf both ends
+     - 145.4, 94.0, 103.4
+   * - VRAM to VRAM, GPU buffers both ends
+     - 4.3, 4.4, 4.4
+
+**The VRAM row is not a datapath measurement.** Reading an emulated
+GPU's VRAM back through a CPU mapping costs about 3 MiB/s on this
+stack, and both ends do it: the sender fills its buffer through one
+mapping and the verifier reads through the other. The row measures the
+test's readback, and quoting it as a devmem rate would mislead.
+
+Sustained runs, which say more than a rate sample because every byte
+and every completion is accounted for:
+
+- 360 s of devmem transmit from a udmabuf into an ordinary receiver:
+  **74.1 GiB** verified, 0 mismatches, 79571 of 79571 zerocopy
+  completions, none reporting a copy (``rocm102-devmem.md``).
+- 330 s from a 64 MiB GEM VRAM buffer: **67.3 GiB** verified, 0
+  mismatches, 72242 of 72242 completions, every one of 18793507 frag
+  addresses in the GPU's BAR; and 330 s from a 16 MiB ``hipMalloc``
+  buffer: **66.2 GiB** verified, 71070 of 71070 completions, all
+  18487738 frag addresses in the BAR (``rocm102-p2p-kernel.md``).
+
+For scale, the same two guests on the same host run the upstream
+quick-start tests at (``rocm102-baseline.md``):
+
+- ``ib_send_bw``: 1134 to 1950 MiB/s across eight runs — the band to
+  treat as normal, not any single value in it;
+- ROCm RDMA, host allocation 1158 MiB/s and dma-buf 1305 MiB/s, each
+  one sample, each validated;
+- hipFile fio, 212.4 and 214.4 MB/s on the two guests;
+- the P4 fp8 reduction, 170.5 MB/s.
+
+**Never measured:** ionic hardware; any configuration with an IOMMU,
+where a dma-buf map returns IOVAs rather than the guest physical
+addresses used throughout here; and any host but this one.
 
 Trying it
 ---------
@@ -300,13 +515,27 @@ Transmit, on the kernel the project's guests use:
    passed between two ``v7.2.15`` guests
    (:project-file:`tests/devmem/README.md`).
 
-Receive, and transmit on ``v7.4``, need a ``v7.4-rc3`` guest kernel
-and the series in ``devmem-tx-mainline`` and ``devmem-rx``, which no
-role or script applies; their READMEs say what they are based on.
-The receive series also needs the XDP frag offset fix applied first,
+Receive on the pinned ``v7.2.6`` line needs
+:project-file:`ansible/files/patches/devmem-rx-7.2.6` after ``srq``,
+``p4`` and ``devmem-tx`` ``0001-0007``, a guest that rebuilds
+``ionic_rdma.ko`` and ``ernic_p4.ko`` against the same ionic, and the
+server started with ``--nic-profile header-split``. A guest that wants
+the eighth transmit patch as well applies
+``devmem-tx/on-devmem-rx/0009`` after the receive series instead; the
+two directories' READMEs say so.
+
+Transmit on ``v7.4``, and the reference form of receive, need a
+``v7.4-rc3`` guest kernel and the series in ``devmem-tx-mainline`` and
+``devmem-rx``, which no role or script applies; their READMEs say what
+they are based on. The receive series also needs the XDP frag offset
+fix applied first,
 :project-file:`tests/devmem/kernel-patches/ionic-mainline-fixes`.
-Receive also needs the server started with ``--nic-profile
-header-split``.
+
+Sending from, or receiving into, GPU memory rather than a copy in
+system memory needs the guest kernel to carry ``69ab87acc614``:
+:project-file:`tests/devmem/kernel-patches/net-core-devmem-p2p` is the
+backport, which this repository builds into no kernel — its
+``README.md`` says what an image bake would have to do.
 
 The tests ran on stacks of two guests that qemu-minimal's
 ``qemu-tool quick-start`` brings up: QEMU, one rocm-ernic server and
@@ -329,6 +558,10 @@ Where the detail is
      - The same series against ``v7.4-rc3``, as it would be posted
    * - :project-file:`ansible/files/patches/devmem-rx`
      - The receive series, against ``v7.4-rc3``
+   * - :project-file:`ansible/files/patches/devmem-rx-7.2.6`
+     - The same series against the ``v7.2.6`` the guests use
+   * - :project-file:`tests/devmem/kernel-patches/net-core-devmem-p2p`
+     - The one core commit that keeps a bound dma-buf in GPU VRAM
    * - :doc:`ionic`
      - The device as emulated: "Transmit offloads" and "Receive
        header split"
