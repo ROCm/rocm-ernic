@@ -1,0 +1,25 @@
+# Copyright (c) Advanced Micro Devices, Inc. All rights reserved.
+#
+# SPDX-License-Identifier: MIT
+
+---
+minor_changes:
+  - >-
+    ``files/patches/devmem-tx`` has an eighth patch,
+    ``0008-ionic-send-an-unreadable-skb-with-too-many-frags-as-a-tso.patch``,
+    which sends an unreadable (devmem) skb needing more than 16 buffers in
+    one packet as a TSO chain with a driver-chosen mss, instead of dropping
+    it.  Without it such an skb is retransmitted and dropped for ever and
+    the connection ends in ``ETIMEDOUT``.  A guest built with this series
+    gains the ``tx_unreadable_reseg`` ethtool counter, per queue and summed.
+    Its mainline form is ``files/patches/devmem-tx-mainline/0007``.
+  - >-
+    ``files/patches/devmem-tx/on-devmem-rx`` holds the same change
+    renumbered for a tree that also has a devmem Rx series.  A guest that
+    wants both Tx and Rx must apply ``devmem-tx`` ``0001-0007`` only, then
+    the Rx series, then that file: ``0008`` and the Rx series add their
+    counters to the same lines and do not stack in that order.
+    ``fetch-ionic-sources.sh`` applies only the ``*.patch`` directly in a
+    directory it is given, so the subdirectory is never applied by
+    accident -- and ``--patches-dir files/patches/devmem-tx`` cannot be
+    used for such a guest, because it would bring ``0008`` with it.

@@ -1,7 +1,7 @@
 # ionic patches for transmitting from device memory, in their mainline form
 
-The RFC "ionic: support netmem TX" as it would be posted: six patches and
-a cover letter against the upstream Linux ionic Ethernet driver, with
+The RFC "ionic: support netmem TX" as it would be posted: seven patches
+and a cover letter against the upstream Linux ionic Ethernet driver, with
 which a netdev accepts a dma-buf for transmit (`NETDEV_CMD_BIND_TX`) and
 sends from it with `sendmsg(MSG_ZEROCOPY)` and `SCM_DEVMEM_DMABUF`.
 
@@ -36,9 +36,24 @@ this tree it is installed with the server
 | `0004-ionic-count-the-unreadable-skbs-dropped-on-tx.patch` | `ionic_lif.h`, `ionic_stats.c`, `ionic_txrx.c`, `ionic.rst` | `0005`, without the `ionic.rst` hunk |
 | `0005-ionic-dont-send-an-unreadable-skb-that-has-no-frags.patch` | `ionic_txrx.c` | `0006`, unchanged |
 | `0006-ionic-add-netmem-tx-support.patch` | `ionic_lif.c` | `0007`, other line numbers |
+| `0007-ionic-send-an-unreadable-skb-with-too-many-frags-as-a-tso.patch` | `ionic_lif.h`, `ionic_stats.c`, `ionic_txrx.c`, `ionic.rst` | `0008`, without the `ionic.rst` hunk |
 
 `../devmem-tx/0001` has no counterpart here: it is an upstream fix
 `v7.4-rc3` already has.
+
+`0007` was written after the other six and after the cover letter, which
+is why it is the only file whose subject says `7/7` while the rest say
+`n/6`. The six are not renumbered here because they are the exact files
+the `v7.4-rc3` runs used, and the run recorded their `sha256sum`.
+**Renumber all seven, and the cover letter, before posting.** What
+`0007` does and why is in
+[`../devmem-tx/README.md`](../devmem-tx/README.md); the two differ only
+in the `ionic.rst` hunk and in line numbers.
+
+`../devmem-rx` is based on `0001-0006` and **not** on `0007`: it adds Rx
+counters where `0007` adds `tx_unreadable_reseg`, so the two conflict.
+Apply `0007` after the Rx series instead, in its
+[`../devmem-tx/on-devmem-rx/0007`](../devmem-tx/on-devmem-rx) form.
 
 `0005` is marked in the cover letter as not for net-next, which has
 `23fe6ac2e97a` ("net: skbuff: make skb_copy_and_csum_bits() report
@@ -97,6 +112,16 @@ Two things failed in those runs, neither in the series:
   the bug the base series' `0003` fixes
   ([`../README.md`](../README.md)); its mainline form is in
   [`tests/devmem/kernel-patches/ionic-mainline-fixes`](../../../../tests/devmem/kernel-patches/ionic-mainline-fixes).
+
+`0007` was not part of those runs. On `v7.4-rc3` plus `0001-0006` it
+applies, builds with `W=1` and with sparse without a warning, and
+`checkpatch.pl --strict` reports only the missing `Signed-off-by:`;
+the same on `v7.4-rc3` plus `0001-0006` plus `../devmem-rx` for its
+`on-devmem-rx` form. **Neither mainline form has been loaded or run.**
+What ran is the `v7.2.6` backport of the same change, on this emulator:
+see [`../devmem-tx/README.md`](../devmem-tx/README.md) and
+`rocm102-frag-limit.md` in
+[`docs/devmem/notes`](../../../../docs/devmem/notes).
 
 **Not tested:** net-next (the patches other than `0005` apply to its
 ionic files as of 2026-11-18, unbuilt), ionic hardware, `git am` of

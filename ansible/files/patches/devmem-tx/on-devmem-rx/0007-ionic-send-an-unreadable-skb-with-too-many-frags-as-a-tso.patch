@@ -1,0 +1,376 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Stephen Bates <sbates@raithlin.com>
+Date: Thu, 19 Nov 2026 22:33:59 -0500
+Subject: [RFC PATCH net-next] ionic: send an unreadable skb with too many frags as a TSO
+
+A Tx descriptor takes 16 buffers: the one it points to and 15 SG
+elements. A packet in more pieces than that is linearized, which can't
+be done for an unreadable (net_iov) skb, so the driver drops it and
+counts it in tx_unreadable_drop.
+
+For a devmem TCP sender that drop is not a lost packet, it is the end
+of the connection. TCP retransmits the same skb, tcp_can_collapse()
+leaves unreadable skbs alone, so every retransmission has the same
+frags and is dropped too, until the socket times out. And the sender
+doesn't have to do anything strange to get there. A devmem frag is one
+piece of the iovec, so it takes iovec pieces below about a 15th of the
+MSS, or pieces of any size that tcp_sendmsg_locked() appends to the
+skb at the tail of the write queue: sends of 15 pieces of 64 bytes
+with TCP_NODELAY, not waited for, become skbs of 17 frags.
+
+Nothing in the stack limits the frags of a packet to what the device
+takes. But the driver can make more packets of it: a TSO descriptor is
+one TCP segment with an SG list of its own, and the device writes each
+segment's lengths, sequence number, flags and checksums. So send such
+an skb with the TSO opcode and an mss of the driver's choosing, small
+enough for every descriptor to fit. To the device this is an ordinary
+TSO, every descriptor but the last with exactly mss bytes of payload.
+To the peer it is the same bytes in shorter segments. To the sending
+TCP it is what a middlebox that resegments does: an skb acked in part
+stays in the retransmit queue until the rest is, and a retransmission
+of it starts at snd_una (tcp_trim_head()).
+
+The mss is the size of the shortest run of 15 consecutive frags, or the
+skb's own when that is smaller. A descriptor that needs a 17th buffer
+has 15 whole frags in the middle of its payload and at least a byte
+before and after them, so it carries more than that; the first
+descriptor, which also points to the headers, has the first 15 frags
+and a byte more. For 17 frags of 64 bytes that is an mss of 960 and
+two descriptors.
+
+The same is done for an unreadable GSO skb with a segment that needs
+too many buffers: it goes out with that mss in place of its gso_size.
+
+The skb itself is not changed. It is a clone, and its shinfo is the one
+the copy in the socket's retransmit queue has, so gso_size and gso_segs
+are left as they are and the mss is handed to ionic_tx_tso(). That
+function prepares the headers in the linear area after skb_cow_head(),
+as it does for every GSO skb, and those are the clone's own.
+
+This is only done for what the device is known to do right:
+
+ - TCP over IPv4 or IPv6, with the headers and nothing else in the
+   linear area, CHECKSUM_PARTIAL, no tunnel, and no IPv6 extension
+   headers.
+ - TSO enabled for that IP version, since a device told to turn TSO off
+   may refuse the opcode, and TSO_ECN as well if CWR is set.
+ - No SYN, RST or URG: the device repeats the flags on every segment
+   except FIN and PSH, which it leaves for the last, and CWR, for the
+   first.
+ - IPv4 with DF set and no fragment offset. The device numbers the IDs
+   of the segments from the header's, and the stack only set one aside
+   (or gso_segs of them), so the IDs can repeat. That is harmless for
+   packets that are never fragmented, and only for those.
+ - Not on the hardware timestamp queue.
+ - At most half a ring of descriptors.
+
+Anything else is dropped and counted as before. The new counter,
+tx_unreadable_reseg, counts the skbs sent this way; they also count in
+tx_tso, and each segment in tx_pkts.
+
+What remains: the drop, and so the dead connection, when TSO is off or
+was not granted, and for a layout that needs more descriptors than
+half the ring. The mss chosen is safe but not always the largest that
+would fit: one frag of 1400 bytes followed by 16 of one byte goes out
+as 95 segments of 15 bytes where three segments of 700 would do. No
+known sender does that, and finding the best mss means trying them.
+
+Not tested on ionic hardware. The descriptors are those of a TSO with a
+small gso_size, but whether a device takes an mss this small (15 at
+the least) has only been tried on an emulator.
+---
+ .../device_drivers/ethernet/pensando/ionic.rst     |   2 
+ drivers/net/ethernet/pensando/ionic/ionic_lif.h    |   2 
+ drivers/net/ethernet/pensando/ionic/ionic_stats.c  |   3 
+ drivers/net/ethernet/pensando/ionic/ionic_txrx.c   | 123 ++++++++++++++++++--
+ 4 files changed, 120 insertions(+), 10 deletions(-)
+
+diff --git a/Documentation/networking/device_drivers/ethernet/pensando/ionic.rst b/Documentation/networking/device_drivers/ethernet/pensando/ionic.rst
+index 2de6f43fd0c2..e06520898726 100644
+--- a/Documentation/networking/device_drivers/ethernet/pensando/ionic.rst
++++ b/Documentation/networking/device_drivers/ethernet/pensando/ionic.rst
+@@ -162,6 +162,7 @@ Driver port specific::
+      xdp_redirect: 0
+      xdp_frames: 0
+      tx_unreadable_drop: 0
++     tx_unreadable_reseg: 0
+      rx_hds_split: 0
+      rx_hds_hbo: 0
+      rx_unreadable_drop: 0
+@@ -183,6 +184,7 @@ Driver queue specific::
+      tx_0_vlan_inserted: 0
+      tx_0_xdp_frames: 0
+      tx_0_unreadable_drop: 0
++     tx_0_unreadable_reseg: 0
+      rx_0_pkts: 2
+      rx_0_bytes: 120
+      rx_0_dma_map_err: 0
+diff --git a/drivers/net/ethernet/pensando/ionic/ionic_lif.h b/drivers/net/ethernet/pensando/ionic/ionic_lif.h
+index 0d81fcd41c76..87efb125411a 100644
+--- a/drivers/net/ethernet/pensando/ionic/ionic_lif.h
++++ b/drivers/net/ethernet/pensando/ionic/ionic_lif.h
+@@ -40,6 +40,7 @@ struct ionic_tx_stats {
+ 	u64 hwstamp_invalid;
+ 	u64 xdp_frames;
+ 	u64 unreadable_drop;
++	u64 unreadable_reseg;
+ };
+ 
+ struct ionic_rx_stats {
+@@ -155,6 +156,7 @@ struct ionic_lif_sw_stats {
+ 	u64 xdp_redirect;
+ 	u64 xdp_frames;
+ 	u64 tx_unreadable_drop;
++	u64 tx_unreadable_reseg;
+ 	u64 rx_hds_split;
+ 	u64 rx_hds_hbo;
+ 	u64 rx_unreadable_drop;
+diff --git a/drivers/net/ethernet/pensando/ionic/ionic_stats.c b/drivers/net/ethernet/pensando/ionic/ionic_stats.c
+index d74a87106f85..5ae65848c666 100644
+--- a/drivers/net/ethernet/pensando/ionic/ionic_stats.c
++++ b/drivers/net/ethernet/pensando/ionic/ionic_stats.c
+@@ -35,6 +35,7 @@ static const struct ionic_stat_desc ionic_lif_stats_desc[] = {
+ 	IONIC_LIF_STAT_DESC(xdp_redirect),
+ 	IONIC_LIF_STAT_DESC(xdp_frames),
+ 	IONIC_LIF_STAT_DESC(tx_unreadable_drop),
++	IONIC_LIF_STAT_DESC(tx_unreadable_reseg),
+ 	IONIC_LIF_STAT_DESC(rx_hds_split),
+ 	IONIC_LIF_STAT_DESC(rx_hds_hbo),
+ 	IONIC_LIF_STAT_DESC(rx_unreadable_drop),
+@@ -148,6 +149,7 @@ static const struct ionic_stat_desc ionic_tx_stats_desc[] = {
+ 	IONIC_TX_STAT_DESC(vlan_inserted),
+ 	IONIC_TX_STAT_DESC(xdp_frames),
+ 	IONIC_TX_STAT_DESC(unreadable_drop),
++	IONIC_TX_STAT_DESC(unreadable_reseg),
+ };
+ 
+ static const struct ionic_stat_desc ionic_rx_stats_desc[] = {
+@@ -196,6 +198,7 @@ static void ionic_add_lif_txq_stats(struct ionic_lif *lif, int q_num,
+ 	stats->tx_hwstamp_invalid += txstats->hwstamp_invalid;
+ 	stats->xdp_frames += txstats->xdp_frames;
+ 	stats->tx_unreadable_drop += txstats->unreadable_drop;
++	stats->tx_unreadable_reseg += txstats->unreadable_reseg;
+ }
+ 
+ static void ionic_add_lif_rxq_stats(struct ionic_lif *lif, int q_num,
+diff --git a/drivers/net/ethernet/pensando/ionic/ionic_txrx.c b/drivers/net/ethernet/pensando/ionic/ionic_txrx.c
+index 47d51085304d..becc0c2c1aea 100644
+--- a/drivers/net/ethernet/pensando/ionic/ionic_txrx.c
++++ b/drivers/net/ethernet/pensando/ionic/ionic_txrx.c
+@@ -1622,7 +1622,7 @@ static void ionic_tx_tso_post(struct net_device *netdev, struct ionic_queue *q,
+ }
+ 
+ static int ionic_tx_tso(struct net_device *netdev, struct ionic_queue *q,
+-			struct sk_buff *skb)
++			struct sk_buff *skb, unsigned int mss)
+ {
+ 	struct ionic_tx_stats *stats = q_to_tx_stats(q);
+ 	struct ionic_tx_desc_info *desc_info;
+@@ -1637,7 +1637,6 @@ static int ionic_tx_tso(struct net_device *netdev, struct ionic_queue *q,
+ 	dma_addr_t frag_addr;
+ 	unsigned int hdrlen;
+ 	unsigned int len;
+-	unsigned int mss;
+ 	bool start, done;
+ 	bool outer_csum;
+ 	bool has_vlan;
+@@ -1668,7 +1667,6 @@ static int ionic_tx_tso(struct net_device *netdev, struct ionic_queue *q,
+ 		return -EIO;
+ 
+ 	len = skb->len;
+-	mss = skb_shinfo(skb)->gso_size;
+ 	outer_csum = (skb_shinfo(skb)->gso_type & (SKB_GSO_GRE |
+ 						   SKB_GSO_GRE_CSUM |
+ 						   SKB_GSO_IPXIP4 |
+@@ -1740,6 +1738,9 @@ static int ionic_tx_tso(struct net_device *netdev, struct ionic_queue *q,
+ 	stats->bytes += len;
+ 	stats->tso++;
+ 	stats->tso_bytes = len;
++	/* only ionic_tx_unreadable_reseg() picks an mss of its own */
++	if (unlikely(mss != skb_shinfo(skb)->gso_size))
++		stats->unreadable_reseg++;
+ 
+ 	return 0;
+ }
+@@ -1881,7 +1882,101 @@ static int ionic_tx(struct net_device *netdev, struct ionic_queue *q,
+ 	return 0;
+ }
+ 
+-static int ionic_tx_descs_needed(struct ionic_queue *q, struct sk_buff *skb)
++/* An unreadable skb with more frags in one packet than a descriptor has
++ * buffers can't be linearized.  If it is plain TCP and the device does TSO,
++ * it can go out as a TSO with an mss small enough that every descriptor
++ * fits, which makes more and shorter segments of the same byte stream and
++ * leaves the skb, and the shinfo it shares with the socket's copy, alone.
++ *
++ * A descriptor that takes more than max_sg_elems + 1 buffers has
++ * max_sg_elems whole frags in the middle and at least a byte on both
++ * sides, and the first, which also has the headers, has the first
++ * max_sg_elems frags and a byte more.  So no descriptor does when the mss
++ * is no more than the shortest run of max_sg_elems frags.
++ *
++ * Returns the number of descriptors and sets @mss, or a negative errno if
++ * the skb can't be sent this way.
++ */
++static int ionic_tx_unreadable_reseg(struct ionic_queue *q,
++				     struct sk_buff *skb, unsigned int *mss)
++{
++	const struct skb_shared_info *shinfo = skb_shinfo(skb);
++	netdev_features_t tso;
++	unsigned int payload;
++	unsigned int hdrlen;
++	unsigned int ndescs;
++	unsigned int size;
++	unsigned int run;
++	unsigned int m;
++	unsigned int i;
++
++	if (ionic_txq_hwstamp_enabled(q) || skb->encapsulation)
++		return -EOPNOTSUPP;
++
++	/* TCP, with its headers and nothing else in the linear area */
++	if (skb->ip_summed != CHECKSUM_PARTIAL ||
++	    !skb_transport_header_was_set(skb) ||
++	    skb_checksum_start_offset(skb) != skb_transport_offset(skb) ||
++	    skb->csum_offset != offsetof(struct tcphdr, check) ||
++	    skb_headlen(skb) < skb_transport_offset(skb) + sizeof(struct tcphdr))
++		return -EOPNOTSUPP;
++
++	hdrlen = skb_tcp_all_headers(skb);
++	if (skb_headlen(skb) != hdrlen)
++		return -EOPNOTSUPP;
++
++	/* The device numbers the segments' IPv4 IDs from the header's, and
++	 * the stack did not set as many aside, so they must not matter.
++	 */
++	if (skb->protocol == cpu_to_be16(ETH_P_IP)) {
++		if (ip_hdr(skb)->protocol != IPPROTO_TCP ||
++		    ip_hdr(skb)->frag_off != cpu_to_be16(IP_DF))
++			return -EOPNOTSUPP;
++		tso = NETIF_F_TSO;
++	} else if (skb->protocol == cpu_to_be16(ETH_P_IPV6)) {
++		if (ipv6_hdr(skb)->nexthdr != IPPROTO_TCP)
++			return -EOPNOTSUPP;
++		tso = NETIF_F_TSO6;
++	} else {
++		return -EOPNOTSUPP;
++	}
++
++	/* The device repeats the header's flags, but for FIN, PSH and CWR */
++	if (tcp_hdr(skb)->syn || tcp_hdr(skb)->rst || tcp_hdr(skb)->urg)
++		return -EOPNOTSUPP;
++	if (tcp_hdr(skb)->cwr)
++		tso |= NETIF_F_TSO_ECN;
++
++	if ((q->lif->netdev->features & tso) != tso)
++		return -EOPNOTSUPP;
++
++	payload = skb->len - hdrlen;
++	m = skb_is_gso(skb) ? shinfo->gso_size : payload;
++	run = 0;
++	for (i = 0; i < shinfo->nr_frags; i++) {
++		size = skb_frag_size(&shinfo->frags[i]);
++		if (unlikely(!size))
++			return -EINVAL;
++
++		run += size;
++		if (i >= q->max_sg_elems)
++			run -= skb_frag_size(&shinfo->frags[i - q->max_sg_elems]);
++		if (i + 1 >= q->max_sg_elems)
++			m = min(m, run);
++	}
++
++	/* Short frags among long ones can ask for a very small mss */
++	ndescs = DIV_ROUND_UP(payload, m);
++	if (ndescs > q->num_descs / 2)
++		return -E2BIG;
++
++	*mss = m;
++
++	return ndescs;
++}
++
++static int ionic_tx_descs_needed(struct ionic_queue *q, struct sk_buff *skb,
++				 unsigned int *mss)
+ {
+ 	int nr_frags = skb_shinfo(skb)->nr_frags;
+ 	bool too_many_frags = false;
+@@ -1905,6 +2000,9 @@ static int ionic_tx_descs_needed(struct ionic_queue *q, struct sk_buff *skb)
+ 	if (unlikely(!skb_frags_readable(skb) && !nr_frags))
+ 		return -EFAULT;
+ 
++	/* A TSO, unless this is zero */
++	*mss = skb_shinfo(skb)->gso_size;
++
+ 	/* Each desc is mss long max, so a descriptor for each gso_seg */
+ 	if (skb_is_gso(skb)) {
+ 		ndescs = skb_shinfo(skb)->gso_segs;
+@@ -1969,6 +2067,9 @@ static int ionic_tx_descs_needed(struct ionic_queue *q, struct sk_buff *skb)
+ 
+ linearize:
+ 	if (too_many_frags) {
++		if (unlikely(!skb_frags_readable(skb)))
++			return ionic_tx_unreadable_reseg(q, skb, mss);
++
+ 		err = skb_linearize(skb);
+ 		if (unlikely(err))
+ 			return err;
+@@ -1993,6 +2094,7 @@ static netdev_tx_t ionic_start_hwstamp_xmit(struct sk_buff *skb,
+ {
+ 	struct ionic_lif *lif = netdev_priv(netdev);
+ 	struct ionic_queue *q;
++	unsigned int mss;
+ 	int err, ndescs;
+ 
+ 	/* Does not stop/start txq, because we post to a separate tx queue
+@@ -2001,7 +2103,7 @@ static netdev_tx_t ionic_start_hwstamp_xmit(struct sk_buff *skb,
+ 	 */
+ 
+ 	q = &lif->hwstamp_txq->q;
+-	ndescs = ionic_tx_descs_needed(q, skb);
++	ndescs = ionic_tx_descs_needed(q, skb, &mss);
+ 	if (unlikely(ndescs < 0))
+ 		goto err_out_drop;
+ 
+@@ -2009,8 +2111,8 @@ static netdev_tx_t ionic_start_hwstamp_xmit(struct sk_buff *skb,
+ 		goto err_out_drop;
+ 
+ 	skb_shinfo(skb)->tx_flags |= SKBTX_HW_TSTAMP;
+-	if (skb_is_gso(skb))
+-		err = ionic_tx_tso(netdev, q, skb);
++	if (mss)
++		err = ionic_tx_tso(netdev, q, skb, mss);
+ 	else
+ 		err = ionic_tx(netdev, q, skb);
+ 
+@@ -2028,6 +2130,7 @@ netdev_tx_t ionic_start_xmit(struct sk_buff *skb, struct net_device *netdev)
+ 	u16 queue_index = skb_get_queue_mapping(skb);
+ 	struct ionic_lif *lif = netdev_priv(netdev);
+ 	struct ionic_queue *q;
++	unsigned int mss;
+ 	int ndescs;
+ 	int err;
+ 
+@@ -2044,7 +2147,7 @@ netdev_tx_t ionic_start_xmit(struct sk_buff *skb, struct net_device *netdev)
+ 		queue_index = 0;
+ 	q = &lif->txqcqs[queue_index]->q;
+ 
+-	ndescs = ionic_tx_descs_needed(q, skb);
++	ndescs = ionic_tx_descs_needed(q, skb, &mss);
+ 	if (ndescs < 0)
+ 		goto err_out_drop;
+ 
+@@ -2053,8 +2156,8 @@ netdev_tx_t ionic_start_xmit(struct sk_buff *skb, struct net_device *netdev)
+ 				  ndescs, ndescs))
+ 		return NETDEV_TX_BUSY;
+ 
+-	if (skb_is_gso(skb))
+-		err = ionic_tx_tso(netdev, q, skb);
++	if (mss)
++		err = ionic_tx_tso(netdev, q, skb, mss);
+ 	else
+ 		err = ionic_tx(netdev, q, skb);
+ 
+-- 
+2.43.0
+
