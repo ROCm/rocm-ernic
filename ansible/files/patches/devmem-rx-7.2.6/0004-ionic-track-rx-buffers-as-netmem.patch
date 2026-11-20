@@ -1,0 +1,261 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Stephen Bates <sbates@raithlin.com>
+Date: Thu, 19 Nov 2026 22:49:31 -0500
+Subject: [PATCH] ionic: track Rx buffers as netmem
+
+Keep a netmem_ref instead of a struct page pointer for each Rx buffer,
+and use the netmem variants of the page pool and skb helpers:
+page_pool_alloc_netmem(), page_pool_get_dma_addr_netmem(),
+page_pool_put_full_netmem(), page_pool_dma_sync_netmem_for_cpu(),
+skb_add_rx_frag_netmem() and skb_frag_fill_netmem_desc().
+
+The places that need the page or its address say so by going through
+ionic_rx_buf_page() and ionic_rx_buf_va(): the copybreak copy, and XDP,
+which reads the first buffer and hands pages to the Tx path. They only
+ever see pages.
+
+No functional change: nothing gives the page pool a memory provider
+yet, so every netmem is still a page, and
+page_pool_dma_sync_netmem_for_cpu() only differs from
+page_pool_dma_sync_for_cpu() for a pool whose memory provider turned
+the sync off.
+
+[ rocm-ernic: backport of RFC patch 4/8 of the series "ionic: devmem TCP
+  receive, against an emulated device" (based on v7.4-rc3, not posted)
+  to v7.2.6 with patches/srq, patches/p4 and patches/devmem-tx;
+  differences: none, the diff is unchanged. It needs the XDP frag offset
+  fix, which is patches/srq 0010 here, and does not apply without it. ]
+---
+ drivers/net/ethernet/pensando/ionic/ionic_dev.h  |   2 
+ drivers/net/ethernet/pensando/ionic/ionic_txrx.c | 100 +++++++++++++---------
+ 2 files changed, 58 insertions(+), 44 deletions(-)
+
+diff --git a/drivers/net/ethernet/pensando/ionic/ionic_dev.h b/drivers/net/ethernet/pensando/ionic/ionic_dev.h
+index 9b4bbaa539d6..8319b6b4b869 100644
+--- a/drivers/net/ethernet/pensando/ionic/ionic_dev.h
++++ b/drivers/net/ethernet/pensando/ionic/ionic_dev.h
+@@ -207,7 +207,7 @@ struct ionic_qcq;
+ 					  SKB_DATA_ALIGN(sizeof(struct skb_shared_info))))
+ 
+ struct ionic_buf_info {
+-	struct page *page;
++	netmem_ref netmem;
+ 	dma_addr_t dma_addr;
+ 	u32 page_offset;
+ 	u32 len;
+diff --git a/drivers/net/ethernet/pensando/ionic/ionic_txrx.c b/drivers/net/ethernet/pensando/ionic/ionic_txrx.c
+index c82a1d1955a6..14eebe57d745 100644
+--- a/drivers/net/ethernet/pensando/ionic/ionic_txrx.c
++++ b/drivers/net/ethernet/pensando/ionic/ionic_txrx.c
+@@ -117,25 +117,34 @@ static inline struct netdev_queue *q_to_ndq(struct net_device *netdev,
+ 	return netdev_get_tx_queue(netdev, q->index);
+ }
+ 
++/* Only for a buffer that is known to be a page */
++static struct page *ionic_rx_buf_page(struct ionic_buf_info *buf_info)
++{
++	return netmem_to_page(buf_info->netmem);
++}
++
++/* Only for a buffer that is known to be a page */
+ static void *ionic_rx_buf_va(struct ionic_buf_info *buf_info)
+ {
+-	return page_address(buf_info->page) + buf_info->page_offset;
++	return netmem_address(buf_info->netmem) + buf_info->page_offset;
+ }
+ 
+ static dma_addr_t ionic_rx_buf_pa(struct ionic_buf_info *buf_info)
+ {
+-	return page_pool_get_dma_addr(buf_info->page) + buf_info->page_offset;
++	return page_pool_get_dma_addr_netmem(buf_info->netmem) +
++	       buf_info->page_offset;
+ }
+ 
+ static void __ionic_rx_put_buf(struct ionic_queue *q,
+ 			       struct ionic_buf_info *buf_info,
+ 			       bool recycle_direct)
+ {
+-	if (!buf_info->page)
++	if (!buf_info->netmem)
+ 		return;
+ 
+-	page_pool_put_full_page(q->page_pool, buf_info->page, recycle_direct);
+-	buf_info->page = NULL;
++	page_pool_put_full_netmem(q->page_pool, buf_info->netmem,
++				  recycle_direct);
++	buf_info->netmem = 0;
+ 	buf_info->len = 0;
+ 	buf_info->page_offset = 0;
+ }
+@@ -160,19 +169,20 @@ static void ionic_rx_add_skb_frag(struct ionic_queue *q,
+ 				  bool synced)
+ {
+ 	if (!synced)
+-		page_pool_dma_sync_for_cpu(q->page_pool,
+-					   buf_info->page,
+-					   buf_info->page_offset + headroom,
+-					   len);
++		page_pool_dma_sync_netmem_for_cpu(q->page_pool,
++						  buf_info->netmem,
++						  buf_info->page_offset + headroom,
++						  len);
+ 
+-	skb_add_rx_frag(skb, skb_shinfo(skb)->nr_frags,
+-			buf_info->page, buf_info->page_offset + headroom,
+-			len, buf_info->len);
++	skb_add_rx_frag_netmem(skb, skb_shinfo(skb)->nr_frags,
++			       buf_info->netmem,
++			       buf_info->page_offset + headroom,
++			       len, buf_info->len);
+ 
+ 	/* napi_gro_frags() will release/recycle the
+ 	 * page_pool buffers from the frags list
+ 	 */
+-	buf_info->page = NULL;
++	buf_info->netmem = 0;
+ 	buf_info->len = 0;
+ 	buf_info->page_offset = 0;
+ }
+@@ -190,7 +200,7 @@ static struct sk_buff *ionic_rx_build_skb(struct ionic_queue *q,
+ 	u16 frag_len;
+ 
+ 	buf_info = &desc_info->bufs[0];
+-	prefetchw(buf_info->page);
++	prefetchw(ionic_rx_buf_page(buf_info));
+ 
+ 	skb = napi_get_frags(&q_to_qcq(q)->napi);
+ 	if (unlikely(!skb)) {
+@@ -207,14 +217,14 @@ static struct sk_buff *ionic_rx_build_skb(struct ionic_queue *q,
+ 	else
+ 		frag_len = min_t(u16, len, IONIC_PAGE_SIZE);
+ 
+-	if (unlikely(!buf_info->page))
++	if (unlikely(!buf_info->netmem))
+ 		goto err_bad_buf_page;
+ 	ionic_rx_add_skb_frag(q, skb, buf_info, headroom, frag_len, synced);
+ 	len -= frag_len;
+ 	buf_info++;
+ 
+ 	for (i = 0; i < num_sg_elems; i++, buf_info++) {
+-		if (unlikely(!buf_info->page))
++		if (unlikely(!buf_info->netmem))
+ 			goto err_bad_buf_page;
+ 		frag_len = min_t(u16, len, buf_info->len);
+ 		ionic_rx_add_skb_frag(q, skb, buf_info, 0, frag_len, synced);
+@@ -253,10 +263,10 @@ static struct sk_buff *ionic_rx_copybreak(struct net_device *netdev,
+ 	skb_mark_for_recycle(skb);
+ 
+ 	if (!synced)
+-		page_pool_dma_sync_for_cpu(q->page_pool,
+-					   buf_info->page,
+-					   buf_info->page_offset + headroom,
+-					   len);
++		page_pool_dma_sync_netmem_for_cpu(q->page_pool,
++						  buf_info->netmem,
++						  buf_info->page_offset + headroom,
++						  len);
+ 
+ 	skb_copy_to_linear_data(skb, ionic_rx_buf_va(buf_info) + headroom, len);
+ 
+@@ -466,7 +476,7 @@ static void ionic_xdp_rx_unlink_bufs(struct ionic_queue *q,
+ 	int i;
+ 
+ 	for (i = 0; i < nbufs; i++) {
+-		buf_info->page = NULL;
++		buf_info->netmem = 0;
+ 		buf_info++;
+ 	}
+ }
+@@ -492,9 +502,9 @@ static bool ionic_run_xdp(struct ionic_rx_stats *stats,
+ 	frag_len = min_t(u16, len, IONIC_XDP_MAX_LINEAR_MTU + VLAN_ETH_HLEN);
+ 	xdp_prepare_buff(&xdp_buf, ionic_rx_buf_va(buf_info),
+ 			 XDP_PACKET_HEADROOM, frag_len, false);
+-	page_pool_dma_sync_for_cpu(rxq->page_pool, buf_info->page,
+-				   buf_info->page_offset + XDP_PACKET_HEADROOM,
+-				   frag_len);
++	page_pool_dma_sync_netmem_for_cpu(rxq->page_pool, buf_info->netmem,
++					  buf_info->page_offset + XDP_PACKET_HEADROOM,
++					  frag_len);
+ 	prefetchw(&xdp_buf.data_hard_start);
+ 
+ 	/*  We limit MTU size to one buffer if !xdp_has_frags, so
+@@ -523,14 +533,16 @@ static bool ionic_run_xdp(struct ionic_rx_stats *stats,
+ 			sinfo->nr_frags++;
+ 			bi++;
+ 			frag_len = min_t(u16, remain_len, bi->len);
+-			page_pool_dma_sync_for_cpu(rxq->page_pool, bi->page,
+-						   bi->page_offset, frag_len);
+-			skb_frag_fill_page_desc(frag, bi->page,
+-						bi->page_offset, frag_len);
++			page_pool_dma_sync_netmem_for_cpu(rxq->page_pool,
++							  bi->netmem,
++							  bi->page_offset,
++							  frag_len);
++			skb_frag_fill_netmem_desc(frag, bi->netmem,
++						  bi->page_offset, frag_len);
+ 			sinfo->xdp_frags_size += frag_len;
+ 			remain_len -= frag_len;
+ 
+-			if (page_is_pfmemalloc(bi->page))
++			if (netmem_is_pfmemalloc(bi->netmem))
+ 				xdp_buff_set_frag_pfmemalloc(&xdp_buf);
+ 		} while (remain_len > 0);
+ 		nbufs += sinfo->nr_frags;
+@@ -575,7 +587,7 @@ static bool ionic_run_xdp(struct ionic_rx_stats *stats,
+ 		}
+ 
+ 		err = ionic_xdp_post_frame(txq, xdpf, XDP_TX,
+-					   buf_info->page,
++					   ionic_rx_buf_page(buf_info),
+ 					   buf_info->page_offset,
+ 					   true);
+ 		__netif_tx_unlock(nq);
+@@ -853,12 +865,13 @@ void ionic_rx_fill(struct ionic_queue *q, struct bpf_prog *xdp_prog)
+ 		frag_len = first_frag_len - headroom;
+ 
+ 		/* get a new buffer if we can't reuse one */
+-		if (!buf_info->page)
+-			buf_info->page = page_pool_alloc(q->page_pool,
+-							 &buf_info->page_offset,
+-							 &buf_info->len,
+-							 GFP_ATOMIC);
+-		if (unlikely(!buf_info->page)) {
++		if (!buf_info->netmem)
++			buf_info->netmem =
++				page_pool_alloc_netmem(q->page_pool,
++						       &buf_info->page_offset,
++						       &buf_info->len,
++						       GFP_ATOMIC);
++		if (unlikely(!buf_info->netmem)) {
+ 			buf_info->len = 0;
+ 			return;
+ 		}
+@@ -875,17 +888,18 @@ void ionic_rx_fill(struct ionic_queue *q, struct bpf_prog *xdp_prog)
+ 			frag_len = min_t(u16, remain_len, IONIC_PAGE_SIZE);
+ 
+ 			/* Recycle any leftover buffers that are too small to reuse */
+-			if (unlikely(buf_info->page && buf_info->len < frag_len))
++			if (unlikely(buf_info->netmem && buf_info->len < frag_len))
+ 				ionic_rx_put_buf_direct(q, buf_info);
+ 
+ 			/* Get new buffer if needed */
+-			if (!buf_info->page) {
++			if (!buf_info->netmem) {
+ 				buf_info->len = frag_len;
+-				buf_info->page = page_pool_alloc(q->page_pool,
+-								 &buf_info->page_offset,
+-								 &buf_info->len,
+-								 GFP_ATOMIC);
+-				if (unlikely(!buf_info->page)) {
++				buf_info->netmem =
++					page_pool_alloc_netmem(q->page_pool,
++							       &buf_info->page_offset,
++							       &buf_info->len,
++							       GFP_ATOMIC);
++				if (unlikely(!buf_info->netmem)) {
+ 					buf_info->len = 0;
+ 					return;
+ 				}
+-- 
+2.43.0
+

@@ -26,9 +26,20 @@ directory and `p4/`) and `ansible/playbooks/p4-tests.yml`, which copies
 `patches/*.patch`.
 
 The subdirectories are optional series applied **on top of** this one, each
-with its own README: `srq/`, `p4/`, `devmem-tx/`, `devmem-tx-mainline/` and
-`devmem-rx/` (both for reference only: they are against `v7.4-rc3`, and
-nothing applies them) and `rdma-core/` (userspace, not the kernel).
+with its own README: `srq/`, `p4/`, `devmem-tx/`, `devmem-rx-7.2.6/`,
+`devmem-tx-mainline/` and `devmem-rx/` (those two for reference only: they
+are against `v7.4-rc3`, and nothing applies them) and `rdma-core/`
+(userspace, not the kernel).
+
+`devmem-rx-7.2.6/` goes after `srq/`, `p4/` and `devmem-tx/`, and
+`devmem-tx/` has to be given without its `0008` for it to apply, which
+`--patches-dir` cannot express; its README says what that means.
+
+A directory below a series directory is **not** part of it, and nothing
+applies it: `fetch-ionic-sources.sh` applies the `*.patch` directly in
+each `--patches-dir` and does not descend. `devmem-tx/on-devmem-rx/` is
+one such directory. `ErnicInstall.cmake` does install every `*.patch`
+under this tree, nested ones included, where nothing reads them.
 
 ## `--patches-dir` replaces, it does not add
 

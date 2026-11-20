@@ -1,0 +1,198 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Stephen Bates <sbates@raithlin.com>
+Date: Thu, 19 Nov 2026 22:49:34 -0500
+Subject: [PATCH] ionic: keep an Rx queue going when its buffers run out
+
+ionic_rx_fill() returns as soon as it can't get a buffer. It does not
+ring the doorbell for the descriptors it filled before that, counts
+nothing, and nothing brings it back: the ring is only filled from the
+NAPI poll, and a device with no buffers has nothing to complete. If the
+ring was empty the queue stays deaf until something else schedules the
+poll, which for a queue that shares its interrupt with a Tx queue is a
+Tx completion, and for one that does not is nothing.
+
+With pages from the page allocator that takes a failed GFP_ATOMIC
+allocation at a bad moment. With a memory provider, which the next
+patch allows, it is an ordinary state: the dma-buf is smaller than the
+ring, or two queues share it, or the application is slow to give its
+buffers back. A ring of 16384 descriptors on a dma-buf of 16000 pages
+received nothing at all: the fill stopped a few hundred descriptors
+short, and the device was never told about the 16000.
+
+On a failed allocation, ring the doorbell for what was posted and count
+it in rx_N_alloc_err. While the device has descriptors left, its next
+completion brings the poll back and the fill is tried again. If it has
+none, arm a timer that schedules the queue's NAPI 10 ms later; the poll
+fills the ring and, if it still gets nothing, arms the timer again. The
+first fill of a queue runs before its NAPI is enabled, where the
+timer's napi_schedule() does nothing, so ionic_qcq_enable() arms the
+timer once more if the ring is still empty.
+
+The timer is stopped where the NAPI is disabled, and before a queue's
+memory is freed.
+
+[ rocm-ernic: backport of RFC patch 7/8 of the series "ionic: devmem TCP
+  receive, against an emulated device" (based on v7.4-rc3, not posted)
+  to v7.2.6 with patches/srq, patches/p4 and patches/devmem-tx;
+  differences: line numbers only. ]
+---
+ drivers/net/ethernet/pensando/ionic/ionic_dev.h  |  1 +
+ drivers/net/ethernet/pensando/ionic/ionic_lif.c  | 13 ++++++++
+ drivers/net/ethernet/pensando/ionic/ionic_lif.h  |  1 +
+ drivers/net/ethernet/pensando/ionic/ionic_txrx.c | 36 ++++++++++++++++++----
+ drivers/net/ethernet/pensando/ionic/ionic_txrx.h |  1 +
+ 5 files changed, 46 insertions(+), 6 deletions(-)
+
+diff --git a/drivers/net/ethernet/pensando/ionic/ionic_dev.h b/drivers/net/ethernet/pensando/ionic/ionic_dev.h
+index f825e841c4cf..dc6a0a1aa638 100644
+--- a/drivers/net/ethernet/pensando/ionic/ionic_dev.h
++++ b/drivers/net/ethernet/pensando/ionic/ionic_dev.h
+@@ -34,6 +34,7 @@
+ #define IONIC_TX_DOORBELL_DEADLINE	(HZ / 100)	/* 10ms */
+ #define IONIC_RX_MIN_DOORBELL_DEADLINE	(HZ / 100)	/* 10ms */
+ #define IONIC_RX_MAX_DOORBELL_DEADLINE	(HZ * 4)	/* 4s */
++#define IONIC_RX_REFILL_DELAY		(HZ / 100)	/* 10ms */
+ 
+ #define IONIC_EXPDB_64B_WQE_LG2		6
+ #define IONIC_EXPDB_128B_WQE_LG2	7
+diff --git a/drivers/net/ethernet/pensando/ionic/ionic_lif.c b/drivers/net/ethernet/pensando/ionic/ionic_lif.c
+index af3461fec0b5..c4e730017401 100644
+--- a/drivers/net/ethernet/pensando/ionic/ionic_lif.c
++++ b/drivers/net/ethernet/pensando/ionic/ionic_lif.c
+@@ -338,6 +338,14 @@ static int ionic_qcq_enable(struct ionic_qcq *qcq)
+ 				IONIC_INTR_MASK_CLEAR);
+ 	}
+ 
++	/* The Rx ring was filled before its NAPI could be scheduled.  If
++	 * that got no buffers at all, its retry may have come too early as
++	 * well.
++	 */
++	if (q->type == IONIC_QTYPE_RXQ && q->head_idx == q->tail_idx)
++		mod_timer(&qcq->rx_refill_timer,
++			  jiffies + IONIC_RX_REFILL_DELAY);
++
+ 	return 0;
+ }
+ 
+@@ -374,6 +382,9 @@ static int ionic_qcq_disable(struct ionic_lif *lif, struct ionic_qcq *qcq, int f
+ 		napi_disable_locked(&qcq->napi);
+ 	}
+ 
++	/* nothing fills the ring now, so nothing arms this again */
++	timer_delete_sync(&qcq->rx_refill_timer);
++
+ 	/* If there was a previous fw communcation error, don't bother with
+ 	 * sending the adminq command and just return the same error value.
+ 	 */
+@@ -428,6 +439,7 @@ static void ionic_qcq_free(struct ionic_lif *lif, struct ionic_qcq *qcq)
+ 	if (!qcq)
+ 		return;
+ 
++	timer_delete_sync(&qcq->rx_refill_timer);
+ 	ionic_debugfs_del_qcq(qcq);
+ 
+ 	if (qcq->q_base) {
+@@ -763,6 +775,7 @@ static int ionic_qcq_alloc(struct ionic_lif *lif, unsigned int type,
+ 	}
+ 
+ 	INIT_WORK(&new->dim.work, ionic_dim_work);
++	timer_setup(&new->rx_refill_timer, ionic_rx_refill_timer, 0);
+ 	new->dim.mode = DIM_CQ_PERIOD_MODE_START_FROM_CQE;
+ 	if (lif->doorbell_wa)
+ 		INIT_WORK(&new->doorbell_napi_work, ionic_doorbell_napi_work);
+diff --git a/drivers/net/ethernet/pensando/ionic/ionic_lif.h b/drivers/net/ethernet/pensando/ionic/ionic_lif.h
+index 8244182408c7..feda60b1850d 100644
+--- a/drivers/net/ethernet/pensando/ionic/ionic_lif.h
++++ b/drivers/net/ethernet/pensando/ionic/ionic_lif.h
+@@ -95,6 +95,7 @@ struct ionic_qcq {
+ 	struct napi_struct napi;
+ 	struct ionic_intr_info intr;
+ 	struct work_struct doorbell_napi_work;
++	struct timer_list rx_refill_timer;
+ 	struct dentry *dentry;
+ };
+ 
+diff --git a/drivers/net/ethernet/pensando/ionic/ionic_txrx.c b/drivers/net/ethernet/pensando/ionic/ionic_txrx.c
+index 63d5d204f766..47d51085304d 100644
+--- a/drivers/net/ethernet/pensando/ionic/ionic_txrx.c
++++ b/drivers/net/ethernet/pensando/ionic/ionic_txrx.c
+@@ -903,6 +903,14 @@ bool ionic_rx_service(struct ionic_cq *cq)
+ 	return __ionic_rx_service(cq, NULL);
+ }
+ 
++void ionic_rx_refill_timer(struct timer_list *t)
++{
++	struct ionic_qcq *qcq = timer_container_of(qcq, t, rx_refill_timer);
++
++	/* the poll fills the ring, and comes back here if it still can't */
++	napi_schedule(&qcq->napi);
++}
++
+ static inline void ionic_write_cmb_desc(struct ionic_queue *q,
+ 					void *desc)
+ {
+@@ -988,7 +996,7 @@ void ionic_rx_fill(struct ionic_queue *q, struct bpf_prog *xdp_prog)
+ 						       GFP_ATOMIC);
+ 		if (unlikely(!buf_info->netmem)) {
+ 			buf_info->len = 0;
+-			return;
++			goto out;
+ 		}
+ 
+ 		desc->addr = cpu_to_le64(ionic_rx_buf_pa(buf_info) + headroom);
+@@ -1019,7 +1027,7 @@ void ionic_rx_fill(struct ionic_queue *q, struct bpf_prog *xdp_prog)
+ 							       GFP_ATOMIC);
+ 				if (unlikely(!buf_info->netmem)) {
+ 					buf_info->len = 0;
+-					return;
++					goto out;
+ 				}
+ 			}
+ 
+@@ -1043,11 +1051,27 @@ void ionic_rx_fill(struct ionic_queue *q, struct bpf_prog *xdp_prog)
+ 		ionic_rxq_post(q, false);
+ 	}
+ 
+-	ionic_dbell_ring(q->lif->kern_dbpage, q->hw_type,
+-			 q->dbval | q->head_idx);
++out:
++	/* tell the device about what was posted, all of it or not */
++	if (i < n_fill) {
++		ionic_dbell_ring(q->lif->kern_dbpage, q->hw_type,
++				 q->dbval | q->head_idx);
+ 
+-	q->dbell_deadline = IONIC_RX_MIN_DOORBELL_DEADLINE;
+-	q->dbell_jiffies = jiffies;
++		q->dbell_deadline = IONIC_RX_MIN_DOORBELL_DEADLINE;
++		q->dbell_jiffies = jiffies;
++	}
++
++	/* Out of buffers.  The ring is only filled from the poll.  While the
++	 * device has descriptors left, its next completion brings the poll
++	 * back.  With none it has nothing to complete and there may never
++	 * be another poll, so ask for one.
++	 */
++	if (unlikely(i)) {
++		q_to_rx_stats(q)->alloc_err++;
++		if (q->head_idx == q->tail_idx)
++			mod_timer(&q_to_qcq(q)->rx_refill_timer,
++				  jiffies + IONIC_RX_REFILL_DELAY);
++	}
+ }
+ 
+ void ionic_rx_empty(struct ionic_queue *q)
+diff --git a/drivers/net/ethernet/pensando/ionic/ionic_txrx.h b/drivers/net/ethernet/pensando/ionic/ionic_txrx.h
+index b2b9a2dc9eb8..bdb9c4187960 100644
+--- a/drivers/net/ethernet/pensando/ionic/ionic_txrx.h
++++ b/drivers/net/ethernet/pensando/ionic/ionic_txrx.h
+@@ -9,6 +9,7 @@ struct bpf_prog;
+ void ionic_tx_flush(struct ionic_cq *cq);
+ 
+ void ionic_rx_fill(struct ionic_queue *q, struct bpf_prog *xdp_prog);
++void ionic_rx_refill_timer(struct timer_list *t);
+ void ionic_rx_empty(struct ionic_queue *q);
+ void ionic_tx_empty(struct ionic_queue *q);
+ int ionic_rx_napi(struct napi_struct *napi, int budget);
+-- 
+2.43.0
+

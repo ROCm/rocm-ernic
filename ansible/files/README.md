@@ -20,14 +20,21 @@ patches/srq/          the SRQ series, applied to v7.2.6, plus README.md.
                       0009-0011, because --patches-dir replaces the default
                       directory rather than adding to it
 patches/devmem-tx/    the optional netmem (devmem TCP) Tx series, applied
-                      to v7.2.6 after the others, plus README.md
+                      to v7.2.6 after the others, plus README.md.  Its
+                      on-devmem-rx/ subdirectory holds the frag-limit
+                      patch renumbered for a tree that also has an Rx
+                      series; nothing applies a subdirectory
+patches/devmem-rx-7.2.6/
+                      the devmem TCP Rx series backported to v7.2.6,
+                      applied after srq, p4 and devmem-tx 0001-0007,
+                      plus README.md
 patches/devmem-tx-mainline/
                       the same Tx series as it would be posted upstream,
                       for reference only: it is against v7.4-rc3, so
                       nothing here applies it, plus README.md
-patches/devmem-rx/    the devmem TCP Rx series, for reference only: it is
-                      against v7.4-rc3, on top of devmem-tx-mainline, so
-                      nothing here applies it, plus README.md
+patches/devmem-rx/    the devmem TCP Rx series in its v7.4-rc3 form, for
+                      reference only: it is on top of devmem-tx-mainline,
+                      so nothing here applies it, plus README.md
 patches/rdma-core/    linux-rdma/rdma-core#1799 plus two local fixes and
                       README.md
 scripts/fetch-ionic-sources.sh

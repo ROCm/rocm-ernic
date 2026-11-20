@@ -1,0 +1,153 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Stephen Bates <sbates@raithlin.com>
+Date: Thu, 19 Nov 2026 22:49:30 -0500
+Subject: [PATCH] ionic: trust the device's L4 checksum on header split queues
+
+ionic reports CHECKSUM_COMPLETE, from the sum the device puts in the
+completion, and uses the OK and BAD flags only for a counter. That is
+the better choice as long as the stack can read the packet: it works for
+any protocol and any encapsulation.
+
+It stops working when the payload is in memory the kernel can't read,
+which is what header split is for. Whenever the stack has to adjust the
+sum, it reads the bytes it removes (pskb_trim_rcsum() for a frame with
+padding, for example), and skb_checksum() on an unreadable skb warns
+and returns nothing useful. Of the drivers that can receive into
+unreadable memory, bnxt and gve report CHECKSUM_UNNECESSARY, and fbnic
+does when the device vouches for the L4 checksum.
+
+On a queue with IONIC_RXQ_F_HDS, report CHECKSUM_UNNECESSARY when the
+device says that it verified the TCP or UDP checksum, and keep
+CHECKSUM_COMPLETE for everything else. Queues without header split,
+which is all of them until a later patch, behave as before.
+
+Move the checksum code to a helper while at it, and count the new case.
+
+[ rocm-ernic: backport of RFC patch 3/8 of the series "ionic: devmem TCP
+  receive, against an emulated device" (based on v7.4-rc3, not posted)
+  to v7.2.6 with patches/srq, patches/p4 and patches/devmem-tx;
+  differences: the change to Documentation/.../pensando/ionic.rst is
+  left out, since the DKMS sources don't include that file; the rest of
+  the diff is unchanged. ]
+---
+ drivers/net/ethernet/pensando/ionic/ionic_lif.h   |  2 +
+ drivers/net/ethernet/pensando/ionic/ionic_stats.c |  3 +
+ drivers/net/ethernet/pensando/ionic/ionic_txrx.c  | 47 +++++++++++++++------
+ 3 files changed, 39 insertions(+), 13 deletions(-)
+
+diff --git a/drivers/net/ethernet/pensando/ionic/ionic_lif.h b/drivers/net/ethernet/pensando/ionic/ionic_lif.h
+index 9f2f4b64561a..9da17ae2a7e6 100644
+--- a/drivers/net/ethernet/pensando/ionic/ionic_lif.h
++++ b/drivers/net/ethernet/pensando/ionic/ionic_lif.h
+@@ -47,6 +47,7 @@ struct ionic_rx_stats {
+ 	u64 bytes;
+ 	u64 csum_none;
+ 	u64 csum_complete;
++	u64 csum_unnecessary;
+ 	u64 dropped;
+ 	u64 vlan_stripped;
+ 	u64 csum_error;
+@@ -132,6 +133,7 @@ struct ionic_lif_sw_stats {
+ 	u64 tx_csum;
+ 	u64 rx_csum_none;
+ 	u64 rx_csum_complete;
++	u64 rx_csum_unnecessary;
+ 	u64 rx_csum_error;
+ 	u64 tx_hwstamp_valid;
+ 	u64 tx_hwstamp_invalid;
+diff --git a/drivers/net/ethernet/pensando/ionic/ionic_stats.c b/drivers/net/ethernet/pensando/ionic/ionic_stats.c
+index 146987d530eb..fa1abf094c02 100644
+--- a/drivers/net/ethernet/pensando/ionic/ionic_stats.c
++++ b/drivers/net/ethernet/pensando/ionic/ionic_stats.c
+@@ -21,6 +21,7 @@ static const struct ionic_stat_desc ionic_lif_stats_desc[] = {
+ 	IONIC_LIF_STAT_DESC(tx_csum),
+ 	IONIC_LIF_STAT_DESC(rx_csum_none),
+ 	IONIC_LIF_STAT_DESC(rx_csum_complete),
++	IONIC_LIF_STAT_DESC(rx_csum_unnecessary),
+ 	IONIC_LIF_STAT_DESC(rx_csum_error),
+ 	IONIC_LIF_STAT_DESC(hw_tx_dropped),
+ 	IONIC_LIF_STAT_DESC(hw_rx_dropped),
+@@ -153,6 +154,7 @@ static const struct ionic_stat_desc ionic_rx_stats_desc[] = {
+ 	IONIC_RX_STAT_DESC(alloc_err),
+ 	IONIC_RX_STAT_DESC(csum_none),
+ 	IONIC_RX_STAT_DESC(csum_complete),
++	IONIC_RX_STAT_DESC(csum_unnecessary),
+ 	IONIC_RX_STAT_DESC(csum_error),
+ 	IONIC_RX_STAT_DESC(hwstamp_valid),
+ 	IONIC_RX_STAT_DESC(hwstamp_invalid),
+@@ -199,6 +201,7 @@ static void ionic_add_lif_rxq_stats(struct ionic_lif *lif, int q_num,
+ 	stats->rx_bytes += rxstats->bytes;
+ 	stats->rx_csum_none += rxstats->csum_none;
+ 	stats->rx_csum_complete += rxstats->csum_complete;
++	stats->rx_csum_unnecessary += rxstats->csum_unnecessary;
+ 	stats->rx_csum_error += rxstats->csum_error;
+ 	stats->rx_hwstamp_valid += rxstats->hwstamp_valid;
+ 	stats->rx_hwstamp_invalid += rxstats->hwstamp_invalid;
+diff --git a/drivers/net/ethernet/pensando/ionic/ionic_txrx.c b/drivers/net/ethernet/pensando/ionic/ionic_txrx.c
+index c568ffb05706..c82a1d1955a6 100644
+--- a/drivers/net/ethernet/pensando/ionic/ionic_txrx.c
++++ b/drivers/net/ethernet/pensando/ionic/ionic_txrx.c
+@@ -613,6 +613,39 @@ static bool ionic_run_xdp(struct ionic_rx_stats *stats,
+ 	return true;
+ }
+ 
++static void ionic_rx_csum(struct ionic_queue *q, struct sk_buff *skb,
++			  struct ionic_rxq_comp *comp)
++{
++	struct ionic_rx_stats *stats = q_to_rx_stats(q);
++
++	if (unlikely((comp->csum_flags & IONIC_RXQ_COMP_CSUM_F_TCP_BAD) ||
++		     (comp->csum_flags & IONIC_RXQ_COMP_CSUM_F_UDP_BAD) ||
++		     (comp->csum_flags & IONIC_RXQ_COMP_CSUM_F_IP_BAD)))
++		stats->csum_error++;
++
++	if (unlikely(!(q->lif->netdev->features & NETIF_F_RXCSUM))) {
++		stats->csum_none++;
++		return;
++	}
++
++	/* A header split queue can put the payload where nothing can read
++	 * it, so the stack can't adjust or check a CHECKSUM_COMPLETE sum.
++	 * Take the device's word for the L4 checksum there.
++	 */
++	if ((q->features & IONIC_RXQ_F_HDS) &&
++	    (comp->csum_flags & (IONIC_RXQ_COMP_CSUM_F_TCP_OK |
++				 IONIC_RXQ_COMP_CSUM_F_UDP_OK))) {
++		skb->ip_summed = CHECKSUM_UNNECESSARY;
++		stats->csum_unnecessary++;
++	} else if (comp->csum_flags & IONIC_RXQ_COMP_CSUM_F_CALC) {
++		skb->ip_summed = CHECKSUM_COMPLETE;
++		skb->csum = (__force __wsum)le16_to_cpu(comp->csum);
++		stats->csum_complete++;
++	} else {
++		stats->csum_none++;
++	}
++}
++
+ static void ionic_rx_clean(struct ionic_queue *q,
+ 			   struct ionic_rx_desc_info *desc_info,
+ 			   struct ionic_rxq_comp *comp,
+@@ -685,19 +718,7 @@ static void ionic_rx_clean(struct ionic_queue *q,
+ 		}
+ 	}
+ 
+-	if (likely(netdev->features & NETIF_F_RXCSUM) &&
+-	    (comp->csum_flags & IONIC_RXQ_COMP_CSUM_F_CALC)) {
+-		skb->ip_summed = CHECKSUM_COMPLETE;
+-		skb->csum = (__force __wsum)le16_to_cpu(comp->csum);
+-		stats->csum_complete++;
+-	} else {
+-		stats->csum_none++;
+-	}
+-
+-	if (unlikely((comp->csum_flags & IONIC_RXQ_COMP_CSUM_F_TCP_BAD) ||
+-		     (comp->csum_flags & IONIC_RXQ_COMP_CSUM_F_UDP_BAD) ||
+-		     (comp->csum_flags & IONIC_RXQ_COMP_CSUM_F_IP_BAD)))
+-		stats->csum_error++;
++	ionic_rx_csum(q, skb, comp);
+ 
+ 	if (likely(netdev->features & NETIF_F_HW_VLAN_CTAG_RX) &&
+ 	    (comp->csum_flags & IONIC_RXQ_COMP_CSUM_F_VLAN)) {
+-- 
+2.43.0
+

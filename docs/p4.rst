@@ -840,11 +840,18 @@ not those of a directory's subdirectories. There are four series:
   It is optional, and applies last, after any of the others; see its
   ``README.md``. A guest built with it builds ``ernic_p4.ko`` against a
   tree that has it too (``ernic_p4_dkms_patches_dirs``).
+- ``ansible/files/patches/devmem-rx-7.2.6/`` — the experimental devmem
+  TCP Rx series, with which a guest can receive into a dma-buf from a
+  device that splits headers from payload. It applies after the SRQ, P4
+  and netmem Tx series, and the Tx series has to be given without its
+  ``0008`` for it to apply; see its ``README.md``. ``ernic_p4.ko`` must
+  be built against a tree that has it, because the series changes the
+  CRC of the ionic exports.
 
 Two more directories, ``devmem-tx-mainline/`` and ``devmem-rx/``, hold
-series against ``v7.4-rc3``. They are there for reference, do not apply
-to the sources ``fetch-ionic-sources.sh`` fetches, and are not among the
-four; see :doc:`devmem`.
+the Tx and Rx series against ``v7.4-rc3``. They are there for reference,
+do not apply to the sources ``fetch-ionic-sources.sh`` fetches, and are
+not among the five; see :doc:`devmem`.
 
 Because ``ernic_guest_setup`` applies the base series first, listing
 ``patches/srq`` in its ``ernic_guest_ionic_extra_patches`` fails. No role

@@ -1,0 +1,136 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Stephen Bates <sbates@raithlin.com>
+Date: Thu, 19 Nov 2026 22:49:29 -0500
+Subject: [PATCH] ionic: add placeholder definitions for Rx header split
+
+Not for upstream. No ionic firmware has receive header split, and this
+is not a statement that one will. These definitions were made up so that
+a device emulator can stand in for such firmware and the Linux side of
+devmem TCP receive can be developed against it. The names, the bit and
+the layout all need to come from the firmware team before any of this
+can be merged.
+
+The interface follows what ionic already does for hardware timestamps:
+
+ - IONIC_RXQ_F_HDS, a per queue feature next to IONIC_RXQ_F_HWSTAMP,
+   offered in the queue identity and requested in Q_INIT together with
+   IONIC_Q_F_2X_CQ_DESC and IONIC_QINIT_F_SG.
+
+ - struct ionic_rxq_comp_ext, the leading half of the double size
+   completion, which so far only held the timestamp in its last 8 bytes.
+   It gains the number of bytes the device wrote to the descriptor's own
+   buffer, and two flags: SPLIT if those bytes are exactly the Ethernet,
+   IP and TCP headers and the SG elements hold exactly the TCP payload,
+   and HBO if the headers did not fit.
+
+There is no new descriptor, opcode or command: the capacity of the
+header buffer is the len of the Rx descriptor, and the payload buffers
+are the SG elements.
+
+BIT_ULL(17) was picked because it is the next one free in ionic_if.h.
+Nobody checked it against what shipped firmware puts in the Rx queue
+identity. A device that sets it for something else, together with
+IONIC_Q_F_2X_CQ_DESC and a non-zero max_sg_elems, would be taken for one
+that splits headers by the later patches of this series. That is one
+more reason why this can't go anywhere before the bit is allocated by
+the people who own the interface.
+
+[ rocm-ernic: backport of RFC patch 2/8 of the series "ionic: devmem TCP
+  receive, against an emulated device" (based on v7.4-rc3, not posted)
+  to v7.2.6 with patches/srq, patches/p4 and patches/devmem-tx;
+  differences: line numbers only. patches/p4 defines IONIC_LIF_CAP_P4 in
+  the same file; that is a LIF capability bit and has nothing to do with
+  the queue feature bit added here. ]
+---
+ drivers/net/ethernet/pensando/ionic/ionic_dev.h |  3 +
+ drivers/net/ethernet/pensando/ionic/ionic_if.h  | 50 +++++++++++++++++++++++
+ 2 files changed, 53 insertions(+)
+
+diff --git a/drivers/net/ethernet/pensando/ionic/ionic_dev.h b/drivers/net/ethernet/pensando/ionic/ionic_dev.h
+index a6086376fca7..9b4bbaa539d6 100644
+--- a/drivers/net/ethernet/pensando/ionic/ionic_dev.h
++++ b/drivers/net/ethernet/pensando/ionic/ionic_dev.h
+@@ -134,6 +134,9 @@ static_assert(sizeof(struct ionic_txq_comp) == 16);
+ static_assert(sizeof(struct ionic_rxq_desc) == 16);
+ static_assert(sizeof(struct ionic_rxq_sg_desc) == 128);
+ static_assert(sizeof(struct ionic_rxq_comp) == 16);
++static_assert(sizeof(struct ionic_rxq_comp_ext) == IONIC_HDS_CQ_NEGOFFSET);
++static_assert(offsetof(struct ionic_rxq_comp_ext, hwstamp) ==
++	      IONIC_HDS_CQ_NEGOFFSET - IONIC_HWSTAMP_CQ_NEGOFFSET);
+ static_assert(sizeof(struct ionic_rxq_comp) == sizeof(struct ionic_txq_comp));
+ 
+ /* SR/IOV */
+diff --git a/drivers/net/ethernet/pensando/ionic/ionic_if.h b/drivers/net/ethernet/pensando/ionic/ionic_if.h
+index 7f89b8b158f2..785a853e803d 100644
+--- a/drivers/net/ethernet/pensando/ionic/ionic_if.h
++++ b/drivers/net/ethernet/pensando/ionic/ionic_if.h
+@@ -427,9 +427,15 @@ enum ionic_q_feature {
+  * Per-queue-type features use bits 16 and higher.
+  *
+  * @IONIC_RXQ_F_HWSTAMP:   Queue supports Hardware Timestamping
++ * @IONIC_RXQ_F_HDS:       Queue splits TCP headers from payload, see
++ *                         struct ionic_rxq_comp_ext.  Needs
++ *                         IONIC_Q_F_2X_CQ_DESC and IONIC_QINIT_F_SG.
++ *                         EXPERIMENTAL: a placeholder that no firmware
++ *                         defines, not for upstream.
+  */
+ enum ionic_rxq_feature {
+ 	IONIC_RXQ_F_HWSTAMP		= BIT_ULL(16),
++	IONIC_RXQ_F_HDS			= BIT_ULL(17),
+ };
+ 
+ /**
+@@ -1172,6 +1178,50 @@ struct ionic_rxq_comp {
+ #define IONIC_RXQ_COMP_PKT_TYPE_MASK	0x7f
+ };
+ 
++/**
++ * struct ionic_rxq_comp_ext - Leading half of a double size Rx completion
++ * @hds_hdr_len:  Number of bytes of the packet that the device wrote to the
++ *                descriptor's own buffer (@addr of struct ionic_rxq_desc).
++ *                The rest of the packet is in the first @num_sg_elems SG
++ *                elements, each one full except the last.  Valid in every
++ *                completion of a queue with IONIC_RXQ_F_HDS.
++ * @hds_flags:    Header split flags
++ *
++ *                  IONIC_RXQ_COMP_HDS_F_SPLIT:
++ *                    The descriptor's own buffer holds exactly the
++ *                    Ethernet, IP and TCP headers, and the SG elements
++ *                    hold exactly the TCP payload.  The device verified
++ *                    the TCP checksum, and IONIC_RXQ_COMP_CSUM_F_TCP_OK
++ *                    is set.
++ *
++ *                  IONIC_RXQ_COMP_HDS_F_HBO:
++ *                    The packet could have been split, but its headers
++ *                    are longer than the descriptor's own buffer.  It
++ *                    was received as on a queue without header split.
++ *
++ * @rsvd:         reserved byte(s)
++ * @hwstamp:      Hardware timestamp, if the queue has IONIC_RXQ_F_HWSTAMP;
++ *                see IONIC_HWSTAMP_CQ_NEGOFFSET
++ *
++ * The device writes this in front of struct ionic_rxq_comp on a queue with
++ * IONIC_Q_F_2X_CQ_DESC.
++ *
++ * EXPERIMENTAL: the header split fields and IONIC_RXQ_F_HDS are placeholders
++ * for an interface that no firmware defines.  They exist so that a device
++ * emulator can stand in for one, and must not go upstream as they are.
++ */
++struct ionic_rxq_comp_ext {
++	__le16 hds_hdr_len;
++	u8     hds_flags;
++#define IONIC_RXQ_COMP_HDS_F_SPLIT	0x01
++#define IONIC_RXQ_COMP_HDS_F_HBO	0x02
++	u8     rsvd[5];
++	__le64 hwstamp;
++};
++
++/* Negative offset of struct ionic_rxq_comp_ext from the base cq descriptor */
++#define IONIC_HDS_CQ_NEGOFFSET		16
++
+ enum ionic_pkt_type {
+ 	IONIC_PKT_TYPE_NON_IP		= 0x00,
+ 	IONIC_PKT_TYPE_IPV4		= 0x01,
+-- 
+2.43.0
+

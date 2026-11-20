@@ -32,14 +32,19 @@ pins at `v7.2.6`, so **these do not apply to the sources
 `fetch-ionic-sources.sh` fetches**, and no role or variable can build a
 guest with them. `ionic_lif.c`, `ionic_txrx.c`, `ionic_ethtool.c`,
 `ionic_if.h`, `ionic_lif.h`, `ionic_phc.c` and `ionic_bus_pci.c` all
-moved between the two tags. A backport would be the same exercise
-`devmem-tx` went through, and nothing in the v7.2.15 kernel's core is
-missing for it: `netdev_queue_mgmt_ops`, `netdev_rx_queue_restart()`,
-`PP_FLAG_ALLOW_UNREADABLE_NETMEM`, `ETHTOOL_RING_USE_TCP_DATA_SPLIT`,
-`ndo_set_rx_mode_async` and `request_ops_lock` are all there.
+moved between the two tags.
 
-They are kept here so the emulator's header-split mode and the driver
-that drives it stay together.
+**The backport exists: [`../devmem-rx-7.2.6`](../devmem-rx-7.2.6).** It
+is the series to give a guest; this directory is the `v7.4-rc3`
+reference form, kept because it is what was developed and first run, and
+so that the emulator's header-split mode and the driver that drives it
+stay together. The backport needed no code change: seven of its eight
+patches differ from these only in line numbers and the `Documentation/`
+hunks, and `0001` in one context line. Nothing in the `v7.2.6` core was
+missing for it — `netdev_queue_mgmt_ops`, `netdev_rx_queue_restart()`,
+`PP_FLAG_ALLOW_UNREADABLE_NETMEM`, `ETHTOOL_RING_USE_TCP_DATA_SPLIT`,
+`ndo_set_rx_mode_async` and `request_ops_lock` are all there — but two
+things the core does around the driver differ; its README says which.
 
 | File | What it does |
 | --- | --- |
@@ -128,7 +133,18 @@ transfers were **not** re-run on the regenerated patches.
 **Not tested:** ionic hardware, a firmware that really stops, a
 device-reported link flap, the upstream `devmem.py` selftest (ionic has
 no flow steering, so `ncdevmem` must be run with `-n`), and any kernel
-other than `v7.4-rc3`.
+other than `v7.4-rc3`. The `v7.2.6` backport of the same eight patches
+*has* been run, on a kernel of the fleet's line and with `ionic_rdma`
+and `ernic_p4` beside it; see
+[`../devmem-rx-7.2.6/README.md`](../devmem-rx-7.2.6/README.md).
+
+## The frag-limit patch goes after this series, not before
+
+[`../devmem-tx-mainline/0007`](../devmem-tx-mainline) adds
+`tx_unreadable_reseg` to the same three places this series adds its own
+counters to, so it does not apply below these patches. Its form for a
+tree that has them is
+[`../devmem-tx/on-devmem-rx/0007`](../devmem-tx/on-devmem-rx).
 
 ## Retiring this directory
 
