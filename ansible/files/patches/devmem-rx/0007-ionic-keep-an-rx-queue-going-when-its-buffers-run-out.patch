@@ -1,6 +1,6 @@
 From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
 From: Stephen Bates <sbates@raithlin.com>
-Date: Wed, 18 Nov 2026 23:29:06 -0500
+Date: Thu, 19 Nov 2026 21:33:05 -0500
 Subject: [RFC PATCH 7/8] ionic: keep an Rx queue going when its buffers run out
 
 ionic_rx_fill() returns as soon as it can't get a buffer. It does not
@@ -108,10 +108,10 @@ index 14ae611f1f15..0d81fcd41c76 100644
  };
  
 diff --git a/drivers/net/ethernet/pensando/ionic/ionic_txrx.c b/drivers/net/ethernet/pensando/ionic/ionic_txrx.c
-index 146774e8412c..f93a74009542 100644
+index 63d5d204f766..47d51085304d 100644
 --- a/drivers/net/ethernet/pensando/ionic/ionic_txrx.c
 +++ b/drivers/net/ethernet/pensando/ionic/ionic_txrx.c
-@@ -902,6 +902,14 @@ bool ionic_rx_service(struct ionic_cq *cq)
+@@ -903,6 +903,14 @@ bool ionic_rx_service(struct ionic_cq *cq)
  	return __ionic_rx_service(cq, NULL);
  }
  
@@ -126,7 +126,7 @@ index 146774e8412c..f93a74009542 100644
  static inline void ionic_write_cmb_desc(struct ionic_queue *q,
  					void *desc)
  {
-@@ -987,7 +995,7 @@ void ionic_rx_fill(struct ionic_queue *q, struct bpf_prog *xdp_prog)
+@@ -988,7 +996,7 @@ void ionic_rx_fill(struct ionic_queue *q, struct bpf_prog *xdp_prog)
  						       GFP_ATOMIC);
  		if (unlikely(!buf_info->netmem)) {
  			buf_info->len = 0;
@@ -135,7 +135,7 @@ index 146774e8412c..f93a74009542 100644
  		}
  
  		desc->addr = cpu_to_le64(ionic_rx_buf_pa(buf_info) + headroom);
-@@ -1018,7 +1026,7 @@ void ionic_rx_fill(struct ionic_queue *q, struct bpf_prog *xdp_prog)
+@@ -1019,7 +1027,7 @@ void ionic_rx_fill(struct ionic_queue *q, struct bpf_prog *xdp_prog)
  							       GFP_ATOMIC);
  				if (unlikely(!buf_info->netmem)) {
  					buf_info->len = 0;
@@ -144,7 +144,7 @@ index 146774e8412c..f93a74009542 100644
  				}
  			}
  
-@@ -1042,11 +1050,27 @@ void ionic_rx_fill(struct ionic_queue *q, struct bpf_prog *xdp_prog)
+@@ -1043,11 +1051,27 @@ void ionic_rx_fill(struct ionic_queue *q, struct bpf_prog *xdp_prog)
  		ionic_rxq_post(q, false);
  	}
  

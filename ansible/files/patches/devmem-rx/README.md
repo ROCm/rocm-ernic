@@ -15,8 +15,16 @@ be taken for one that splits headers.
 
 ## Base
 
-**`v7.4-rc3`**, on top of the netmem Tx series in
-[`../devmem-tx`](../devmem-tx) in its mainline form.
+**`v7.4-rc3`**, with two things applied first, in this order:
+
+1. the XDP frag offset fix, in its mainline form:
+   [`0001-ionic-use-the-rx-buffers-page-offset-for-xdp-frags.patch`](../../../../tests/devmem/kernel-patches/ionic-mainline-fixes).
+   It is the same change as
+   [`../0003-ionic-use-the-Rx-buffer-s-page-offset-for-XDP-frags.patch`](..),
+   which is against `v7.2.6`, and has the same patch-id, the first
+   `prerequisite-patch-id` in the cover letter;
+2. the netmem Tx series in its mainline form,
+   [`../devmem-tx-mainline`](../devmem-tx-mainline).
 
 That is not `IONIC_KERNEL_REF`, which
 [`cmake/ErnicKernelModule.cmake`](../../../../cmake/ErnicKernelModule.cmake)
@@ -46,28 +54,34 @@ that drives it stay together.
 
 `0000-cover-letter.patch` says what only a device vendor can answer.
 
-## Carries a bug the base series fixes
+## Needs the XDP frag offset fix
 
 `0004-ionic-track-rx-buffers-as-netmem.patch` converts the XDP frag loop
-in `ionic_run_xdp()` to netmem and keeps both halves of the bug that
-[`../0003-ionic-use-the-Rx-buffer-s-page-offset-for-XDP-frags.patch`](..)
-fixes: it fills the frag at offset `0` instead of `bi->page_offset`, and
-syncs at the *first* buffer's `buf_info->page_offset`:
+in `ionic_run_xdp()` to netmem. The series as first carried here was
+made without the fix above, and `0004` kept both halves of the bug in
+netmem form: the frag filled at offset `0`, and synced at the *first*
+buffer's offset. A frame of more than two buffers sent with `XDP_TX` or
+`XDP_REDIRECT` could carry another frame's bytes, or what the page held
+before.
+
+The series was regenerated on top of the fix. `0004` now replaces the
+fixed lines with their netmem form, `bi->page_offset` in both calls:
 
 ```c
 page_pool_dma_sync_netmem_for_cpu(rxq->page_pool, bi->netmem,
-                                  buf_info->page_offset, frag_len);
-skb_frag_fill_netmem_desc(frag, bi->netmem, 0, frag_len);
+                                  bi->page_offset, frag_len);
+skb_frag_fill_netmem_desc(frag, bi->netmem, bi->page_offset, frag_len);
 ```
 
-That is an information leak onto the wire — an `XDP_TX` or
-`XDP_REDIRECT` frame carrying another frame's bytes or stale kernel
-memory. Nothing applies this series today, so nothing ships it, and the
-`ionic-patches` workflow's check of the base fixes does not cover these
-patches. **Fix it when this series is backported or reposted**: the
-netmem form of the fix is `bi->page_offset` in both calls. The base
-series' patch is not upstream either, so a rebase onto a newer mainline
-will not bring the fix with it.
+so **`0004` does not apply without the fix, on purpose**: a series that
+applied without it would be the bug again. `0004` is the only patch
+whose change differs from the first version, by those two calls; it is
+still no functional change relative to its base.
+
+The fix is not upstream, so a rebase of this series onto a newer
+mainline has to bring it along until it is. Nothing applies this series,
+and the `ionic-patches` workflow, which checks that the `v7.2.6` tree
+has the fix, does not cover these patches.
 
 ## What was tested
 
@@ -86,6 +100,30 @@ lockdep, the emulator in `header-split` mode:
   report.
 - With the mode off, or `tcp-data-split` off, behaviour as before the
   series.
+
+All of that ran on the series as it was before it was regenerated on the
+XDP frag offset fix. On the regenerated patches these were run, with a
+module that differs from the earlier one in `ionic_txrx.c` only:
+
+- An `xdp.frags` program echoing 8000-byte UDP datagrams at MTU 9000
+  with `tcp-data-split` off, every echo compared on the wire with what
+  was sent: 10,000 of 10,000 intact with `XDP_TX` and with
+  `XDP_REDIRECT`, with the emulator's mode on and off. The module built
+  from the series as it was had 3728 of 7458 and 4011 of 8023 echoes
+  wrong, each in its last 426 bytes.
+- One round of the ifup/ifdown, ring, channel, MTU and XDP operations
+  with the mode off.
+- With the mode on: TCP of 64 MiB each way with `tcp-data-split` on and
+  ordinary pages; 64 MiB received into a dma-buf from an ordinary
+  sender; and 100,000 small sends from a devmem transmitter into a
+  dma-buf, in each direction between the guests. Payloads validated, no
+  payload through the linear area, no KASAN or lockdep report.
+- Each patch applies in order to `v7.4-rc3` plus the two prerequisites
+  and builds with `W=1` and sparse without a warning; `checkpatch
+  --strict` reports only the missing `Signed-off-by`.
+
+The reconfiguration, reset and teardown cases, IPv6, VLAN and the larger
+transfers were **not** re-run on the regenerated patches.
 
 **Not tested:** ionic hardware, a firmware that really stops, a
 device-reported link flap, the upstream `devmem.py` selftest (ionic has

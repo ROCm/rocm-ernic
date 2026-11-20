@@ -11,4 +11,7 @@ minor_changes:
     it (devmem TCP).  It is against ``v7.4-rc3``, not the ``v7.2.6`` the
     collection's sources are fetched at, so no role or variable applies
     it, and one of its patches defines a device interface no ionic
-    firmware has.
+    firmware has.  It is based on the mainline form of the XDP frag
+    offset fix (``files/patches/0003``) and then on the mainline Tx
+    series, ``files/patches/devmem-tx-mainline``, and does not apply
+    without the fix.

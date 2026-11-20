@@ -1,6 +1,6 @@
 From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
 From: Stephen Bates <sbates@raithlin.com>
-Date: Wed, 18 Nov 2026 23:29:02 -0500
+Date: Thu, 19 Nov 2026 21:33:01 -0500
 Subject: [RFC PATCH 3/8] ionic: trust the device's L4 checksum on header split queues
 
 ionic reports CHECKSUM_COMPLETE, from the sum the device puts in the
@@ -98,7 +98,7 @@ index 146987d530eb..fa1abf094c02 100644
  	stats->rx_hwstamp_valid += rxstats->hwstamp_valid;
  	stats->rx_hwstamp_invalid += rxstats->hwstamp_invalid;
 diff --git a/drivers/net/ethernet/pensando/ionic/ionic_txrx.c b/drivers/net/ethernet/pensando/ionic/ionic_txrx.c
-index 22a4eab750d3..d5a710aa5729 100644
+index c568ffb05706..c82a1d1955a6 100644
 --- a/drivers/net/ethernet/pensando/ionic/ionic_txrx.c
 +++ b/drivers/net/ethernet/pensando/ionic/ionic_txrx.c
 @@ -613,6 +613,39 @@ static bool ionic_run_xdp(struct ionic_rx_stats *stats,

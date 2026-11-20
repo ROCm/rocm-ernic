@@ -1,6 +1,6 @@
 From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
 From: Stephen Bates <sbates@raithlin.com>
-Date: Wed, 18 Nov 2026 23:29:01 -0500
+Date: Thu, 19 Nov 2026 21:33:00 -0500
 Subject: [RFC PATCH 2/8] ionic: add placeholder definitions for Rx header split
 
 Not for upstream. No ionic firmware has receive header split, and this

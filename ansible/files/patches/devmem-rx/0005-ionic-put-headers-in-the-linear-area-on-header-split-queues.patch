@@ -1,6 +1,6 @@
 From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
 From: Stephen Bates <sbates@raithlin.com>
-Date: Wed, 18 Nov 2026 23:29:04 -0500
+Date: Thu, 19 Nov 2026 21:33:03 -0500
 Subject: [RFC PATCH 5/8] ionic: put headers in the linear area on header split queues
 
 Teach the Rx path what to do on a queue that was created with
@@ -410,7 +410,7 @@ index fa1abf094c02..d74a87106f85 100644
  
  static void ionic_get_lif_stats(struct ionic_lif *lif,
 diff --git a/drivers/net/ethernet/pensando/ionic/ionic_txrx.c b/drivers/net/ethernet/pensando/ionic/ionic_txrx.c
-index 2c86b5d13811..146774e8412c 100644
+index 14eebe57d745..63d5d204f766 100644
 --- a/drivers/net/ethernet/pensando/ionic/ionic_txrx.c
 +++ b/drivers/net/ethernet/pensando/ionic/ionic_txrx.c
 @@ -135,15 +135,14 @@ static dma_addr_t ionic_rx_buf_pa(struct ionic_buf_info *buf_info)
@@ -544,7 +544,7 @@ index 2c86b5d13811..146774e8412c 100644
  static void ionic_xdp_tx_desc_clean(struct ionic_queue *q,
  				    struct ionic_tx_desc_info *desc_info,
  				    bool in_napi)
-@@ -666,9 +755,9 @@ static void ionic_rx_clean(struct ionic_queue *q,
+@@ -667,9 +756,9 @@ static void ionic_rx_clean(struct ionic_queue *q,
  	struct ionic_qcq *qcq = q_to_qcq(q);
  	struct ionic_rx_stats *stats;
  	unsigned int headroom = 0;
@@ -555,7 +555,7 @@ index 2c86b5d13811..146774e8412c 100644
  	u16 len;
  
  	stats = q_to_rx_stats(q);
-@@ -696,14 +785,17 @@ static void ionic_rx_clean(struct ionic_queue *q,
+@@ -697,14 +786,17 @@ static void ionic_rx_clean(struct ionic_queue *q,
  		headroom = XDP_PACKET_HEADROOM;
  	}
  
@@ -576,7 +576,7 @@ index 2c86b5d13811..146774e8412c 100644
  
  	if (unlikely(!skb)) {
  		stats->dropped++;
-@@ -731,6 +823,17 @@ static void ionic_rx_clean(struct ionic_queue *q,
+@@ -732,6 +824,17 @@ static void ionic_rx_clean(struct ionic_queue *q,
  
  	ionic_rx_csum(q, skb, comp);
  
@@ -594,7 +594,7 @@ index 2c86b5d13811..146774e8412c 100644
  	if (likely(netdev->features & NETIF_F_HW_VLAN_CTAG_RX) &&
  	    (comp->csum_flags & IONIC_RXQ_COMP_CSUM_F_VLAN)) {
  		__vlan_hwaccel_put_tag(skb, htons(ETH_P_8021Q),
-@@ -754,10 +857,10 @@ static void ionic_rx_clean(struct ionic_queue *q,
+@@ -755,10 +858,10 @@ static void ionic_rx_clean(struct ionic_queue *q,
  		}
  	}
  
@@ -608,7 +608,7 @@ index 2c86b5d13811..146774e8412c 100644
  }
  
  static bool __ionic_rx_service(struct ionic_cq *cq, struct bpf_prog *xdp_prog)
-@@ -814,11 +917,13 @@ void ionic_rx_fill(struct ionic_queue *q, struct bpf_prog *xdp_prog)
+@@ -815,11 +918,13 @@ void ionic_rx_fill(struct ionic_queue *q, struct bpf_prog *xdp_prog)
  	struct net_device *netdev = q->lif->netdev;
  	struct ionic_rx_desc_info *desc_info;
  	struct ionic_rxq_sg_elem *sg_elem;
@@ -622,7 +622,7 @@ index 2c86b5d13811..146774e8412c 100644
  	unsigned int headroom = 0;
  	unsigned int remain_len;
  	unsigned int frag_len;
-@@ -836,8 +941,18 @@ void ionic_rx_fill(struct ionic_queue *q, struct bpf_prog *xdp_prog)
+@@ -837,8 +942,18 @@ void ionic_rx_fill(struct ionic_queue *q, struct bpf_prog *xdp_prog)
  		return;
  
  	len = netdev->mtu + VLAN_ETH_HLEN;
@@ -642,7 +642,7 @@ index 2c86b5d13811..146774e8412c 100644
  		/* Always alloc the full size buffer, but only need
  		 * the actual frag_len in the descriptor
  		 * XDP uses space in the first buffer, so account for
-@@ -866,7 +981,7 @@ void ionic_rx_fill(struct ionic_queue *q, struct bpf_prog *xdp_prog)
+@@ -867,7 +982,7 @@ void ionic_rx_fill(struct ionic_queue *q, struct bpf_prog *xdp_prog)
  		/* get a new buffer if we can't reuse one */
  		if (!buf_info->netmem)
  			buf_info->netmem =
@@ -651,7 +651,7 @@ index 2c86b5d13811..146774e8412c 100644
  						       &buf_info->page_offset,
  						       &buf_info->len,
  						       GFP_ATOMIC);
-@@ -877,7 +992,8 @@ void ionic_rx_fill(struct ionic_queue *q, struct bpf_prog *xdp_prog)
+@@ -878,7 +993,8 @@ void ionic_rx_fill(struct ionic_queue *q, struct bpf_prog *xdp_prog)
  
  		desc->addr = cpu_to_le64(ionic_rx_buf_pa(buf_info) + headroom);
  		desc->len = cpu_to_le16(frag_len);
@@ -661,7 +661,7 @@ index 2c86b5d13811..146774e8412c 100644
  		buf_info++;
  		nfrags++;
  
-@@ -890,9 +1006,11 @@ void ionic_rx_fill(struct ionic_queue *q, struct bpf_prog *xdp_prog)
+@@ -891,9 +1007,11 @@ void ionic_rx_fill(struct ionic_queue *q, struct bpf_prog *xdp_prog)
  			if (unlikely(buf_info->netmem && buf_info->len < frag_len))
  				ionic_rx_put_buf_direct(q, buf_info);
  
@@ -675,7 +675,7 @@ index 2c86b5d13811..146774e8412c 100644
  				buf_info->netmem =
  					page_pool_alloc_netmem(q->page_pool,
  							       &buf_info->page_offset,
-@@ -938,7 +1056,11 @@ void ionic_rx_empty(struct ionic_queue *q)
+@@ -939,7 +1057,11 @@ void ionic_rx_empty(struct ionic_queue *q)
  
  	for (i = 0; i < q->num_descs; i++) {
  		desc_info = &q->rx_info[i];

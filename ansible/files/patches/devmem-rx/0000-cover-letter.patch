@@ -1,6 +1,6 @@
 From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
 From: Stephen Bates <sbates@raithlin.com>
-Date: Wed, 18 Nov 2026 23:28:59 -0500
+Date: Thu, 19 Nov 2026 21:32:58 -0500
 Subject: [RFC PATCH 0/8] ionic: devmem TCP receive, against an emulated device
 
 This is a proof of concept, not a submission. It lets a dma-buf be
@@ -17,8 +17,15 @@ is simply the next one free in ionic_if.h. It was not checked against
 what shipped firmware reports there, and a device that already uses it
 would be taken for one that splits headers.
 
-It sits on top of the netmem Tx RFC series ("ionic: support netmem
-TX"), on v7.4-rc3.
+It sits on v7.4-rc3 with two things applied first, in this order; both
+are listed as prerequisites at the end:
+
+ - "ionic: use the Rx buffer's page offset for XDP frags", a fix for
+   net that is not upstream yet. Patch 4 rewrites the two calls that
+   fix changes, so it does not apply without it. That is deliberate:
+   the first version of this series was made without the fix and
+   carried the bug into the netmem calls;
+ - the netmem Tx RFC series ("ionic: support netmem TX").
 
 Patch 1 makes ionic an "ops locked" driver: the ndos and ethtool ops
 run under the netdev instance lock, and the work items and recovery
@@ -90,6 +97,19 @@ the placeholder interface, and with that interface switched off:
  - bind and unbind in a loop while ring, channel and MTU changes,
    ifdown/ifup and PCI function resets ran next to it.
 
+The series was then regenerated on top of the XDP frag fix, which
+changes two calls in patch 4 and nothing else. With the result, these
+were run again: an xdp.frags program echoing 8000-byte UDP datagrams
+with XDP_TX and with XDP_REDIRECT at an MTU of 9000, every echo
+compared with what was sent (all intact; with the series as it was
+before, the last 426 bytes of every second echo were another
+datagram's), with the placeholder interface on and off; one round of
+the ifup/ifdown, ring, channel, MTU, XDP and ethtool list with the
+interface off; TCP both ways with tcp-data-split on; and devmem Rx of
+64 MiB from a plain sender and of 100000 small sends from a devmem Tx
+sender, in both directions between the guests. Everything else in the
+lists above and below ran on the series as it was before that change.
+
 With knobs added to the driver for the purpose, which are not part of
 the series, also: ndo_queue_start() failing once and twice, at bind and
 at unbind; ionic_lif_handle_fw_down() and ionic_lif_handle_fw_up(),
@@ -143,12 +163,13 @@ Stephen Bates (8):
  drivers/net/ethernet/pensando/ionic/ionic_lif.h    |  26 +
  drivers/net/ethernet/pensando/ionic/ionic_phc.c    |   2 
  drivers/net/ethernet/pensando/ionic/ionic_stats.c  |  12 +
- drivers/net/ethernet/pensando/ionic/ionic_txrx.c   | 332 +++++++++++----
+ drivers/net/ethernet/pensando/ionic/ionic_txrx.c   | 333 +++++++++++----
  drivers/net/ethernet/pensando/ionic/ionic_txrx.h   |   1 
- 11 files changed, 806 insertions(+), 158 deletions(-)
+ 11 files changed, 807 insertions(+), 158 deletions(-)
 
 
 base-commit: aebb7274476403040d582c61478df8f4a7bf9cd3
+prerequisite-patch-id: 1016b6deea860ee6ef6278de079be4bf0973a892
 prerequisite-patch-id: 39862b07935b7ac07e79de422daa37c13bc27282
 prerequisite-patch-id: 75ff830d9e48677e62570da6bbe6d04c33a81887
 prerequisite-patch-id: 9128b67d7ec25a7b88de9037e7e98c14fa841e90
