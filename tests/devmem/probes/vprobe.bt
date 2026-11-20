@@ -1,0 +1,41 @@
+// Copyright (C) Advanced Micro Devices, Inc.
+// SPDX-License-Identifier: GPL-2.0-or-later
+//
+// This work is licensed under the terms of the GNU GPL, version 2 or later.
+// See the LICENSE_GPL.md file in the top-level directory.
+//
+// verification probe (independent of probe.bt): what reaches ionic_start_xmit, per TCP destination port
+kprobe:ionic_start_xmit
+{
+	$skb = (struct sk_buff *)arg0;
+	$sh = (struct skb_shared_info *)($skb->head + $skb->end);
+	$sk = $skb->sk;
+	$dp = $sk != 0 ? (uint64)$sk->__sk_common.skc_dport : 0;
+	$port = (($dp & 0xff) << 8) | (($dp >> 8) & 0xff);
+	$q = $skb->queue_mapping;
+	if ($skb->unreadable) {
+		@unreadable_skbs[$port, $q] = count();
+		@unreadable_data_len[$port] = sum($skb->data_len);
+		@unreadable_frags[$port] = lhist($sh->nr_frags, 0, 20, 1);
+		@unreadable_gso[$port, $sh->gso_size > 0] = count();
+		@unreadable_ip_summed[$port, $skb->ip_summed] = count();
+		$i = 0;
+		while ($i < 17) {
+			if ($i < $sh->nr_frags) {
+				@frag_netmem_lowbit[$port, ((uint64)$sh->frags[$i].netmem) & 1] = count();
+				@frag_len[$port] = hist($sh->frags[$i].len);
+			}
+			$i++;
+		}
+	} else {
+		@readable_skbs[$port, $q] = count();
+		@readable_payload[$port] = sum($skb->len - (($skb->len - $skb->data_len) < 66 ? ($skb->len - $skb->data_len) : 66));
+		@readable_frags[$port] = lhist($sh->nr_frags, 0, 20, 1);
+	}
+}
+kprobe:skb_copy_and_csum_bits { $s = (struct sk_buff *)arg0; if ($s->unreadable) { @copy_and_csum_on_unreadable = count(); } }
+kprobe:skb_copy_bits, kprobe:skb_checksum_help, kprobe:skb_segment { $s = (struct sk_buff *)arg0; if ($s->unreadable) { @core_helper_on_unreadable[func] = count(); } }
+tracepoint:skb:kfree_skb { $s = (struct sk_buff *)args->skbaddr; if ($s->unreadable) { @unreadable_dropped[args->reason, kstack(5)] = count(); } }
+kprobe:net_devmem_bind_dmabuf { @bind = count(); }
+kprobe:net_devmem_unbind_dmabuf { @unbind = count(); }
+kprobe:__net_devmem_dmabuf_binding_free { @binding_free = count(); }

@@ -1,0 +1,24 @@
+amdgpu: do not query RAS capability from a VBIOS that is not there
+
+amdgpu_ras_init() -> amdgpu_ras_check_supported() ->
+amdgpu_ras_query_ras_capablity_from_vbios() ->
+amdgpu_atomfirmware_mem_ecc_supported() -> amdgpu_atom_parse_data_header()
+dereferences adev->mode_info.atom_context, which is NULL on a device with
+no VBIOS image: an emulated gfx1250 (rocjitsu) here.  The probe oopses.
+
+Not a v7.4 change: the in-tree driver at v7.4-rc3 has the same path and
+the same oops.  Needed to probe the emulated GPU with either.
+
+--- a/amd/amdgpu/amdgpu_ras.c
++++ b/amd/amdgpu/amdgpu_ras.c
+@@ -3379,6 +3379,10 @@
+ /* Query ras capablity via atomfirmware interface */
+ static void amdgpu_ras_query_ras_capablity_from_vbios(struct amdgpu_device *adev)
+ {
++	/* A device without a VBIOS image has nothing to ask. */
++	if (!adev->mode_info.atom_context)
++		return;
++
+ 	/* mem_ecc cap */
+ 	if (amdgpu_atomfirmware_mem_ecc_supported(adev)) {
+ 		dev_info(adev->dev, "MEM ECC is active.\n");

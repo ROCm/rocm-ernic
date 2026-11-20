@@ -1,0 +1,153 @@
+--- a/drivers/net/ethernet/pensando/ionic/ionic_lif.c
++++ b/drivers/net/ethernet/pensando/ionic/ionic_lif.c
+@@ -55,6 +55,66 @@
+ static void ionic_unregister_rxq_info(struct ionic_queue *q);
+ static int ionic_register_rxq_info(struct ionic_queue *q, unsigned int napi_id);
+ 
++/* TEST ONLY fault knobs, /sys/module/ionic/parameters/fi_*.  Not part of
++ * the series.
++ */
++static struct ionic_lif *ionic_fi_lif;
++static int ionic_fi_qstart_fail;	/* fail the next N ionic_queue_start() */
++module_param_named(fi_qstart_fail, ionic_fi_qstart_fail, int, 0644);
++static int ionic_fi_qop_fw_reset;	/* next N ionic_queue_stop(): FW reset begins */
++module_param_named(fi_qop_fw_reset, ionic_fi_qop_fw_reset, int, 0644);
++static int ionic_fi_link_down;		/* link check sees the link down */
++module_param_named(fi_link_down, ionic_fi_link_down, int, 0644);
++
++/* What the heartbeat check does when it finds the firmware gone.  The up is
++ * left to the watchdog, which finds the firmware running; "hold" keeps it
++ * from looking until fwup.
++ */
++static void ionic_fi_fw_down(struct ionic_lif *lif, bool hold)
++{
++	struct ionic_dev *idev = &lif->ionic->idev;
++	struct ionic_deferred_work *work;
++
++	if (test_bit(IONIC_LIF_F_FW_RESET, lif->state) ||
++	    test_and_set_bit(IONIC_LIF_F_FW_STOPPING, lif->state))
++		return;
++	if (!hold)
++		idev->fw_status_ready = false;
++	work = kzalloc_obj(*work, GFP_KERNEL);
++	if (!work)
++		return;
++	work->type = IONIC_DW_TYPE_LIF_RESET;
++	work->fw_status = false;
++	ionic_lif_deferred_enqueue(lif, work);
++}
++
++static int ionic_fi_cmd_set(const char *val, const struct kernel_param *kp)
++{
++	struct ionic_lif *lif = ionic_fi_lif;
++
++	if (!lif)
++		return -ENODEV;
++	if (sysfs_streq(val, "fwdown"))
++		ionic_fi_fw_down(lif, false);
++	else if (sysfs_streq(val, "fwdown-hold"))
++		ionic_fi_fw_down(lif, true);
++	else if (sysfs_streq(val, "fwup"))
++		lif->ionic->idev.fw_status_ready = false;
++	else if (sysfs_streq(val, "txtimeout"))
++		schedule_work(&lif->tx_timeout_work);
++	else if (sysfs_streq(val, "linkcheck"))
++		ionic_link_status_check_request(lif, CAN_NOT_SLEEP);
++	else
++		return -EINVAL;
++	pr_info("ionic fi: %s\n", val);
++	return 0;
++}
++
++static const struct kernel_param_ops ionic_fi_cmd_ops = {
++	.set = ionic_fi_cmd_set,
++};
++module_param_cb(fi_cmd, &ionic_fi_cmd_ops, NULL, 0200);
++
+ static void ionic_dim_work(struct work_struct *work)
+ {
+ 	struct dim *dim = container_of(work, struct dim, work);
+@@ -162,6 +222,8 @@
+ 
+ 	link_status = le16_to_cpu(lif->info->status.link_status);
+ 	link_up = link_status == IONIC_PORT_OPER_STATUS_UP;
++	if (ionic_fi_link_down)
++		link_up = false;
+ 
+ 	if (link_up) {
+ 		int err = 0;
+@@ -3391,6 +3453,19 @@
+ 	ionic_stop_queues_reconfig(lif);
+ 	mutex_unlock(&lif->queue_lock);
+ 
++	if (ionic_fi_qop_fw_reset > 0) {
++		int i;
++
++		ionic_fi_qop_fw_reset--;
++		ionic_fi_fw_down(lif, false);
++		/* the deferred work sets the flag, then waits for our lock */
++		for (i = 0; i < 2000 &&
++		     !test_bit(IONIC_LIF_F_FW_RESET, lif->state); i++)
++			msleep(1);
++		pr_info("ionic fi: FW reset begun inside a queue op: %d\n",
++			test_bit(IONIC_LIF_F_FW_RESET, lif->state));
++	}
++
+ 	return 0;
+ }
+ 
+@@ -3422,7 +3497,13 @@
+ 	 * the link check: that would run after the caller has been told
+ 	 * that the queue is up.
+ 	 */
+-	err = ionic_txrx_init(lif);
++	if (ionic_fi_qstart_fail > 0) {
++		ionic_fi_qstart_fail--;
++		pr_info("ionic fi: failing ionic_queue_start()\n");
++		err = -EIO;
++	} else {
++		err = ionic_txrx_init(lif);
++	}
+ 	if (!err && netif_carrier_ok(netdev)) {
+ 		err = ionic_start_queues(lif);
+ 		if (err)
+@@ -3521,6 +3602,7 @@
+ 	lif = netdev_priv(netdev);
+ 	lif->netdev = netdev;
+ 	ionic->lif = lif;
++	ionic_fi_lif = lif;
+ 	lif->ionic = ionic;
+ 	netdev->netdev_ops = &ionic_netdev_ops;
+ 	netdev->queue_mgmt_ops = &ionic_queue_mgmt_ops;
+@@ -3794,6 +3876,7 @@
+ 
+ void ionic_lif_free(struct ionic_lif *lif)
+ {
++	ionic_fi_lif = NULL;
+ 	struct device *dev = lif->ionic->dev;
+ 
+ 	ionic_lif_free_phc(lif);
+--- a/drivers/net/ethernet/pensando/ionic/ionic_txrx.c
++++ b/drivers/net/ethernet/pensando/ionic/ionic_txrx.c
+@@ -902,6 +902,10 @@
+ 	return __ionic_rx_service(cq, NULL);
+ }
+ 
++/* TEST ONLY fault knob, not part of the series */
++static int ionic_fi_rx_alloc_fail;
++module_param_named(fi_rx_alloc_fail, ionic_fi_rx_alloc_fail, int, 0644);
++
+ void ionic_rx_refill_timer(struct timer_list *t)
+ {
+ 	struct ionic_qcq *qcq = timer_container_of(qcq, t, rx_refill_timer);
+@@ -976,6 +980,10 @@
+ 	}
+ 
+ 	for (i = n_fill; i; i--) {
++		/* TEST ONLY: as if the page pool had nothing */
++		if (ionic_fi_rx_alloc_fail)
++			goto out;
++
+ 		/* fill main descriptor - buf[0] */
+ 		nfrags = 0;
+ 		remain_len = len;

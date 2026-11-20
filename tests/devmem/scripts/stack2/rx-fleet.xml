@@ -1,0 +1,33 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  ionic devmem-RX test bed (stack 2): overlay on qemu-minimal's
+  qemu/stacks/rocm-golden.xml. Independent of stack 1 (project ionic-devmem):
+  own compose project "ionic-devmem-rx", own disks, own networks and ports.
+  Render: stack.sh, beside this file in the repository.
+
+  The paths below are the development host's work area. qemu-tool reads
+  this file as it is, so edit them to match DEVMEM_ROOT.
+
+  Copyright (C) Advanced Micro Devices, Inc.
+  SPDX-License-Identifier: GPL-2.0-or-later
+-->
+<fleet xmlns="http://qemu-tool/fleet/1.0">
+  <vm-count>2</vm-count>
+  <vm-name-prefix>rx</vm-name-prefix>
+  <fleet-prefix>172.31</fleet-prefix>
+  <ssh-port-base>2271</ssh-port-base>
+  <ernic-tcp-port>6332</ernic-tcp-port>
+  <sdxi-per-vm>0</sdxi-per-vm>
+  <p4-enable>false</p4-enable>
+  <vm-nvme>0</vm-nvme>
+  <vm-nvme-vram>false</vm-nvme-vram>
+  <vm-vcpus>8</vm-vcpus>
+  <vm-vmem>8192</vm-vmem>
+  <vm-shm-size>9g</vm-shm-size>
+  <vm-images-dir>/var/tmp/ionic-devmem/test-rx/images</vm-images-dir>
+  <vm-filesystem>/var/tmp/ionic-devmem</vm-filesystem>
+  <vm-extra-hostfwd></vm-extra-hostfwd>
+  <qemu-tool-src>/var/tmp/ionic-devmem/qemu-minimal</qemu-tool-src>
+  <grafana-enable>false</grafana-enable>
+  <logs-enable>false</logs-enable>
+</fleet>

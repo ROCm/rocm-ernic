@@ -1,0 +1,21 @@
+drm/amd/amdgpu: do not query RAS capability from a VBIOS that is not there
+
+TEST-BED PATCH, not part of the ionic series. On v7.4-rc3 the in-tree amdgpu
+oopses while probing the emulated gfx1250 GPU (rocjitsu, no VBIOS image,
+MP0 15.0.8): amdgpu_ras_init() -> amdgpu_ras_check_supported() ->
+amdgpu_ras_query_ras_capablity_from_vbios() ->
+amdgpu_atomfirmware_mem_ecc_supported() -> amdgpu_atom_parse_data_header()
+with adev->mode_info.atom_context == NULL.
+
+--- a/drivers/gpu/drm/amd/amdgpu/amdgpu_ras.c
++++ b/drivers/gpu/drm/amd/amdgpu/amdgpu_ras.c
+@@ -3366,6 +3366,9 @@
+ /* Query ras capablity via atomfirmware interface */
+ static void amdgpu_ras_query_ras_capablity_from_vbios(struct amdgpu_device *adev)
+ {
++	if (!adev->mode_info.atom_context)
++		return;
++
+ 	/* mem_ecc cap */
+ 	if (amdgpu_atomfirmware_mem_ecc_supported(adev)) {
+ 		dev_info(adev->dev, "MEM ECC is active.\n");

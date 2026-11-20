@@ -67,6 +67,7 @@ a host TAP:
    architecture
    usage
    ionic
+   devmem
    nvmeof
    s3
    p4
@@ -101,7 +102,9 @@ are licensed under the :project-file:`MIT license <LICENSE.md>`.
 The emulator itself is ``GPL-2.0-or-later``:
 
 - Everything under ``src/`` and ``tests/``, and the fuzz harnesses in
-  ``nix/analysis/fuzz/``, which build against ``src/``.
+  ``nix/analysis/fuzz/``, which build against ``src/``. The kernel
+  patches under ``tests/devmem/kernel-patches/`` take the licenses of
+  the files they modify.
 - The VMware/Linux uAPI header ``src/pvrdma/vmw_pvrdma-abi.h`` is
   instead dual ``GPL-2.0`` / ``BSD-2-Clause``.
 

@@ -1,0 +1,55 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Stephen Bates <sbates@raithlin.com>
+Date: Wed, 18 Nov 2026 18:56:55 -0500
+Subject: [RFC PATCH net-next 1/6] ionic: don't leave a failed XDP frame in the Tx descriptor info
+
+ionic_xdp_post_frame() records the frame and the XDP action in the Tx
+descriptor info before it maps the frags. If mapping a frag of an
+XDP_REDIRECT frame fails it unmaps what it had mapped and returns -EIO,
+but leaves desc_info->xdpf and desc_info->act set. The queue head has not
+moved, so the next thing sent on that queue uses the same descriptor
+info.
+
+If that is an skb, ionic_tx() and ionic_tx_tso() only set desc_info->skb.
+When the descriptor completes, ionic_tx_clean() sees xdpf set and takes
+the XDP branch: the stale frame, which the caller of ndo_xdp_xmit()
+already freed when it got the error, is returned a second time, and the
+skb is never freed.
+
+Record the frame and the action only once all the buffers are mapped.
+The unmap in the error path only needs nbufs.
+
+Found by code inspection; the failure needs a multi-buffer XDP_REDIRECT
+into ionic and a DMA mapping error, and was not reproduced.
+
+Fixes: 5377805dc1c0 ("ionic: implement xdp frags support")
+---
+ drivers/net/ethernet/pensando/ionic/ionic_txrx.c | 5 +++--
+ 1 file changed, 3 insertions(+), 2 deletions(-)
+
+diff --git a/drivers/net/ethernet/pensando/ionic/ionic_txrx.c b/drivers/net/ethernet/pensando/ionic/ionic_txrx.c
+index 2543a8ff8547..2733a65bd1d5 100644
+--- a/drivers/net/ethernet/pensando/ionic/ionic_txrx.c
++++ b/drivers/net/ethernet/pensando/ionic/ionic_txrx.c
+@@ -335,8 +335,6 @@ static int ionic_xdp_post_frame(struct ionic_queue *q, struct xdp_frame *frame,
+ 	buf_info->page_offset = off;
+ 
+ 	desc_info->nbufs = 1;
+-	desc_info->xdpf = frame;
+-	desc_info->act = act;
+ 
+ 	if (xdp_frame_has_frags(frame)) {
+ 		struct ionic_txq_sg_elem *elem;
+@@ -378,6 +376,9 @@ static int ionic_xdp_post_frame(struct ionic_queue *q, struct xdp_frame *frame,
+ 		}
+ 	}
+ 
++	desc_info->xdpf = frame;
++	desc_info->act = act;
++
+ 	cmd = encode_txq_desc_cmd(IONIC_TXQ_DESC_OPCODE_CSUM_NONE,
+ 				  0, (desc_info->nbufs - 1), buf_info->dma_addr);
+ 	desc->cmd = cpu_to_le64(cmd);
+-- 
+2.43.0
+

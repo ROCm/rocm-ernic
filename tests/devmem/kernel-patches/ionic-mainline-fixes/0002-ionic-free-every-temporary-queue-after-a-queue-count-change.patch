@@ -1,0 +1,59 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Stephen Bates <sbates@raithlin.com>
+Subject: [PATCH net] ionic: free every temporary queue after a queue count
+ change
+
+ionic_reconfigure_queues() allocates the new rings in temporary qcqs,
+swaps their contents with the live ones, and frees the temporaries,
+which then hold the old rings. The loop that frees them runs up to
+qparam->nxqs, but by then lif->nxqs and qparam->nxqs have been swapped,
+so it runs up to the old queue count.
+
+When the count grows into an index that has no qcq yet, a short
+placeholder qcq is allocated for the swap, and its rings and page pool
+end up in the temporary of that index, which is beyond the old count
+and is never freed. The qcq structs are devm allocations and go away at
+unbind, but the DMA allocations do not, and the page pool stays listed
+with a pointer to the freed NAPI:
+
+  ip link set $IF down; ethtool -L $IF combined 2; ip link set $IF up
+  ethtool -L $IF combined 4; rmmod ionic
+
+  DMA-API: pci 0000:01:00.0: device driver has pending DMA allocations
+  while released from device [count=12]
+
+and a later page pool dump over netlink reads the freed NAPI:
+
+  BUG: KASAN: slab-use-after-free in page_pool_nl_fill+0x690/0x730
+
+Free the temporaries up to the larger of the two counts. The arrays
+have room for every queue, and the loop already skips the entries that
+were never allocated.
+---
+Not part of the Rx header split series; found while testing it, and
+reproduced with the unmodified v7.4-rc3 driver. No Fixes: tag yet (the
+commit that introduced the swap was not looked up). Tested in a guest
+on an emulated ionic: the sequence above no longer leaves pending DMA
+allocations or a listed page pool.
+
+diff --git a/drivers/net/ethernet/pensando/ionic/ionic_lif.c b/drivers/net/ethernet/pensando/ionic/ionic_lif.c
+index 22d1e4b6d61b..3ef3344faba0 100644
+--- a/drivers/net/ethernet/pensando/ionic/ionic_lif.c
++++ b/drivers/net/ethernet/pensando/ionic/ionic_lif.c
+@@ -3147,8 +3147,11 @@ err_out_reinit_unlock:
+ 		err = ionic_start_queues_reconfig(lif);
+ 
+ err_out:
+-	/* free old allocs without cleaning intr */
+-	for (i = 0; i < qparam->nxqs; i++) {
++	/* free old allocs without cleaning intr; the counts may have been
++	 * swapped above, and a placeholder's rings end up in the temporary
++	 * qcq of an index beyond the old count
++	 */
++	for (i = 0; i < max(qparam->nxqs, lif->nxqs); i++) {
+ 		if (tx_qcqs && tx_qcqs[i]) {
+ 			tx_qcqs[i]->flags &= ~IONIC_QCQ_F_INTR;
+ 			ionic_qcq_free(lif, tx_qcqs[i]);
+-- 
+2.43.0
+

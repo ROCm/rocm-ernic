@@ -65,6 +65,10 @@ __pycache__/
 !ansible/files/patches/**/*.diff
 # The RDMA-Tutorial patches that playbooks/tutorial-tests.yml applies.
 !ansible/playbooks/files/rdma-tutorial/*.patch
+# The kernel patches among the devmem proof of concept's test aids; see
+# tests/devmem/kernel-patches/*/README.md.
+!tests/devmem/kernel-patches/**/*.patch
+!tests/devmem/kernel-patches/**/*.diff
 
 # Log files
 *.log

@@ -1,0 +1,41 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  ionic devmem-TX test bed: overlay on qemu-minimal's qemu/stacks/rocm-golden.xml.
+  Render: stack.sh, beside this file in the repository.
+
+  The paths below are the development host's work area. qemu-tool reads
+  this file as it is, so edit them to match DEVMEM_ROOT.
+
+  Copyright (C) Advanced Micro Devices, Inc.
+  SPDX-License-Identifier: GPL-2.0-or-later
+  Two guests "devmem-1"/"devmem-2", one rocm-ernic NIC each with a TAP (the
+  guests' Ethernet path), one rocjitsu GPU each (gen-compose requires >= 1),
+  no SDXI, no NVMe, no P4, no Grafana/Loki. /var/tmp/ionic-devmem is shared
+  into both guests over 9p (mount tag "hostfs").
+-->
+<fleet xmlns="http://qemu-tool/fleet/1.0">
+  <vm-count>2</vm-count>
+  <vm-name-prefix>devmem</vm-name-prefix>
+  <fleet-prefix>172.29</fleet-prefix>
+  <ssh-port-base>2261</ssh-port-base>
+  <ernic-tcp-port>6331</ernic-tcp-port>
+  <sdxi-per-vm>0</sdxi-per-vm>
+  <p4-enable>false</p4-enable>
+  <vm-nvme>0</vm-nvme>
+  <vm-nvme-vram>false</vm-nvme-vram>
+  <vm-vcpus>8</vm-vcpus>
+  <vm-vmem>8192</vm-vmem>
+  <!-- Added for the GPU dma-buf test (notes/test-gpu-dmabuf.md): rocjitsu's
+       BAR0 is 256 GiB. With QEMU's default phys-bits (40) and 32 GiB 64-bit
+       PCI hole neither the firmware nor Linux can place it, so the guest's
+       GPU has no BAR0/BAR2 and amdgpu cannot probe. -->
+  <vm-cpu-phys-bits>42</vm-cpu-phys-bits>
+  <vm-pci-hole64-size>1024G</vm-pci-hole64-size>
+  <vm-shm-size>9g</vm-shm-size>
+  <vm-images-dir>/var/tmp/ionic-devmem/test/images</vm-images-dir>
+  <vm-filesystem>/var/tmp/ionic-devmem</vm-filesystem>
+  <vm-extra-hostfwd></vm-extra-hostfwd>
+  <qemu-tool-src>/var/tmp/ionic-devmem/qemu-minimal</qemu-tool-src>
+  <grafana-enable>false</grafana-enable>
+  <logs-enable>false</logs-enable>
+</fleet>

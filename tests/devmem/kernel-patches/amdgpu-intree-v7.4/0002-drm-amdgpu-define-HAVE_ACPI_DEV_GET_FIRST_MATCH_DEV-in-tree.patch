@@ -1,0 +1,55 @@
+drm/amd/amdgpu: define HAVE_ACPI_DEV_GET_FIRST_MATCH_DEV for an in-tree build
+
+TEST-BED PATCH, not part of the ionic series. v7.4-rc3's amdgpu still carries
+the DKMS configure macro HAVE_ACPI_DEV_GET_FIRST_MATCH_DEV, which nothing in
+the kernel tree ever defines. An in-tree (or plain `make M=`) build therefore
+compiles gmc_v12_0_sw_init() without its call to amdgpu_gmc_init_mem_ranges(),
+so adev->gmc.num_mem_partitions stays 0 and, on GC 12.1 (gfx1250 / the
+emulated rocjitsu GPU), gfx_v12_1 hw_init fails:
+
+  amdgpu 0000:02:00.0: memory partition mode query is not supported
+  amdgpu 0000:02:00.0: Invalid config, no compatible compute partition mode
+                       found, available memory partitions: 0
+  amdgpu 0000:02:00.0: hw_init of IP block <gfx_v12_1> failed -22
+  amdgpu 0000:02:00.0: probe with driver amdgpu failed with error -22
+
+Define the macro in the two files that test it. The out-of-tree ROCm DKMS
+build defines it from its configure step, which is why the 7.1.9 DKMS module
+probes the same device successfully.
+
+(Applied as a #ifndef/#define block above the includes of
+ drivers/gpu/drm/amd/amdgpu/gmc_v12_0.c and
+ drivers/gpu/drm/amd/amdgpu/soc_v1_0.c; see the TESTBED comment there.)
+
+--- a/drivers/gpu/drm/amd/amdgpu/gmc_v12_0.c
++++ b/drivers/gpu/drm/amd/amdgpu/gmc_v12_0.c
+@@ -20,6 +20,13 @@
+  * OTHER DEALINGS IN THE SOFTWARE.
+  *
+  */
++/* TESTBED: see test/gpu/patches/0002-*.patch. This tree never defines
++ * HAVE_ACPI_DEV_GET_FIRST_MATCH_DEV (a DKMS configure macro), so an
++ * in-tree build skips amdgpu_gmc_init_mem_ranges() for GC 12.1 and
++ * gfx_v12_1 hw_init then fails with num_mem_partitions == 0. */
++#ifndef HAVE_ACPI_DEV_GET_FIRST_MATCH_DEV
++#define HAVE_ACPI_DEV_GET_FIRST_MATCH_DEV 1
++#endif
+ #include <linux/firmware.h>
+ #include <linux/pci.h>
+ 
+--- a/drivers/gpu/drm/amd/amdgpu/soc_v1_0.c
++++ b/drivers/gpu/drm/amd/amdgpu/soc_v1_0.c
+@@ -20,6 +20,13 @@
+  * OTHER DEALINGS IN THE SOFTWARE.
+  *
+  */
++/* TESTBED: see test/gpu/patches/0002-*.patch. This tree never defines
++ * HAVE_ACPI_DEV_GET_FIRST_MATCH_DEV (a DKMS configure macro), so an
++ * in-tree build skips amdgpu_gmc_init_mem_ranges() for GC 12.1 and
++ * gfx_v12_1 hw_init then fails with num_mem_partitions == 0. */
++#ifndef HAVE_ACPI_DEV_GET_FIRST_MATCH_DEV
++#define HAVE_ACPI_DEV_GET_FIRST_MATCH_DEV 1
++#endif
+ #include "amdgpu.h"
+ #include "amdgpu_discovery.h"
+ #include "soc15.h"

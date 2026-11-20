@@ -1,0 +1,224 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Stephen Bates <sbates@raithlin.com>
+Date: Thu, 19 Nov 2026 12:00:00 -0500
+Subject: [PATCH] net: devmem: detach TX bindings on NETDEV_UNREGISTER
+
+Unregistering a net_device while a devmem TX binding is live leaves
+binding->dev (and binding->vdev) pointing at freed memory. When the
+process that created the binding then closes its netlink socket,
+netdev_nl_sock_priv_destroy() reads binding->dev and calls netdev_hold()
+on it:
+
+  BUG: KASAN: use-after-free in netdev_nl_sock_priv_destroy+0x1b1/0x1e0
+  Read of size 8 at addr ffff8881362386c0 by task devmem_tx/69808
+  Call Trace:
+   kasan_report+0xe4/0x1a0
+   netdev_nl_sock_priv_destroy+0x1b1/0x1e0
+   genl_release+0xf5/0x190
+   netlink_release+0xcd1/0x18e0
+   __sock_release+0xb0/0x270
+   sock_close+0x18/0x20
+   __fput+0x365/0xa90
+   __x64_sys_close+0x7d/0xd0
+
+  BUG: unable to handle page fault for address: ffff88829fd34000
+  Oops: Oops: 0002 [#1] SMP KASAN NOPTI
+  RIP: 0010:netdev_nl_sock_priv_destroy+0xbd/0x1e0
+
+Root cause: an RX binding has its binding->dev cleared from
+mp_dmabuf_devmem_uninstall(), which runs when the last RX queue the
+binding is installed on is torn down. A TX binding (NETDEV_CMD_BIND_TX)
+has no bound RX queue, so that path never runs for it and nothing in
+netdev unregistration detaches it. The binding outlives the device: it
+stays on the netlink socket's binding list, and TCP retransmits of
+already-queued devmem skbs can keep it alive well past the unregister.
+Everything that later looks at binding->dev - the socket-close teardown
+above, and the dst_dev comparison in net_devmem_get_binding() - is
+looking at freed memory.
+
+How it was found: testing devmem TCP TX against the rocm-ernic userspace
+emulated NIC (libvfio-user, ionic device model), on two guests with a
+KASAN kernel. "rmmod ionic" four seconds into a devmem TX stream
+unloads cleanly; the oops comes when the sender process exits and closes
+its netlink socket. It reproduces on every attempt, and it also fires
+when the sender is killed with SIGKILL rather than exiting normally.
+This is in the networking core, not in the ionic driver: ionic is no
+longer loaded when the oops happens, and no driver patch is involved.
+
+The same bug is in mainline and in v7.2.15, the ERNIC bundle kernel.
+
+Backport of net-next commit ede1618064a9 ("net: devmem: detach TX
+bindings on NETDEV_UNREGISTER") by Mina Almasry <almasrymina@google.com>,
+merged via Paolo Abeni. Note that two commits named by an earlier study
+do NOT fix this: commit 23fe6ac2e97a ("net: skbuff: make
+skb_copy_and_csum_bits() report unreadable frags") and commit
+7fec569df355 ("net: skbuff: fail segmentation when a segment can't be
+checksummed") are skb_segment()/checksum fixes for the SG-off and
+checksum-off paths, and touch neither net/core/devmem.c nor
+net/core/netdev-genl.c.
+
+The upstream patch does not apply to v7.2.15; this is a hand-backport.
+Differences, all forced by how much net/core/devmem.c has changed since
+v7.2.15:
+
+ - Upstream extends an existing net_devmem_dev_unregister() that handles
+   RX bindings. v7.2.15 has no such function and no NETDEV_UNREGISTER
+   hook in net/core/netdev-genl.c at all, so the function is added here
+   along with its call site, its declaration and its !CONFIG_NET_DEVMEM
+   stub. The RX half of upstream's loop is omitted: at v7.2.15 RX
+   bindings are already detached by mp_dmabuf_devmem_uninstall(), which
+   dev_memory_provider_uninstall() runs just before the NETDEV_UNREGISTER
+   notifier.
+ - Upstream clears the binding's NET_DEVMEM_BINDING_LIVE xarray mark and
+   uses __xa_clear_mark() under the xarray lock. v7.2.15 has no such
+   mark (net_devmem_unbind_dmabuf() erases the binding from the xarray
+   instead), so there is nothing to clear.
+ - Upstream also unmaps the dma_buf attachment here, via its
+   net_devmem_dmabuf_binding_unmap() helper. v7.2.15 has no such helper:
+   the unmap is open-coded in __net_devmem_dmabuf_binding_free() with no
+   guard that would make a second unmap safe. Adding an early unmap
+   would mean backporting that helper and its idempotency, so this
+   backport deliberately does only the pointer detach, which is the
+   memory-safety half. The consequence is that the dma_buf stays mapped
+   until the last devmem skb drops its reference to the binding, so the
+   DMA-API debug warning "device driver has pending DMA allocations
+   while released from device" that an unload with a live binding
+   already produces on v7.2.15 remains. That is a debug warning, not a
+   use-after-free.
+ - v7.2.15 writes binding->dev under binding->lock (a mutex) and
+   netdev_nl_sock_priv_destroy() reads it under the same mutex before
+   netdev_hold(), so the clearing here takes binding->lock too. That
+   cannot be done under the xarray spinlock, so the loop drops the
+   xarray lock around the sleeping section and holds a percpu_ref on the
+   binding across it, which upstream does not need. Lock order is
+   netdev_lock(dev) -> binding->lock; netdev_nl_sock_priv_destroy()
+   releases binding->lock before taking netdev_lock(), so there is no
+   inversion.
+
+Upstream was reproduced and verified with a netdevsim selftest; this
+backport was compile-tested only (see the README beside this patch for
+what was and was not run).
+
+Fixes: bd61848900bf ("net: devmem: Implement TX path")
+Fixes: 1abe839b34ae ("net: devmem: support TX over NETMEM_TX_NO_DMA devices")
+---
+ net/core/devmem.c      | 59 ++++++++++++++++++++++++++++++++++++++++++++++++
+ net/core/devmem.h      |  5 ++++
+ net/core/netdev-genl.c |  1 +
+ 3 files changed, 65 insertions(+)
+
+diff --git a/net/core/devmem.c b/net/core/devmem.c
+index 957d6b9..72a6af0 100644
+--- a/net/core/devmem.c
++++ b/net/core/devmem.c
+@@ -12,6 +12,7 @@
+ #include <linux/mm.h>
+ #include <linux/netdevice.h>
+ #include <linux/types.h>
++#include <net/netdev_lock.h>
+ #include <net/netdev_queues.h>
+ #include <net/netdev_rx_queue.h>
+ #include <net/page_pool/helpers.h>
+@@ -151,6 +152,64 @@ void net_devmem_unbind_dmabuf(struct net_devmem_dmabuf_binding *binding)
+ 	percpu_ref_kill(&binding->ref);
+ }
+ 
++void net_devmem_dev_unregister(struct net_device *dev)
++{
++	struct net_devmem_dmabuf_binding *binding;
++	unsigned long xa_idx;
++
++	netdev_assert_locked(dev);
++
++	if (READ_ONCE(dev->reg_state) != NETREG_UNREGISTERING)
++		return;
++
++	/* An RX binding drops its reference to the device from
++	 * mp_dmabuf_devmem_uninstall(), when the last queue it is installed
++	 * on is torn down. A TX binding has no bound queue, so nothing
++	 * clears binding->dev or binding->vdev for it and both dangle once
++	 * the net_device is freed.
++	 */
++	xa_lock(&net_devmem_dmabuf_bindings);
++	xa_for_each(&net_devmem_dmabuf_bindings, xa_idx, binding) {
++		if (binding->direction != DMA_TO_DEVICE ||
++		    (READ_ONCE(binding->dev) != dev &&
++		     READ_ONCE(binding->vdev) != dev))
++			continue;
++
++		/* The binding may be unbound and freed once the xarray lock
++		 * is dropped; hold it over the sleeping section.
++		 */
++		if (!net_devmem_dmabuf_binding_get(binding))
++			continue;
++
++		xa_unlock(&net_devmem_dmabuf_bindings);
++
++		/* binding->lock keeps this atomic against the netdev_hold()
++		 * in netdev_nl_sock_priv_destroy(), which either takes a
++		 * reference before the device is gone or sees NULL.
++		 */
++		mutex_lock(&binding->lock);
++		if (READ_ONCE(binding->dev) == dev) {
++			/* The physical device is going away: no TX can
++			 * reach this binding through either name.
++			 */
++			WRITE_ONCE(binding->vdev, NULL);
++			WRITE_ONCE(binding->dev, NULL);
++		} else if (READ_ONCE(binding->vdev) == dev) {
++			/* Only the virtual device is going away: stop new
++			 * sends matching it and let the in-flight ones on
++			 * binding->dev finish.
++			 */
++			WRITE_ONCE(binding->vdev, NULL);
++		}
++		mutex_unlock(&binding->lock);
++
++		net_devmem_dmabuf_binding_put(binding);
++
++		xa_lock(&net_devmem_dmabuf_bindings);
++	}
++	xa_unlock(&net_devmem_dmabuf_bindings);
++}
++
+ int net_devmem_bind_dmabuf_to_queue(struct net_device *dev, u32 rxq_idx,
+ 				    struct net_devmem_dmabuf_binding *binding,
+ 				    struct netlink_ext_ack *extack)
+diff --git a/net/core/devmem.h b/net/core/devmem.h
+index 3852a56..12c922e 100644
+--- a/net/core/devmem.h
++++ b/net/core/devmem.h
+@@ -97,6 +97,7 @@ net_devmem_bind_dmabuf(struct net_device *dev, void *vdev,
+ 		       struct netlink_ext_ack *extack);
+ struct net_devmem_dmabuf_binding *net_devmem_lookup_dmabuf(u32 id);
+ void net_devmem_unbind_dmabuf(struct net_devmem_dmabuf_binding *binding);
++void net_devmem_dev_unregister(struct net_device *dev);
+ int net_devmem_bind_dmabuf_to_queue(struct net_device *dev, u32 rxq_idx,
+ 				    struct net_devmem_dmabuf_binding *binding,
+ 				    struct netlink_ext_ack *extack);
+@@ -191,6 +192,10 @@ net_devmem_unbind_dmabuf(struct net_devmem_dmabuf_binding *binding)
+ {
+ }
+ 
++static inline void net_devmem_dev_unregister(struct net_device *dev)
++{
++}
++
+ static inline int
+ net_devmem_bind_dmabuf_to_queue(struct net_device *dev, u32 rxq_idx,
+ 				struct net_devmem_dmabuf_binding *binding,
+diff --git a/net/core/netdev-genl.c b/net/core/netdev-genl.c
+index c15d8d4..3f9ec97 100644
+--- a/net/core/netdev-genl.c
++++ b/net/core/netdev-genl.c
+@@ -1462,6 +1462,7 @@ static int netdev_genl_netdevice_event(struct notifier_block *nb,
+ 		break;
+ 	case NETDEV_UNREGISTER:
+ 		netdev_lock(netdev);
++		net_devmem_dev_unregister(netdev);
+ 		netdev_genl_dev_notify(netdev, NETDEV_CMD_DEV_DEL_NTF);
+ 		netdev_unlock(netdev);
+ 		break;
+-- 
+2.43.0
+

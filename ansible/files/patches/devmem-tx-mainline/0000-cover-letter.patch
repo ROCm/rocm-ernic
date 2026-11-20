@@ -1,0 +1,100 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Stephen Bates <sbates@raithlin.com>
+Date: Wed, 18 Nov 2026 18:56:54 -0500
+Subject: [RFC PATCH net-next 0/6] ionic: support netmem TX
+
+This series lets a dma-buf be bound to an ionic netdev for transmit
+(NETDEV_CMD_BIND_TX) and sent from with sendmsg(MSG_ZEROCOPY) and
+SCM_DEVMEM_DMABUF, as bnxt, gve, mlx5 and fbnic allow.
+
+It is an RFC because it has only been built so far, and it is still
+based on v7.4-rc3 and not on net-next (see the end for both).
+
+Patch 1 is a fix for an existing bug in the XDP_REDIRECT error path that
+could go to net on its own; it is here because the stale state it leaves
+is in the descriptor info the next patches rely on. Patches 2 and 3 make
+the Tx unmap paths safe for net_iov frags. ionic already maps with
+skb_frag_dma_map(); only the unmap side needed work. Patch 4 counts the
+unreadable skbs the driver drops. Patch 6 sets netdev->netmem_tx if the
+device has Tx scatter-gather and checksum offload.
+
+Patch 5 is not for net-next. On a tree without commit 23fe6ac2e97a
+("net: skbuff: make skb_copy_and_csum_bits() report unreadable frags"),
+such as v7.4-rc3, software GSO of an unreadable skb with NETIF_F_SG and
+NETIF_F_HW_CSUM both off sends zeroes with a valid checksum, and patch 5
+makes ionic drop those packets. Nothing else in the series depends on
+it: leave it out when rebasing onto net-next.
+
+Is this a driver-only change?
+
+Yes. Nothing in the core needs to change for ionic: the bind needs only
+netmem_tx and a parent device with a DMA mask, and every helper the
+driver uses is already there (skb_frag_dma_map(),
+netmem_dma_unmap_addr_set(), netmem_dma_unmap_page_attrs(),
+skb_frags_readable()). netmem_tx is set once before the netdev is
+registered, as in the other drivers.
+
+One limitation is left that a driver can't lift. Nothing bounds the
+frags of a devmem skb by what the device can take. ionic sends at most
+16 buffers per packet (head plus 15 SG elements), an skb has up to
+MAX_SKB_FRAGS frags, and a devmem sendmsg() makes one frag per iovec
+entry per page. A sender using pieces smaller than about MSS/16 builds
+packets the driver can neither send nor linearize, so they are dropped
+and the connection stalls. ndo_features_check() can't help (it can't
+split a non-GSO skb, and a software GSO segment keeps the same frags).
+This is what gve does today as well: the same fallback to
+skb_linearize() and the same drop. NETDEV_CMD_BIND_TX is unprivileged,
+but the sender can only hurt its own connection. An error from
+sendmsg() would still be better than a stall; that takes a per-netdev
+limit applied where the core builds the skb, which I propose as
+follow-up work, not as part of this series. Patch 4 makes the drop
+visible.
+
+The ethtool counter in patch 4 is driver-private, and no other netmem
+Tx driver has one. If such a count should rather be a netdev queue
+stat, or not exist, patch 4 can be reworked or dropped: only patch 5
+mentions it.
+
+Things I noticed in ionic that this series leaves alone, since none of
+them is specific to netmem:
+
+ - max_sg_elems is set to 15 for every Tx queue, also when the device
+   reports the 8 element SG descriptor.
+ - After a firmware reset the features the device grants are re-read but
+   netdev->features and, with this series, netmem_tx are not recomputed.
+ - Addresses are masked to 52 bits when they go into the descriptor, with
+   no check. A TSO segment that starts inside a frag puts a frag address
+   there.
+
+Base: v7.4-rc3. The patches other than 5 also apply, unchanged, to the
+ionic files of net-next main as of 2026-11-18 (d6816d9a93b6), but they
+were not built there. v7.4-rc3 lacks two things net-next has: the
+skb_segment() fix named above, and net_devmem_dev_unregister(), without
+which a Tx binding keeps a pointer to a netdev that was unregistered
+under it.
+
+Testing: build only. x86_64, gcc 13, W=1 and sparse, at every patch, and
+once more with the dma_unmap_addr macros compiled away. Nothing has been
+run: no devmem.py, no ncdevmem, no feature toggling.
+
+Stephen Bates (6):
+  ionic: don't leave a failed XDP frame in the Tx descriptor info
+  ionic: give Tx buffers their own bookkeeping struct
+  ionic: unmap Tx frags with the netmem helpers
+  ionic: count the unreadable skbs dropped on Tx
+  ionic: don't send an unreadable skb that has no frags
+  ionic: add netmem TX support
+
+ .../device_drivers/ethernet/pensando/ionic.rst     |  2 +
+ drivers/net/ethernet/pensando/ionic/ionic_dev.h    | 13 +++-
+ drivers/net/ethernet/pensando/ionic/ionic_lif.c    |  9 +++
+ drivers/net/ethernet/pensando/ionic/ionic_lif.h    |  2 +
+ drivers/net/ethernet/pensando/ionic/ionic_stats.c  |  3 +
+ drivers/net/ethernet/pensando/ionic/ionic_txrx.c   | 69 +++++++++++++-------
+ 6 files changed, 74 insertions(+), 24 deletions(-)
+
+
+base-commit: aebb7274476403040d582c61478df8f4a7bf9cd3
+-- 
+2.43.0
+

@@ -1,0 +1,57 @@
+kcl: use the driver's own AMD VSDB parsing on v7.0 to v7.3
+
+The configure test for HAVE_DRM_DISPLAY_INFO_AMD_VSDB only checks that
+display_info->amd_vsdb exists.  The code under it also reads
+drm_amd_vsdb_info.freesync_supported, .min_frame_rate, .max_frame_rate
+and .freesync_vcp_code, which only v7.4 has, and
+display_info->panel_type, which v7.3 added.  On v7.0 to v7.3 the struct
+is there without them and amdgpu_dm_connector.c does not compile: this
+release does not build against v7.2.6 or v7.2.15 as shipped.
+
+Undefine the macro there, so the driver falls back to parsing the block
+itself as it does before v7.0.  The correction lives in a header that backport.h includes first, after
+the build's last copy of config.h, rather than in the m4 test, because
+configure is shipped pre-generated.  A version check is wrong for a distribution
+kernel that backported the members; the right fix is a test for them.
+
+--- a/amd/backport/backport.h
++++ b/amd/backport/backport.h
+@@ -3,6 +3,8 @@
+ #define AMDGPU_BACKPORT_H
+ 
+ #include <linux/version.h>
++/* first: corrects config.h, which the build includes just before this file */
++#include <kcl/kcl_config_fixup.h>
+ #include <linux/kernel.h>
+ /*
+  * <linux/fs.h> only forward-declares struct vfsmount; its definition lives in
+--- /dev/null
++++ b/include/kcl/kcl_config_fixup.h
+@@ -0,0 +1,27 @@
++/* SPDX-License-Identifier: MIT */
++#ifndef AMDKCL_CONFIG_FIXUP_H
++#define AMDKCL_CONFIG_FIXUP_H
++
++#include <linux/version.h>
++
++/*
++ * Corrections to amd/dkms/config/config.h where a configure test says less
++ * than the code relying on it needs.  Included from backport/backport.h,
++ * which the amdgpu objects force-include after their last copy of
++ * config.h: config.h has no include guard and is force-included twice, so
++ * anything undefined earlier would be defined again.
++ */
++
++/*
++ * HAVE_DRM_DISPLAY_INFO_AMD_VSDB is tested as "display_info->amd_vsdb
++ * exists".  The code under it also needs drm_amd_vsdb_info's freesync
++ * members, which arrived in v7.4, and display_info->panel_type, which
++ * arrived in v7.3.  v7.0 to v7.3 have the struct without them, so there
++ * the driver must parse the block itself, as it does on older kernels.
++ */
++#if defined(HAVE_DRM_DISPLAY_INFO_AMD_VSDB) && \
++	LINUX_VERSION_CODE < KERNEL_VERSION(7, 4, 0)
++#undef HAVE_DRM_DISPLAY_INFO_AMD_VSDB
++#endif
++
++#endif

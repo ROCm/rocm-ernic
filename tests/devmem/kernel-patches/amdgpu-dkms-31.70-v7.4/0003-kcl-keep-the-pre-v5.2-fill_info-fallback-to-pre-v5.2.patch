@@ -1,0 +1,27 @@
+kcl: keep the pre-v5.2 drm_fb_helper_fill_info() fallback to pre-v5.2 kernels
+
+The fallback calls drm_fb_helper_fill_fix() and _fill_var(), which only
+kernels before v5.2 export.  It is compiled whenever the configure test
+for drm_fb_helper_fill_info() fails, and on v7.4 that test also fails for
+a kernel built without CONFIG_DRM_FBDEV_EMULATION: the header now declares
+the fbdev helpers only under that option.  Nothing can call the function
+there, so there is nothing to fall back to.
+
+--- a/amd/amdkcl/kcl_drm_fb.c
++++ b/amd/amdkcl/kcl_drm_fb.c
+@@ -36,7 +36,14 @@
+ #include <drm/drm_gem_framebuffer_helper.h>
+ #include <kcl/kcl_drm_fb.h>
+ 
+-#ifndef HAVE_DRM_FB_HELPER_FILL_INFO
++/*
++ * Only for kernels before v5.2 ec8bf1942567, which have the two helpers this
++ * calls.  The test for HAVE_DRM_FB_HELPER_FILL_INFO also fails on a v7.4
++ * kernel built without CONFIG_DRM_FBDEV_EMULATION, where the header no
++ * longer declares the function at all, and nothing can call it.
++ */
++#if !defined(HAVE_DRM_FB_HELPER_FILL_INFO) && \
++	LINUX_VERSION_CODE < KERNEL_VERSION(5, 2, 0)
+ void drm_fb_helper_fill_info(struct fb_info *info,
+ 			     struct drm_fb_helper *fb_helper,
+ 			     struct drm_fb_helper_surface_size *sizes)

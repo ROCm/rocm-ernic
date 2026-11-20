@@ -1,0 +1,41 @@
+amdgpu: follow the v7.4 VGA arbiter and switcheroo interfaces
+
+v7.4-rc1 93d41424caf7 ("PCI/VGA: pass a data pointer to be used in the
+decode callback") gave vga_client_register() a third form: the callback
+takes a void pointer again, as it did before v5.16, and the pointer is the
+last argument.  The existing cookie variant of the callback fits; only the
+call differs, and unregistering is vga_client_unregister().
+
+2350f42c2f46 ("vga-switcheroo: Remove unused interfaces") removed
+vga_switcheroo_client_ops.reprobe.  It was only ever set to NULL here, so
+drop the initializer for every kernel.
+
+--- a/amd/amdgpu/amdgpu_device.c
++++ b/amd/amdgpu/amdgpu_device.c
+@@ -1762,7 +1762,6 @@
+ 
+ static const struct vga_switcheroo_client_ops amdgpu_switcheroo_ops = {
+ 	.set_gpu_state = amdgpu_switcheroo_set_state,
+-	.reprobe = NULL,
+ 	.can_switch = amdgpu_switcheroo_can_switch,
+ };
+ 
+@@ -4258,6 +4257,8 @@
+ 	if ((adev->pdev->class >> 8) == PCI_CLASS_DISPLAY_VGA)
+ #ifdef HAVE_VGA_CLIENT_REGISTER_NOT_PASS_COOKIE
+ 		vga_client_register(adev->pdev, amdgpu_device_vga_set_decode);
++#elif LINUX_VERSION_CODE >= KERNEL_VERSION(7, 4, 0)
++		vga_client_register(adev->pdev, amdgpu_device_vga_set_decode, adev);
+ #else
+ 		vga_client_register(adev->pdev, adev, NULL, amdgpu_device_vga_set_decode);
+ #endif
+@@ -4436,7 +4437,8 @@
+ 		vga_switcheroo_fini_domain_pm_ops(adev->dev);
+ 
+ 	if ((adev->pdev->class >> 8) == PCI_CLASS_DISPLAY_VGA)
+-#ifdef HAVE_VGA_CLIENT_REGISTER_NOT_PASS_COOKIE
++#if defined(HAVE_VGA_CLIENT_REGISTER_NOT_PASS_COOKIE) || \
++	LINUX_VERSION_CODE >= KERNEL_VERSION(7, 4, 0)
+ 		vga_client_unregister(adev->pdev);
+ #else
+ 		vga_client_register(adev->pdev, NULL, NULL, NULL);

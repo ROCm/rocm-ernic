@@ -1,0 +1,70 @@
+// Copyright (C) Advanced Micro Devices, Inc.
+// SPDX-License-Identifier: GPL-2.0-or-later
+//
+// This work is licensed under the terms of the GNU GPL, version 2 or later.
+// See the LICENSE_GPL.md file in the top-level directory.
+//
+// Evidence probe for the GPU-VRAM devmem TX experiment (test/evidence/gpu-vram).
+// Run in the sender guest while devmem_tx_gpu binds and streams.
+//
+//  - pci_p2pdma_distance_many(): the gate amdgpu_dma_buf_attach() uses.
+//    < 0 means "no peer-to-peer", and amdgpu then clears attach->peer2peer.
+//  - amdgpu_dma_buf_attach(): attach->peer2peer as it stands on return.
+//  - amdgpu_dma_buf_pin(): which domain the BO ends up pinned in is decided
+//    there; we only record that it ran.
+//  - ionic_tx_map_frag(): the DMA address the driver writes into a TX
+//    descriptor.  Bucketed by address >> 32, so a GPU BAR address
+//    (0x300_00000000 -> 0x300) is told from System RAM (0x100_00000000 ->
+//    0x100) at a glance.
+
+kretprobe:pci_p2pdma_distance_many
+{
+	@p2pdma_distance_ret[retval] = count();
+}
+
+kprobe:amdgpu_dma_buf_attach
+{
+	@att[tid] = arg1;
+}
+
+kretprobe:amdgpu_dma_buf_attach
+{
+	$a = (struct dma_buf_attachment *)@att[tid];
+	if ($a != 0) {
+		@attach_peer2peer[$a->peer2peer] = count();
+		@attach_ret[retval] = count();
+	}
+	delete(@att[tid]);
+}
+
+kprobe:amdgpu_dma_buf_pin
+{
+	@amdgpu_dma_buf_pin_calls = count();
+}
+
+kretprobe:amdgpu_dma_buf_pin
+{
+	@amdgpu_dma_buf_pin_ret[retval] = count();
+}
+
+kprobe:amdgpu_vram_mgr_alloc_sgt
+{
+	@vram_mgr_alloc_sgt_calls = count();
+}
+
+kprobe:drm_prime_pages_to_sg
+{
+	@prime_pages_to_sg_calls = count();
+}
+
+kretprobe:ionic_tx_map_frag.constprop.0
+{
+	@frag_addr_hi32[retval >> 32] = count();
+	@frag_addr_min = min(retval);
+	@frag_addr_max = max(retval);
+}
+
+END
+{
+	clear(@att);
+}

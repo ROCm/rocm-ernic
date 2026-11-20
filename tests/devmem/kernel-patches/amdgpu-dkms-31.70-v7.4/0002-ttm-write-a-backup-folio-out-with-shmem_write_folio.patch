@@ -1,0 +1,19 @@
+ttm: write a backup folio out with shmem_write_folio() where it exists
+
+v7.3-rc1 commit a8efc69a65fb ("shmem: provide a shmem_write_folio
+wrapper") replaced shmem_writeout() for this caller, and
+address_space_operations.writepage, the fallback here, is gone.  Neither
+configure test for shmem_writeout() matches, so the fallback is what gets
+compiled, and fails.
+
+--- a/ttm/ttm_backup.c
++++ b/ttm/ttm_backup.c
+@@ -171,6 +171,8 @@
+ 			ret = shmem_writeout(to_folio, &wbc);
+ #elif defined(HAVE_SHMEM_WRITEOUT_WANT_3_ARGS)
+ 			ret = shmem_writeout(to_folio, NULL, NULL);
++#elif LINUX_VERSION_CODE >= KERNEL_VERSION(7, 3, 0)
++			ret = shmem_write_folio(to_folio);
+ #else
+ 			ret = mapping->a_ops->writepage(folio_file_page(to_folio, idx + i), NULL);
+ #endif

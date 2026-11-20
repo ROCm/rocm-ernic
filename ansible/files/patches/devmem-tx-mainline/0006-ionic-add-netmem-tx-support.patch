@@ -1,0 +1,79 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Stephen Bates <sbates@raithlin.com>
+Date: Wed, 18 Nov 2026 18:57:00 -0500
+Subject: [RFC PATCH net-next 6/6] ionic: add netmem TX support
+
+Set netdev->netmem_tx to NETMEM_TX_DMA so that a dma-buf can be bound to
+an ionic netdev for transmit (NETDEV_CMD_BIND_TX) and sent from with
+sendmsg(MSG_ZEROCOPY) and SCM_DEVMEM_DMABUF.
+
+The earlier patches did the work the Tx path needed: net_iov frags are no
+longer passed to dma_unmap_page(), and the unreadable skbs the driver
+can't or mustn't send are dropped and counted. The rest of the Tx path
+was already fine:
+
+ - Frags are mapped with skb_frag_dma_map(), on the device the core maps
+   the dma-buf for (the netdev's parent).
+ - The driver never reads or writes frag payload: there is no padding,
+   copybreak or software checksum on Tx, and the hardware timestamp queue
+   uses the same map, post and clean functions.
+ - TSO edits only the headers in the linear area (after skb_cow_head(),
+   which doesn't touch the frags of a zerocopy skb) and splits a frag
+   between segments by address arithmetic.
+ - XDP frames are never net_iov backed, and they record their unmap
+   state in the slots they share with skbs.
+
+An unreadable skb needs the device to do scatter-gather and the L4
+checksum, since the stack can do neither for it. So, like gve, set
+netmem_tx conditionally: only when the device granted both
+IONIC_ETH_HW_TX_SG and IONIC_ETH_HW_TX_CSUM, and the Tx queue has SG
+elements (max_sg_elems is 0 if the queue identify failed, and then every
+skb with a frag would need linearizing). Without netmem_tx the bind
+fails with -EOPNOTSUPP.
+
+This is decided once, before the netdev is registered, as in the other
+drivers. Two things can change later and are not followed:
+
+ - The user can turn the features off. With NETIF_F_SG or
+   NETIF_F_HW_CSUM off the stack drops unreadable skbs: it can neither
+   linearize nor checksum them, and since commit 23fe6ac2e97a ("net:
+   skbuff: make skb_copy_and_csum_bits() report unreadable frags")
+   software GSO fails for them too. The binding stalls until the
+   features are back on.
+
+ - The device can grant less after a firmware reset. ionic_lif_init()
+   then re-posts netdev->features but recomputes neither them nor
+   netmem_tx, so the stack keeps handing the driver SG and
+   CHECKSUM_PARTIAL skbs, unreadable or not, as it does today.
+
+The one limitation that is specific to these skbs is the frag count
+described two patches back: a descriptor takes 16 buffers, and a devmem
+sender using very small pieces gets its packets dropped (and counted in
+tx_unreadable_drop). gve behaves the same way.
+---
+ drivers/net/ethernet/pensando/ionic/ionic_lif.c | 9 +++++++++
+ 1 file changed, 9 insertions(+)
+
+diff --git a/drivers/net/ethernet/pensando/ionic/ionic_lif.c b/drivers/net/ethernet/pensando/ionic/ionic_lif.c
+index 22d1e4b6d61b..f1deee4a4499 100644
+--- a/drivers/net/ethernet/pensando/ionic/ionic_lif.c
++++ b/drivers/net/ethernet/pensando/ionic/ionic_lif.c
+@@ -1642,6 +1642,15 @@ static int ionic_init_nic_features(struct ionic_lif *lif)
+ 	netdev->features |= netdev->hw_features;
+ 	netdev->vlan_features |= netdev->features & ~NETIF_F_VLAN_FEATURES;
+ 
++	/* The stack can neither copy nor checksum the payload of an skb with
++	 * unreadable (net_iov) frags.  Only take them if the device does the
++	 * scatter-gather and the checksum, and its Tx queues have SG elements.
++	 */
++	if ((lif->hw_features & IONIC_ETH_HW_TX_SG) &&
++	    (lif->hw_features & IONIC_ETH_HW_TX_CSUM) &&
++	    lif->qtype_info[IONIC_QTYPE_TXQ].max_sg_elems)
++		netdev->netmem_tx = NETMEM_TX_DMA;
++
+ 	netdev->priv_flags |= IFF_UNICAST_FLT |
+ 			      IFF_LIVE_ADDR_CHANGE;
+ 
+-- 
+2.43.0
+

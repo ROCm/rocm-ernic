@@ -1,0 +1,80 @@
+kcl: find the headers v7.4 moved, at build and at configure time
+
+v7.4-rc1 moved two headers this package includes:
+
+  6ccc5b5fc1d3 drm/fbdev: Move fbdev helpers into client library
+      <drm/drm_fb_helper.h> -> <drm/clients/drm_fbdev_helper.h>
+  1628e34ee666 drm: Rename drm_utils.h to drm_panel_quirks.h
+      <drm/drm_utils.h>     -> <drm/drm_panel_quirks.h>
+
+The build fails on the missing files, but the configure step is the worse
+half: four m4 tests include them, fail to compile for that reason alone,
+and leave six HAVE_* macros undefined (DRM_FB_HELPER_FILL_INFO,
+_GEM_IS_FB, _INIT_2ARGS, _INIT_3ARGS, DRM_GET_PANEL_BACKLIGHT_QUIRK,
+DRM_PANEL_BACKLIGHT_QUIRK_FORCE_PWM), so fallbacks written for old
+kernels get compiled against a new one.
+
+Wrap both the way the package already wraps moved headers: one copy in
+include/kcl/header, which the build searches first, and one in
+amd/dkms/tiny_wrapper/include, which configure does.
+
+--- /dev/null
++++ b/include/kcl/header/drm/drm_fb_helper.h
+@@ -0,0 +1,12 @@
++/* SPDX-License-Identifier: MIT */
++#ifndef _KCL_HEADER_DRM_FB_HELPER_H_H_
++#define _KCL_HEADER_DRM_FB_HELPER_H_H_
++
++/* v7.4-rc1 6ccc5b5fc1d3 moved this to <drm/clients/drm_fbdev_helper.h> */
++#if __has_include_next(<drm/drm_fb_helper.h>)
++#include_next <drm/drm_fb_helper.h>
++#else
++#include <drm/clients/drm_fbdev_helper.h>
++#endif
++
++#endif
+--- /dev/null
++++ b/include/kcl/header/drm/drm_utils.h
+@@ -0,0 +1,12 @@
++/* SPDX-License-Identifier: MIT */
++#ifndef _KCL_HEADER_DRM_UTILS_H_H_
++#define _KCL_HEADER_DRM_UTILS_H_H_
++
++/* v7.4-rc1 1628e34ee666 renamed this to <drm/drm_panel_quirks.h> */
++#if __has_include_next(<drm/drm_utils.h>)
++#include_next <drm/drm_utils.h>
++#else
++#include <drm/drm_panel_quirks.h>
++#endif
++
++#endif
+--- /dev/null
++++ b/amd/dkms/tiny_wrapper/include/drm/drm_fb_helper.h
+@@ -0,0 +1,12 @@
++/* SPDX-License-Identifier: MIT */
++#ifndef _KCL_HEADER_DRM_FB_HELPER_H_H_
++#define _KCL_HEADER_DRM_FB_HELPER_H_H_
++
++/* v7.4-rc1 6ccc5b5fc1d3 moved this to <drm/clients/drm_fbdev_helper.h> */
++#if __has_include_next(<drm/drm_fb_helper.h>)
++#include_next <drm/drm_fb_helper.h>
++#else
++#include <drm/clients/drm_fbdev_helper.h>
++#endif
++
++#endif
+--- /dev/null
++++ b/amd/dkms/tiny_wrapper/include/drm/drm_utils.h
+@@ -0,0 +1,12 @@
++/* SPDX-License-Identifier: MIT */
++#ifndef _KCL_HEADER_DRM_UTILS_H_H_
++#define _KCL_HEADER_DRM_UTILS_H_H_
++
++/* v7.4-rc1 1628e34ee666 renamed this to <drm/drm_panel_quirks.h> */
++#if __has_include_next(<drm/drm_utils.h>)
++#include_next <drm/drm_utils.h>
++#else
++#include <drm/drm_panel_quirks.h>
++#endif
++
++#endif

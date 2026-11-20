@@ -26,9 +26,9 @@ directory and `p4/`) and `ansible/playbooks/p4-tests.yml`, which copies
 `patches/*.patch`.
 
 The subdirectories are optional series applied **on top of** this one, each
-with its own README: `srq/`, `p4/`, `devmem-tx/`, `devmem-rx/` (reference
-only, it is against `v7.4-rc3`) and `rdma-core/` (userspace, not the
-kernel).
+with its own README: `srq/`, `p4/`, `devmem-tx/`, `devmem-tx-mainline/` and
+`devmem-rx/` (both for reference only: they are against `v7.4-rc3`, and
+nothing applies them) and `rdma-core/` (userspace, not the kernel).
 
 ## `--patches-dir` replaces, it does not add
 
@@ -69,8 +69,31 @@ and fail the build. The `ionic-patches` workflow checks that the patched
 tree really contains both fixes, so a drop that is premature is caught
 there rather than in a guest.
 
-**Neither has been run on `v7.2.6` itself.** 0003 was verified at runtime
-against `v7.4-rc3`, and 0004 in a variant module; here both were checked
-only by applying them to `v7.2.6` and building `ionic.ko` and
-`ionic_rdma.ko` with `W=1` and no warnings, alone and under the `srq`, `p4`
-and `devmem-tx` series. The hunks are identical on both bases.
+**Both have been run on the `v7.2.6` sources**, built as an external
+module on a `v7.2.15` guest kernel, in two guests of this emulator. Two
+modules were compared that differ in these two hunks only, `srq/0001` to
+`0009` plus `p4`, and `srq/0001` to `0011` plus `p4`:
+
+- Without 0003, 5000 of 10,000 echoed 8000-byte datagrams at MTU 9000
+  had their last 426 bytes wrong, with `XDP_TX` and with `XDP_REDIRECT`,
+  and one of the redirected ones carried stale kernel memory. With it, all 10,000 were intact with
+  each.
+- Without 0004, one `ifdown; ethtool -L 2; ifup; ethtool -L 4` left 12
+  DMA allocations and two page pools behind, the unload reported
+  `pending DMA allocations while released from device`, and a page-pool
+  dump afterwards read through the orphan pools' stale NAPI pointers.
+  With it, nine such sequences over three loads left nothing behind.
+- The module with both passed TCP with the payload hashed at the
+  receiver, `rping` and `ib_send_bw`, and 28 queue count, ring size, MTU
+  and down/up changes under hash-verified TCP streams in both
+  directions, with no DMA-API or other warning in the kernel log.
+
+Not run there: KASAN (that kernel has none, so the use-after-free report
+quoted in 0004 is from `v7.4-rc3`); the route a guest takes,
+`fetch-ionic-sources.sh` and DKMS (the patches were applied with
+`git apply` and built with `make M=`); the stock `v7.2.6` kernel; and the
+base series without `srq/`. Under `devmem-tx`, and alone, both are
+checked only by applying them to `v7.2.6` and building `ionic.ko` and
+`ionic_rdma.ko` with `W=1` and no warnings. The hunks are identical on
+`v7.2.6` and `v7.4-rc3`. The report is
+[`test-ionic-fixes-7.2.6.md`](../../../docs/devmem/notes/test-ionic-fixes-7.2.6.md).

@@ -88,7 +88,19 @@ breathe_default_members = ("members",)
 # from the C sources.  They are included into monitoring.rst, not pages
 # of their own, and Sphinx warns about any .rst it collects that no
 # toctree names.  An excluded file can still be ``include``d.
-exclude_patterns = ["_build", "Thumbs.db", ".DS_Store", "generated"]
+#
+# devmem/notes/ holds the working notes of the devmem TCP proof of
+# concept (see devmem.rst). They are Markdown, which no extension here
+# parses, and are linked to in the repository rather than built into
+# the site; the exclusion keeps it that way if a Markdown parser is
+# ever added.
+exclude_patterns = [
+    "_build",
+    "Thumbs.db",
+    ".DS_Store",
+    "generated",
+    "devmem/notes",
+]
 templates_path = []
 
 # Kernel driver headers reuse type names across files and

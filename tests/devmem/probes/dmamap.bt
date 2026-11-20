@@ -1,0 +1,21 @@
+// Copyright (C) Advanced Micro Devices, Inc.
+// SPDX-License-Identifier: GPL-2.0-or-later
+//
+// This work is licensed under the terms of the GNU GPL, version 2 or later.
+// See the LICENSE_GPL.md file in the top-level directory.
+//
+// DMA-API calls made inside ionic_start_xmit, by skb kind (independent recount of "one map per skb, none for frags")
+kprobe:ionic_start_xmit
+{
+	$skb = (struct sk_buff *)arg0;
+	$sh = (struct skb_shared_info *)($skb->head + $skb->end);
+	@in[tid] = $skb->unreadable ? 2 : 1;
+	if ($skb->unreadable) { @unreadable_xmit_calls = count(); @unreadable_frags_total = sum($sh->nr_frags); }
+	else { @readable_xmit_calls = count(); }
+}
+kretprobe:ionic_start_xmit { delete(@in[tid]); }
+kprobe:dma_map_page_attrs, kprobe:dma_map_phys, kprobe:dma_map_sg_attrs
+{
+	if (@in[tid] == 2) { @dma_map_calls_inside_unreadable_xmit[func] = count(); }
+}
+kprobe:dma_unmap_page_attrs, kprobe:dma_unmap_phys { @dma_unmap_calls_total[func, comm] = count(); }

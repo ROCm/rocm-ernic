@@ -139,6 +139,14 @@ The suites, each registered with CTest:
 
 See `docs/testing.rst` for what each covers and how to run one directly.
 
+### devmem/
+
+The test aids of the devmem TCP proof of concept (`docs/devmem.rst`):
+guest-side programs, bpftrace probes, the scripts that drove two-guest
+stacks, and kernel patches. CMake builds none of it and no `ctest` test
+runs it; [`devmem/README.md`](devmem/README.md) says what each part is
+and how to build the programs for a guest.
+
 ## Running Tests
 
 ### Quick Local Test

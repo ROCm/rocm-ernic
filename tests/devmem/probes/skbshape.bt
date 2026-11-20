@@ -1,0 +1,39 @@
+// Copyright (C) Advanced Micro Devices, Inc.
+// SPDX-License-Identifier: GPL-2.0-or-later
+//
+// This work is licensed under the terms of the GNU GPL, version 2 or later.
+// See the LICENSE_GPL.md file in the top-level directory.
+//
+// Shape of skbs the ionic driver hands to GRO on rocm-ernic0.
+// gro_receive_skb = napi_gro_receive(): Ethernet header already pulled, so
+//   headlen = linear bytes after it; data_len = bytes in frags.
+// napi_gro_frags(): frag-only skb (the driver's non-HDS, non-copybreak path).
+kprobe:gro_receive_skb
+{
+    $skb = (struct sk_buff *)arg1;
+    if (strncmp($skb->dev->name, "rocm-ernic0", 11) == 0) {
+        $head = $skb->len - $skb->data_len;
+        if ($skb->data_len > 0) {
+            @recv_frag_pkts_by_headlen[$head] = count();
+            @recv_frag_pkts_nr_frags = lhist(((struct skb_shared_info *)($skb->head + $skb->end))->nr_frags, 0, 18, 1);
+            @recv_frag_pkts_unreadable[$skb->unreadable] = count();
+        } else {
+            @recv_linear_only_by_len = hist($skb->len);
+        }
+        @recv_ip_summed[$skb->ip_summed] = count();
+    }
+}
+kprobe:napi_gro_frags
+{
+    $skb = ((struct napi_struct *)arg0)->skb;
+    if (strncmp($skb->dev->name, "rocm-ernic0", 11) == 0) {
+        @gro_frags_pkts_by_headlen[$skb->len - $skb->data_len] = count();
+        @gro_frags_ip_summed[$skb->ip_summed] = count();
+    }
+}
+kprobe:tcp_v4_rcv
+{
+    $skb = (struct sk_buff *)arg0;
+    if (strncmp($skb->dev->name, "rocm-ernic0", 11) == 0) { @tcp_v4_rcv_skb_len = hist($skb->len); }
+}
+interval:s:$1 { exit(); }

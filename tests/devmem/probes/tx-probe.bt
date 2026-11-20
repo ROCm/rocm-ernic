@@ -1,0 +1,86 @@
+// Copyright (C) Advanced Micro Devices, Inc.
+// SPDX-License-Identifier: GPL-2.0-or-later
+//
+// This work is licensed under the terms of the GNU GPL, version 2 or later.
+// See the LICENSE_GPL.md file in the top-level directory.
+//
+// Sender-guest probe for devmem TX tests: what did the ionic driver get?
+// Run: bpftrace probe.bt   (SIGINT prints the maps)
+kprobe:ionic_start_xmit
+{
+	$skb = (struct sk_buff *)arg0;
+	$sh = (struct skb_shared_info *)($skb->head + $skb->end);
+	$nf = $sh->nr_frags;
+	if ($skb->unreadable) {
+		@xmit_unreadable_skbs = count();
+		@xmit_unreadable_payload_bytes = sum($skb->data_len);
+		@unreadable_nr_frags = lhist($nf, 0, 20, 1);
+		@unreadable_is_gso[$sh->gso_size > 0] = count();
+		@unreadable_ip_summed[$skb->ip_summed] = count();
+		@unreadable_headlen = lhist($skb->len - $skb->data_len, 0, 160, 16);
+		if ($nf == 0) {
+			@unreadable_with_no_frags = count();
+		} else {
+			$nm = (uint64)$sh->frags[0].netmem;
+			@unreadable_frag0_netmem_is_net_iov[$nm & 1] = count();
+		}
+	} else {
+		@xmit_readable_skbs = count();
+		@xmit_readable_payload_bytes = sum($skb->len);
+	}
+}
+
+// DMA addresses the driver takes for the frags of unreadable skbs: the
+// return value of ionic_tx_map_frag() is what goes into the descriptor.
+kprobe:ionic_tx_map_skb
+{
+	$skb = (struct sk_buff *)arg1;
+	@un[cpu] = $skb->unreadable ? 2 : 1;
+	// destination port of the owning socket, to tell this test's flow from
+	// retransmissions of an earlier test's orphaned connection
+	$sk = $skb->sk;
+	$dp = $sk != 0 ? (uint64)$sk->__sk_common.skc_dport : 0;
+	@port[cpu] = (($dp & 0xff) << 8) | (($dp >> 8) & 0xff);
+}
+kretprobe:ionic_tx_map_skb { @un[cpu] = 0; }
+kretprobe:ionic_tx_map_frag.constprop.0
+{
+	if (@un[cpu] == 2) {
+		@devmem_frag_pfn[@port[cpu], retval >> 12] = count();
+		@devmem_frag_maps = count();
+	} else {
+		@readable_frag_maps = count();
+	}
+}
+// DMA-API mapping calls made while the driver maps an skb (the linear
+// header is one per skb; a devmem frag must not add any).
+kprobe:dma_map_page_attrs,
+kprobe:dma_map_phys
+{
+	if (@un[cpu] == 2) { @dma_map_calls_for_unreadable_skb[func] = count(); }
+	if (@un[cpu] == 1) { @dma_map_calls_for_readable_skb[func] = count(); }
+}
+// Unreadable skbs freed as drops, with reason and stack.
+tracepoint:skb:kfree_skb
+{
+	$s = (struct sk_buff *)args->skbaddr;
+	if ($s->unreadable) {
+		@dropped_unreadable[args->reason, kstack(7)] = count();
+	}
+}
+// software GSO and the zero-filling copy helper on unreadable skbs
+kprobe:skb_segment
+{
+	$s = (struct sk_buff *)arg0;
+	if ($s->unreadable) { @skb_segment_unreadable = count(); }
+}
+kprobe:skb_copy_and_csum_bits
+{
+	$s = (struct sk_buff *)arg0;
+	if ($s->unreadable) { @skb_copy_and_csum_bits_unreadable = count(); }
+}
+// binding lifetime
+kprobe:net_devmem_bind_dmabuf { @binding_bind_calls = count(); }
+kprobe:net_devmem_unbind_dmabuf { @binding_unbind_calls = count(); }
+kprobe:__net_devmem_dmabuf_binding_free { @binding_free_calls = count(); }
+END { clear(@un); clear(@port); }

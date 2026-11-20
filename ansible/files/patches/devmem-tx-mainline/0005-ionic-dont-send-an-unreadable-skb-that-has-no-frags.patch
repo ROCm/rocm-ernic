@@ -1,0 +1,61 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Stephen Bates <sbates@raithlin.com>
+Date: Wed, 18 Nov 2026 18:56:59 -0500
+Subject: [RFC PATCH not-for-net-next 5/6] ionic: don't send an unreadable skb that has no frags
+
+Not for net-next, where commit 23fe6ac2e97a ("net: skbuff: make
+skb_copy_and_csum_bits() report unreadable frags") fixes this in the
+core. This is for trees without that commit: v7.4-rc3, which this series
+is based on for now, and backports.
+
+The payload of an skb with unreadable frags (a devmem skb) is only in
+those frags: it can't be copied. So an skb that is marked unreadable and
+has no frags does not carry what its sender put in it.
+
+Without the commit above the stack makes such skbs. With NETIF_F_SG and
+NETIF_F_HW_CSUM both off, software GSO of an unreadable skb takes the
+copy path of skb_segment(), where skb_copy_and_csum_bits() fills each
+segment with zeroes and reports no error. The segments get a valid
+checksum from tcp_gso_segment() and keep the unreadable mark, which
+__copy_skb_header() copies. validate_xmit_skb() lets them through to the
+driver, and the peer receives zeroes as data. On a device that has
+netmem_tx set, "ethtool -K $dev sg off tx off" under a devmem TCP
+connection that is already established gets there.
+
+Following the features with netmem_tx doesn't close this in a driver:
+qdiscs that segment (cake, tbf, taprio, netem, dualpi2) do it at enqueue
+with the features of that moment, so the segments can be sent after the
+features changed again. And every driver sets netmem_tx once, before
+the netdev is registered; the xmit path reads it with no lock.
+
+Drop these skbs in ionic_tx_descs_needed(), which both xmit functions
+call first. They are counted in tx_unreadable_drop.
+
+Derived from the source; I have not seen the zeroes on the wire.
+---
+ drivers/net/ethernet/pensando/ionic/ionic_txrx.c | 9 +++++++++
+ 1 file changed, 9 insertions(+)
+
+diff --git a/drivers/net/ethernet/pensando/ionic/ionic_txrx.c b/drivers/net/ethernet/pensando/ionic/ionic_txrx.c
+index 5a06fde24992..22a4eab750d3 100644
+--- a/drivers/net/ethernet/pensando/ionic/ionic_txrx.c
++++ b/drivers/net/ethernet/pensando/ionic/ionic_txrx.c
+@@ -1715,6 +1715,15 @@ static int ionic_tx_descs_needed(struct ionic_queue *q, struct sk_buff *skb)
+ 	int ndescs;
+ 	int err;
+ 
++	/* The payload of an unreadable skb is in its frags, so one without
++	 * frags is not what its sender made.  The stack makes them when it
++	 * segments an unreadable GSO skb for a device with NETIF_F_SG and
++	 * NETIF_F_HW_CSUM off: it can't copy the payload and puts zeroes in
++	 * its place.  Don't send those.
++	 */
++	if (unlikely(!skb_frags_readable(skb) && !nr_frags))
++		return -EFAULT;
++
+ 	/* Each desc is mss long max, so a descriptor for each gso_seg */
+ 	if (skb_is_gso(skb)) {
+ 		ndescs = skb_shinfo(skb)->gso_segs;
+-- 
+2.43.0
+

@@ -1,0 +1,17 @@
+# Copyright (C) Advanced Micro Devices, Inc.
+# SPDX-License-Identifier: GPL-2.0-or-later
+#
+# This work is licensed under the terms of the GNU GPL, version 2 or later.
+# See the LICENSE_GPL.md file in the top-level directory.
+#
+# Kernel / selftest / rocm-ernic build container for the ionic devmem test bed.
+# Ubuntu 26.04 (resolute) so the compiler matches the guests' gcc.
+FROM ubuntu:26.04
+ARG AMD_CERT=""
+ENV DEBIAN_FRONTEND=noninteractive
+RUN apt-get update && apt-get install -y --no-install-recommends \
+      build-essential bc bison flex libssl-dev libelf-dev libdw-dev dwarves \
+      debhelper rsync kmod cpio zstd xz-utils lz4 python3 python3-yaml git \
+      fakeroot dpkg-dev libncurses-dev ca-certificates patch file \
+      libc6-dev pkg-config \
+    && apt-get clean

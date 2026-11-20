@@ -254,8 +254,56 @@
   `v7.4-rc3`, not the `v7.2.6` that `IONIC_KERNEL_REF` pins, so no role
   or variable can build a guest with it, and one of its patches defines
   the invented device interface, which must not go upstream. With it,
-  two guests of this emulator have received 1.5 GB into a dma-buf. See
-  the directory's `README.md`.
+  two guests of this emulator have received 1.5 GB into a dma-buf. It
+  is based on the mainline form of the XDP frag offset fix (`0003` of
+  the base series) and then on `devmem-tx-mainline`, and does not apply
+  without the fix: as first carried here it was made without it and
+  repeated the bug in its own XDP code. See the directory's `README.md`.
+* **A documentation page for devmem TCP on the emulated ionic NIC**,
+  `docs/devmem.rst`: what the proof of concept showed, with which kernel
+  and which patches each part works, what does not, and how to try a
+  transmit. It names the limits a user will meet: a devmem send in
+  pieces smaller than about a fifteenth of the MSS (roughly 97 bytes at
+  MTU 1500, 600 at MTU 9000) can stall its own connection for good (the
+  device takes 16 buffers per packet); unloading `ionic` while a dma-buf
+  is bound for transmit crashes a kernel that lacks net-next's
+  `ede1618064a9`; sending from GPU VRAM rather than a copy in system
+  memory needs a guest kernel with the core's peer-to-peer dma-buf
+  attach (`69ab87acc614`, in `v7.4-rc1`; shown on `v7.4-rc3` and on
+  `v7.2.6` with a hand backport that is not carried here) and
+  `CONFIG_PCI_P2PDMA`, the fork of QEMU and, as the test stack is laid
+  out, an AMD Zen host; on a stock `v7.2.x` kernel, binding HIP memory
+  for transmit moves it out of VRAM and HIP's next read of it can fail
+  or hang; the `devmem-rx` series needs the XDP frag offset fix applied
+  beneath it; and receiving works against the emulator only. Nothing in it has
+  run on ionic hardware.
+* The mainline form of the devmem transmit series,
+  `ansible/files/patches/devmem-tx-mainline/`: the six patches and cover
+  letter against `v7.4-rc3` that `devmem-tx` is the backport of and
+  `devmem-rx` is based on. For reference only, like `devmem-rx`: it does
+  not apply to the `v7.2.6` sources, and no role, variable or CI job
+  uses it. Like every patch under that tree it is installed in
+  `share/rocm-ernic/patches/`. Its cover letter still says the series was
+  only built; see the directory's `README.md` for what has been run
+  since.
+* **The test aids and working notes of the devmem TCP proof of concept**,
+  so that its results can be read and repeated:
+  * `tests/devmem/`: the guest-side test programs (`devmem_tx`, which
+    sends from a dma-buf and whose receiver checks every byte, a variant
+    that takes the buffer from an amdgpu device, an independent sender
+    and receiver, an XDP echo program), bpftrace probes, the host
+    scripts that drove the two-guest stacks, the tools the patch series
+    and the Tx and Rx golden frames were made and checked with, and
+    kernel patches: a `v7.2.15` backport of the net-next fix for the
+    unload crash (built, not booted), the two ionic fixes of the base
+    series in their mainline form, the amdgpu changes the GPU runs
+    needed on `v7.4`, and test-only fault knobs for ionic. CMake builds
+    none of it and no `ctest` test runs it; the scripts assume the host
+    they were written on. `tests/devmem/README.md` says how to build the
+    programs and what state the files are in.
+  * `docs/devmem/notes/`: the studies, design notes and test reports,
+    as written. They are not built into the documentation site; start
+    from their `README.md`, which says how to read them.
 * NIC profiles have an `[rx]` section with one key, `header_split`
   (`off` or `on`; `off` in `compat`), and there is a built-in
   `header-split` profile that sets it. `--print-profile` now prints the

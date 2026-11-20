@@ -14,4 +14,6 @@ skip = ./.git,./.claude/settings.local.json,./ansible/.ansible,*.patch
 
 # AER is the NVMe Asynchronous Event Request, not a misspelling of "are".
 # inout is a P4 parameter direction, used throughout tests/data/p4/src.
-ignore-words-list = clen,VAs,TRIMed,AER,inout
+# xdpf is the kernel's name for a struct xdp_frame pointer, and renderD the
+# stem of a DRM render node (/dev/dri/renderD*); docs/devmem/notes quote both.
+ignore-words-list = clen,VAs,TRIMed,AER,inout,xdpf,renderD

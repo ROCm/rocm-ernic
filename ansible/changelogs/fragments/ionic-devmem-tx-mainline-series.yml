@@ -1,0 +1,13 @@
+# Copyright (c) Advanced Micro Devices, Inc. All rights reserved.
+#
+# SPDX-License-Identifier: MIT
+
+---
+minor_changes:
+  - >-
+    New ionic patch series ``files/patches/devmem-tx-mainline``, for
+    reference only: the netmem (devmem TCP) Tx series as it would be
+    posted upstream, against ``v7.4-rc3``.  ``files/patches/devmem-tx``
+    is its backport to the ``v7.2.6`` the collection's sources are
+    fetched at, and ``files/patches/devmem-rx`` is based on it.  It does
+    not apply to those sources, so no role or variable applies it.

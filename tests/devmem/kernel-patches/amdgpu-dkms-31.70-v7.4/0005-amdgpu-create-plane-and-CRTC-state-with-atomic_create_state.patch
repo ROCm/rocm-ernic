@@ -1,0 +1,226 @@
+amdgpu: create plane and CRTC state with atomic_create_state on v7.4
+
+v7.4-rc1 5589ef09f93b ("drm/plane: Remove reset") and its CRTC twin
+removed the reset callbacks and drm_atomic_helper_{plane,crtc}_reset() in
+favour of atomic_create_state, which returns the new state instead of
+installing it.  Port the four upstream conversions:
+
+  be34074931aa drm/amdgpu: vkms: Switch to drm_atomic_helper_crtc_create_state
+  b5939c6999f9 drm/amdgpu: Convert to atomic_create_state
+  32fbec62a3e9 drm/amdgpu: dm: Convert to atomic_create_state
+  2bcec01cf105 drm/amdgpu_dm: Convert to atomic_create_state
+
+The plane function here allocates three more objects than upstream's, so
+it is the package's own body with upstream's shape.  The CRTC error path
+cannot call amdgpu_dm_ism_fini(), which this release does not have.  The
+KUnit tests under tests/ still name the reset functions and are not
+converted; they are not built unless the kernel has CONFIG_KUNIT.
+
+--- a/amd/amdgpu/amdgpu_vkms.c
++++ b/amd/amdgpu/amdgpu_vkms.c
+@@ -121,7 +121,11 @@
+ 	.set_config             = drm_atomic_helper_set_config,
+ 	.destroy                = drm_crtc_cleanup,
+ 	.page_flip              = drm_atomic_helper_page_flip,
++#if LINUX_VERSION_CODE >= KERNEL_VERSION(7, 4, 0)
++	.atomic_create_state    = drm_atomic_helper_crtc_create_state,
++#else
+ 	.reset                  = drm_atomic_helper_crtc_reset,
++#endif
+ 	.atomic_duplicate_state = drm_atomic_helper_crtc_duplicate_state,
+ 	.atomic_destroy_state   = drm_atomic_helper_crtc_destroy_state,
+ #ifndef DRM_CRTC_VBLANK_TIMER_FUNCS
+@@ -287,7 +291,11 @@
+ 	.update_plane		= drm_atomic_helper_update_plane,
+ 	.disable_plane		= drm_atomic_helper_disable_plane,
+ 	.destroy		= drm_plane_cleanup,
++#if LINUX_VERSION_CODE >= KERNEL_VERSION(7, 4, 0)
++	.atomic_create_state	= drm_atomic_helper_plane_create_state,
++#else
+ 	.reset			= drm_atomic_helper_plane_reset,
++#endif
+ 	.atomic_duplicate_state = drm_atomic_helper_plane_duplicate_state,
+ 	.atomic_destroy_state	= drm_atomic_helper_plane_destroy_state,
+ };
+--- a/amd/display/amdgpu_dm/amdgpu_dm_crtc.c
++++ b/amd/display/amdgpu_dm/amdgpu_dm_crtc.c
+@@ -493,6 +493,21 @@
+ }
+ EXPORT_IF_KUNIT(amdgpu_dm_crtc_destroy);
+ 
++#if LINUX_VERSION_CODE >= KERNEL_VERSION(7, 4, 0)
++STATIC_IFN_KUNIT struct drm_crtc_state *amdgpu_dm_crtc_create_state(struct drm_crtc *crtc)
++{
++	struct dm_crtc_state *state;
++
++	state = kzalloc_obj(*state);
++	if (!state)
++		return ERR_PTR(-ENOMEM);
++
++	__drm_atomic_helper_crtc_state_init(&state->base, crtc);
++
++	return &state->base;
++}
++EXPORT_IF_KUNIT(amdgpu_dm_crtc_create_state);
++#else
+ STATIC_IFN_KUNIT void amdgpu_dm_crtc_reset_state(struct drm_crtc *crtc)
+ {
+ 	struct dm_crtc_state *state;
+@@ -507,6 +522,7 @@
+ 	__drm_atomic_helper_crtc_reset(crtc, &state->base);
+ }
+ EXPORT_IF_KUNIT(amdgpu_dm_crtc_reset_state);
++#endif
+ 
+ #ifdef CONFIG_DEBUG_FS
+ STATIC_IFN_KUNIT int amdgpu_dm_crtc_late_register(struct drm_crtc *crtc)
+@@ -584,7 +600,11 @@
+ 
+ /* Implemented only the options currently available for the driver */
+ static const struct drm_crtc_funcs amdgpu_dm_crtc_funcs = {
++#if LINUX_VERSION_CODE >= KERNEL_VERSION(7, 4, 0)
++	.atomic_create_state = amdgpu_dm_crtc_create_state,
++#else
+ 	.reset = amdgpu_dm_crtc_reset_state,
++#endif
+ 	.destroy = amdgpu_dm_crtc_destroy,
+ #ifndef HAVE_STRUCT_DRM_CRTC_FUNCS_GAMMA_SET_OPTIONAL
+     .gamma_set = drm_atomic_helper_legacy_gamma_set,
+@@ -819,9 +839,25 @@
+ 
+ 	drm_crtc_helper_add(&acrtc->base, &amdgpu_dm_crtc_helper_funcs);
+ 
++#if LINUX_VERSION_CODE >= KERNEL_VERSION(7, 4, 0)
++	/* Create the crtc state */
++	if (acrtc->base.funcs->atomic_create_state) {
++		struct drm_crtc_state *crtc_state;
++
++		crtc_state = acrtc->base.funcs->atomic_create_state(&acrtc->base);
++		if (IS_ERR(crtc_state)) {
++			res = PTR_ERR(crtc_state);
++			drm_crtc_cleanup(&acrtc->base);
++			goto fail;
++		}
++
++		acrtc->base.state = crtc_state;
++	}
++#else
+ 	/* Create (reset) the plane state */
+ 	if (acrtc->base.funcs->reset)
+ 		acrtc->base.funcs->reset(&acrtc->base);
++#endif
+ 
+ 	acrtc->max_cursor_width = dm->adev->dm.dc->caps.max_cursor_size;
+ 	acrtc->max_cursor_height = dm->adev->dm.dc->caps.max_cursor_size;
+--- a/amd/display/amdgpu_dm/amdgpu_dm_crtc.h
++++ b/amd/display/amdgpu_dm/amdgpu_dm_crtc.h
+@@ -50,7 +50,11 @@
+ 				  struct drm_crtc_state *state);
+ struct drm_crtc_state *amdgpu_dm_crtc_duplicate_state(struct drm_crtc *crtc);
+ void amdgpu_dm_crtc_destroy(struct drm_crtc *crtc);
++#if LINUX_VERSION_CODE >= KERNEL_VERSION(7, 4, 0)
++struct drm_crtc_state *amdgpu_dm_crtc_create_state(struct drm_crtc *crtc);
++#else
+ void amdgpu_dm_crtc_reset_state(struct drm_crtc *crtc);
++#endif
+ int amdgpu_dm_crtc_count_crtc_active_planes(struct drm_crtc_state *new_crtc_state);
+ void amdgpu_dm_crtc_update_crtc_active_planes(struct drm_crtc *crtc,
+ 					      struct drm_crtc_state *new_crtc_state);
+--- a/amd/display/amdgpu_dm/amdgpu_dm_plane.c
++++ b/amd/display/amdgpu_dm/amdgpu_dm_plane.c
+@@ -1850,6 +1850,38 @@
+ #endif
+ };
+ 
++#if LINUX_VERSION_CODE >= KERNEL_VERSION(7, 4, 0)
++STATIC_IFN_KUNIT struct drm_plane_state *
++amdgpu_dm_plane_drm_plane_create_state(struct drm_plane *plane)
++{
++	struct dm_plane_state *amdgpu_state;
++
++	amdgpu_state = kzalloc_obj(*amdgpu_state);
++	if (!amdgpu_state)
++		return ERR_PTR(-ENOMEM);
++
++	amdgpu_state->flip_addr = kzalloc_obj(*amdgpu_state->flip_addr);
++	amdgpu_state->scaling_info = kzalloc_obj(*amdgpu_state->scaling_info);
++	amdgpu_state->plane_info = kzalloc_obj(*amdgpu_state->plane_info);
++	if (!amdgpu_state->flip_addr || !amdgpu_state->scaling_info ||
++	    !amdgpu_state->plane_info) {
++		kfree(amdgpu_state->flip_addr);
++		kfree(amdgpu_state->scaling_info);
++		kfree(amdgpu_state->plane_info);
++		kfree(amdgpu_state);
++		return ERR_PTR(-ENOMEM);
++	}
++
++	__drm_atomic_helper_plane_state_init(&amdgpu_state->base, plane);
++	amdgpu_state->degamma_tf = AMDGPU_TRANSFER_FUNCTION_DEFAULT;
++	amdgpu_state->hdr_mult = AMDGPU_HDR_MULT_DEFAULT;
++	amdgpu_state->shaper_tf = AMDGPU_TRANSFER_FUNCTION_DEFAULT;
++	amdgpu_state->blend_tf = AMDGPU_TRANSFER_FUNCTION_DEFAULT;
++
++	return &amdgpu_state->base;
++}
++EXPORT_IF_KUNIT(amdgpu_dm_plane_drm_plane_create_state);
++#else
+ STATIC_IFN_KUNIT void amdgpu_dm_plane_drm_plane_reset(struct drm_plane *plane)
+ {
+ 	struct dm_plane_state *amdgpu_state;
+@@ -1880,6 +1912,7 @@
+ 	amdgpu_state->blend_tf = AMDGPU_TRANSFER_FUNCTION_DEFAULT;
+ }
+ EXPORT_IF_KUNIT(amdgpu_dm_plane_drm_plane_reset);
++#endif
+ 
+ STATIC_IFN_KUNIT struct drm_plane_state *
+ amdgpu_dm_plane_drm_plane_duplicate_state(struct drm_plane *plane)
+@@ -2266,7 +2299,11 @@
+ 	.update_plane	= drm_atomic_helper_update_plane,
+ 	.disable_plane	= drm_atomic_helper_disable_plane,
+ 	.destroy	= drm_plane_helper_destroy,
++#if LINUX_VERSION_CODE >= KERNEL_VERSION(7, 4, 0)
++	.atomic_create_state = amdgpu_dm_plane_drm_plane_create_state,
++#else
+ 	.reset = amdgpu_dm_plane_drm_plane_reset,
++#endif
+ 	.atomic_duplicate_state = amdgpu_dm_plane_drm_plane_duplicate_state,
+ 	.atomic_destroy_state = amdgpu_dm_plane_drm_plane_destroy_state,
+ #ifdef HAVE_DRM_FORMAT_INFO_MODIFIER_SUPPORTED
+@@ -2386,9 +2423,22 @@
+ #endif
+ #endif
+ 
++#if LINUX_VERSION_CODE >= KERNEL_VERSION(7, 4, 0)
++	/* Create the plane state */
++	if (plane->funcs->atomic_create_state) {
++		struct drm_plane_state *plane_state;
++
++		plane_state = plane->funcs->atomic_create_state(plane);
++		if (IS_ERR(plane_state))
++			return PTR_ERR(plane_state);
++
++		plane->state = plane_state;
++	}
++#else
+ 	/* Create (reset) the plane state */
+ 	if (plane->funcs->reset)
+ 		plane->funcs->reset(plane);
++#endif
+ 
+ 	return 0;
+ }
+--- a/amd/display/amdgpu_dm/amdgpu_dm_plane.h
++++ b/amd/display/amdgpu_dm/amdgpu_dm_plane.h
+@@ -121,7 +121,11 @@
+ int amdgpu_dm_plane_atomic_check(struct drm_plane *plane,
+ 				 struct drm_atomic_commit *state);
+ void amdgpu_dm_plane_panic_flush(struct drm_plane *plane);
++#if LINUX_VERSION_CODE >= KERNEL_VERSION(7, 4, 0)
++struct drm_plane_state *amdgpu_dm_plane_drm_plane_create_state(struct drm_plane *plane);
++#else
+ void amdgpu_dm_plane_drm_plane_reset(struct drm_plane *plane);
++#endif
+ struct drm_plane_state *amdgpu_dm_plane_drm_plane_duplicate_state(struct drm_plane *plane);
+ void amdgpu_dm_plane_drm_plane_destroy_state(struct drm_plane *plane,
+ 					     struct drm_plane_state *state);

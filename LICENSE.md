@@ -36,7 +36,8 @@ READMEs in `ansible/files/patches/`.
 The emulator itself is `GPL-2.0-or-later` (see `LICENSE_GPL.md`):
 
 * Everything under `src/` and `tests/`, and the fuzz harnesses in
-  `nix/analysis/fuzz/`, which build against `src/`.
+  `nix/analysis/fuzz/`, which build against `src/`. The kernel patches
+  under `tests/devmem/kernel-patches/` are the exception, below.
 
 * The files under `src/pvrdma/` were imported from the QEMU project
   (`https://gitlab.com/qemu-project/qemu`). The VMware/Linux uAPI header
@@ -56,11 +57,14 @@ The READMEs and the `.clang-format` in `third-party/` are ours, and MIT.
 The patches under `ansible/files/patches/` modify code from other projects
 and are licensed under the terms of the files they modify:
 
-* `ansible/files/patches/srq/` and the patch at the top of
-  `ansible/files/patches/` modify the Linux
-  ionic drivers. The RDMA driver in `drivers/infiniband/hw/ionic/` is
-  `GPL-2.0`, the uAPI header `include/uapi/rdma/ionic-abi.h` is
-  `GPL-2.0 WITH Linux-syscall-note`, and the Ethernet driver's
+* The patches at the top of `ansible/files/patches/` and those in its
+  `srq/`, `p4/`, `devmem-tx/`, `devmem-tx-mainline/` and `devmem-rx/`
+  directories modify the Linux ionic drivers, and one of them the
+  driver's page in the kernel's documentation. The Ethernet driver in
+  `drivers/net/ethernet/pensando/ionic/` and the RDMA driver in
+  `drivers/infiniband/hw/ionic/` are `GPL-2.0`, the uAPI header
+  `include/uapi/rdma/ionic-abi.h` is `GPL-2.0 WITH Linux-syscall-note`,
+  and the Ethernet driver's
   `drivers/net/ethernet/pensando/ionic/ionic_if.h` is
   `(GPL-2.0 OR Linux-OpenIB) OR BSD-2-Clause`.
 
@@ -68,6 +72,26 @@ and are licensed under the terms of the files they modify:
   `providers/ionic/`, which is `GPL-2.0 OR Linux-OpenIB`, and rdma-core's
   copy of the uAPI header in `kernel-headers/rdma/ionic-abi.h`, which is
   `GPL-2.0 WITH Linux-syscall-note`.
+
+The patches under `tests/devmem/kernel-patches/`, test aids of the devmem
+TCP proof of concept, are likewise licensed under the terms of the files
+they modify:
+
+* `ionic-mainline-fixes/` and `ionic-test-knobs/` modify the Linux ionic
+  Ethernet driver, which is `GPL-2.0`.
+
+* `net-core-v7.2.15/` modifies the Linux networking core:
+  `net/core/devmem.c` and `devmem.h`, which are `GPL-2.0-or-later`, and
+  `net/core/netdev-genl.c`, which is `GPL-2.0-only`.
+
+* `amdgpu-intree-v7.4/` modifies the Linux amdgpu driver, whose files
+  carry the MIT license text.
+
+* `amdgpu-dkms-31.70-v7.4/` modifies the `amdgpu-dkms` package's
+  sources, most of which are MIT and some `GPL-2.0-or-later`.
+
+The READMEs beside them are ours, and `GPL-2.0-or-later` like the rest of
+`tests/`.
 
 The patches under `ansible/playbooks/files/rdma-tutorial/` modify the
 examples of [RDMA-Tutorial](https://github.com/jcxue/RDMA-Tutorial), which
@@ -84,6 +108,6 @@ Every `.c` and `.h` file outside `third-party/` carries an
 `SPDX-License-Identifier` tag. Some
 other files -- build fragments, dotfiles, documentation, data -- carry no
 notice at all and take the license of the directory they sit in. The
-patches under `ansible/files/patches/` carry no notice of their own; the
-SPDX tag on each file they modify, in its own project, is authoritative
-for them.
+patches under `ansible/files/patches/` and `tests/devmem/kernel-patches/`
+carry no notice of their own; the notice on each file they modify, in
+its own project, is authoritative for them.

@@ -1,0 +1,19 @@
+#!/usr/bin/env bash
+# Copyright (C) Advanced Micro Devices, Inc.
+# SPDX-License-Identifier: GPL-2.0-or-later
+#
+# This work is licensed under the terms of the GNU GPL, version 2 or later.
+# See the LICENSE_GPL.md file in the top-level directory.
+#
+# gssh N [command...]   ssh into guest devmem-N (N = 1|2) as ubuntu (passwordless sudo).
+# gssh N -              read a script from stdin and run it with bash -s.
+set -euo pipefail
+n=${1:?usage: gssh 1|2 [cmd...]}; shift
+T=${DEVMEM_ROOT:?set it to the work area}/test-rx
+opts=(-i "$T/images/keys/id_rsa" -p $((2270 + n)) -o StrictHostKeyChecking=no
+      -o UserKnownHostsFile=/dev/null -o LogLevel=ERROR -o ConnectTimeout=10
+      -o IdentitiesOnly=yes -o ServerAliveInterval=5 -o ServerAliveCountMax=3)
+if [ "${1:-}" = - ]; then
+    exec ssh "${opts[@]}" ubuntu@127.0.0.1 'bash -s'
+fi
+exec ssh "${opts[@]}" ubuntu@127.0.0.1 "$@"
