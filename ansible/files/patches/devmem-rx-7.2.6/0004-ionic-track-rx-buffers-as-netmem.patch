@@ -44,7 +44,7 @@ index 9b4bbaa539d6..8319b6b4b869 100644
  	u32 page_offset;
  	u32 len;
 diff --git a/drivers/net/ethernet/pensando/ionic/ionic_txrx.c b/drivers/net/ethernet/pensando/ionic/ionic_txrx.c
-index c82a1d1955a6..14eebe57d745 100644
+index 27600efa4cd1..868696d7af76 100644
 --- a/drivers/net/ethernet/pensando/ionic/ionic_txrx.c
 +++ b/drivers/net/ethernet/pensando/ionic/ionic_txrx.c
 @@ -117,25 +117,34 @@ static inline struct netdev_queue *q_to_ndq(struct net_device *netdev,

@@ -479,10 +479,10 @@ index faa7a473f22a..20544ac9b783 100644
  {
  	struct ionic_admin_ctx ctx = {
 diff --git a/drivers/net/ethernet/pensando/ionic/ionic_lif.h b/drivers/net/ethernet/pensando/ionic/ionic_lif.h
-index 3cca0bda1d77..9f2f4b64561a 100644
+index f69d4c07cc1c..f6e9f6bc540b 100644
 --- a/drivers/net/ethernet/pensando/ionic/ionic_lif.h
 +++ b/drivers/net/ethernet/pensando/ionic/ionic_lif.h
-@@ -346,6 +346,7 @@ int ionic_lif_alloc(struct ionic *ionic);
+@@ -348,6 +348,7 @@ int ionic_lif_alloc(struct ionic *ionic);
  int ionic_lif_init(struct ionic_lif *lif);
  void ionic_lif_free(struct ionic_lif *lif);
  void ionic_lif_deinit(struct ionic_lif *lif);

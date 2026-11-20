@@ -349,17 +349,16 @@
   version, IPv4 without DF, anything but plain TCP, and a layout needing
   more than half the Tx ring in descriptors. Whether real firmware
   accepts an mss as small as 15 is unknown — only this emulator has run
-  it. **A guest that also wants the receive series must leave this patch
-  out and apply `devmem-tx/on-devmem-rx/0009` after that series
-  instead**, which `--patches-dir ansible/files/patches/devmem-tx`
-  cannot express; see the two directories' `README.md`.
+  it. A guest that also wants the receive series applies this directory
+  whole and then `devmem-rx-7.2.6/`, which is generated on top of all
+  eight; see the two directories' `README.md`.
 * **The devmem receive series, backported to the pinned kernel**,
   `ansible/files/patches/devmem-rx-7.2.6/`. The eight patches of
   `devmem-rx` against `v7.2.6`, which `IONIC_KERNEL_REF` pins, so a
   guest of the emulator's `header-split` mode can now really be built
   with them; `devmem-rx` stays as the `v7.4-rc3` reference form. It
-  applies after `srq`, `p4` and `devmem-tx` `0001-0007`, and needed no
-  code change. Two guests of this emulator have run it on a `v7.2.6`
+  applies after `srq`, `p4` and `devmem-tx`, each given whole, and
+  needed no code change. Two guests of this emulator have run it on a `v7.2.6`
   kernel: header split with ordinary pages, devmem receive of 1 GiB into
   a dma-buf with nothing through the linear area, devmem transmit into
   devmem receive, bind and unbind raced against ring, channel, MTU and
@@ -367,8 +366,7 @@
   must rebuild `ionic_rdma.ko` and `ernic_p4.ko` against the same
   ionic**: the series changes structures, so the CRC of every ionic
   export taking a `struct ionic_lif *` changes. No ionic hardware has run
-  it, and there is no `ionic-patches` CI leg for it, because the base it
-  needs cannot be named as whole patch directories. See the directory's
+  it. The `ionic-patches` job has a leg for it. See the directory's
   `README.md`.
 * **The test aids and working notes of the devmem TCP proof of concept**,
   so that its results can be read and repeated:
@@ -1001,6 +999,51 @@
 
 ### Changed
 
+* **The ionic devmem patch series have one order and no variants.**
+  `srq/` (or the base series), then `p4/`, then `devmem-tx/`, then
+  `devmem-rx-7.2.6/` — every directory given whole to `--patches-dir`,
+  every change in exactly one directory in one form:
+
+  ```bash
+  ansible/files/scripts/fetch-ionic-sources.sh \
+      --source-dir /path/to/ionic-src --kernel-ref v7.2.6 \
+      --patches-dir ansible/files/patches/srq \
+      --patches-dir ansible/files/patches/p4 \
+      --patches-dir ansible/files/patches/devmem-tx \
+      --patches-dir ansible/files/patches/devmem-rx-7.2.6
+  ```
+
+  The receive series was regenerated on top of all eight transmit
+  patches, the frag-limit `devmem-tx/0008` included, where before it sat
+  on `0001-0007` and the frag-limit fix had to be applied again
+  afterwards from a renumbered copy. **A deployer who copied
+  `devmem-tx/0001-0007` into a directory of their own to build a
+  transmit-and-receive guest should stop, and name
+  `ansible/files/patches/devmem-tx` instead**; nothing else about such a
+  guest changes, and the sources it builds are byte for byte the ones it
+  built before. `devmem-rx/` and `devmem-tx-mainline/`, the `v7.4-rc3`
+  reference forms, were given the same order.
+
+  No added or removed line of any receive patch changed. Seven of the
+  eight files differ from their previous form in context and line
+  numbers only; `0002` and `0008` are unchanged, and `devmem-tx` did not
+  change at all.
+* **`ansible/files/patches/devmem-tx/on-devmem-rx/` is gone**, with the
+  two renumbered copies of the frag-limit patch it held. Nothing applied
+  it — `fetch-ionic-sources.sh` never descends into a subdirectory of a
+  `--patches-dir` — and nothing needs it now.
+* **CI applies the devmem receive series**, as a `devmem-rx-7.2.6` leg
+  of the `ionic-patches` job in
+  `.github/workflows/ernic-driver-build.yml`, on the base series plus
+  `p4` plus the whole of `devmem-tx`. The leg was impossible before,
+  because the base it needed was `devmem-tx` minus one of its files. It
+  asserts the header split feature bit, the queue management ops, the
+  unreadable-netmem page pool flag, the `tcp-data-split` ring parameter,
+  the ops-locked `ndo_set_rx_mode_async` and the `rx_hds_split` counter,
+  and that `devmem-tx`'s `tx_unreadable_reseg` counter survived
+  underneath them. The base series' XDP frag offset check now also
+  catches the netmem form of the call, which the receive series rewrites
+  it into.
 * **Breaking for a vfio-user client of your own that posts Ethernet Tx
   descriptors:** a Tx descriptor's `len` is now the length of its own
   buffer, as in the ionic interface and the Linux driver, not of the

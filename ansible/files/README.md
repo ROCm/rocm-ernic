@@ -21,13 +21,11 @@ patches/srq/          the SRQ series, applied to v7.2.6, plus README.md.
                       directory rather than adding to it
 patches/devmem-tx/    the optional netmem (devmem TCP) Tx series, applied
                       to v7.2.6 after the others, plus README.md.  Its
-                      on-devmem-rx/ subdirectory holds the frag-limit
-                      patch renumbered for a tree that also has an Rx
-                      series; nothing applies a subdirectory
+                      last patch is the frag-limit fix
 patches/devmem-rx-7.2.6/
                       the devmem TCP Rx series backported to v7.2.6,
-                      applied after srq, p4 and devmem-tx 0001-0007,
-                      plus README.md
+                      applied after srq (or the base series), p4 and the
+                      whole of devmem-tx, plus README.md
 patches/devmem-tx-mainline/
                       the same Tx series as it would be posted upstream,
                       for reference only: it is against v7.4-rc3, so

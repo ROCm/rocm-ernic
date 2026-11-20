@@ -18,7 +18,7 @@ driver a guest runs gets them, these without naming the directory at all:
 | `cmake/ErnicKernelModule.cmake` | `--patches-dir "${IONIC_PATCHES_DIR}"`, which is `ansible/files/patches` |
 | `service/vm-driver-install.sh.in` | `--patches-dir "${SCRIPT_DIR}/patches"`; `ErnicInstall.cmake` installs every `*.patch` under this tree (not the READMEs) |
 | `ernic_guest_setup` (`driver_ionic.yml`, `ionic_fetch_controller.yml`) | this directory first, then each of `ernic_guest_ionic_extra_patches` |
-| `.github/workflows/ernic-driver-build.yml` | the `base` leg, and as `base_patches` under the `p4` and `devmem-tx` legs |
+| `.github/workflows/ernic-driver-build.yml` | the `base` leg, and as the first `base_patches` directory under the `p4`, `devmem-tx` and `devmem-rx-7.2.6` legs |
 
 Two more callers name this directory explicitly, and so also get them:
 `ernic_p4_dkms` (`ernic_p4_dkms_patches_dirs`, which must list both this
@@ -31,15 +31,25 @@ with its own README: `srq/`, `p4/`, `devmem-tx/`, `devmem-rx-7.2.6/`,
 are against `v7.4-rc3`, and nothing applies them) and `rdma-core/`
 (userspace, not the kernel).
 
-`devmem-rx-7.2.6/` goes after `srq/`, `p4/` and `devmem-tx/`, and
-`devmem-tx/` has to be given without its `0008` for it to apply, which
-`--patches-dir` cannot express; its README says what that means.
+`devmem-rx-7.2.6/` goes after `srq/` (or this directory), `p4/` and
+`devmem-tx/`, each given whole:
 
-A directory below a series directory is **not** part of it, and nothing
-applies it: `fetch-ionic-sources.sh` applies the `*.patch` directly in
-each `--patches-dir` and does not descend. `devmem-tx/on-devmem-rx/` is
-one such directory. `ErnicInstall.cmake` does install every `*.patch`
-under this tree, nested ones included, where nothing reads them.
+```text
+v7.2.6 -> srq/ -> p4/ -> devmem-tx/ -> devmem-rx-7.2.6/
+```
+
+**There is one order and no variants.** Every change appears in exactly
+one directory, in one form, at the place it belongs in that order, and
+each directory is given to `--patches-dir` as it is. That is what makes
+the `devmem-rx-7.2.6` leg of `ernic-driver-build.yml` possible, and it is
+worth keeping: a series that has to be given minus one of its files is a
+series no caller can name.
+
+A directory below a series directory would **not** be part of it, and
+nothing would apply it: `fetch-ionic-sources.sh` applies the `*.patch`
+directly in each `--patches-dir` and does not descend. There are none
+now. `ErnicInstall.cmake` does install every `*.patch` under this tree,
+nested ones included.
 
 ## `--patches-dir` replaces, it does not add
 

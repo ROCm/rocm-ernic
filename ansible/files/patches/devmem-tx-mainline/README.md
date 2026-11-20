@@ -50,10 +50,12 @@ the `v7.4-rc3` runs used, and the run recorded their `sha256sum`.
 [`../devmem-tx/README.md`](../devmem-tx/README.md); the two differ only
 in the `ionic.rst` hunk and in line numbers.
 
-`../devmem-rx` is based on `0001-0006` and **not** on `0007`: it adds Rx
-counters where `0007` adds `tx_unreadable_reseg`, so the two conflict.
-Apply `0007` after the Rx series instead, in its
-[`../devmem-tx/on-devmem-rx/0007`](../devmem-tx/on-devmem-rx) form.
+[`../devmem-rx`](../devmem-rx) is based on all seven, `0007` included:
+it adds its Rx counters directly after `tx_unreadable_reseg`. One
+order, one form of each change, as on the `v7.2.6` side. It used to be
+based on `0001-0006`, with `0007` carried a second time above it under
+a `devmem-tx/on-devmem-rx/` that nothing applied; that directory is
+gone.
 
 `0005` is marked in the cover letter as not for net-next, which has
 `23fe6ac2e97a` ("net: skbuff: make skb_copy_and_csum_bits() report
@@ -115,13 +117,18 @@ Two things failed in those runs, neither in the series:
 
 `0007` was not part of those runs. On `v7.4-rc3` plus `0001-0006` it
 applies, builds with `W=1` and with sparse without a warning, and
-`checkpatch.pl --strict` reports only the missing `Signed-off-by:`;
-the same on `v7.4-rc3` plus `0001-0006` plus `../devmem-rx` for its
-`on-devmem-rx` form. **Neither mainline form has been loaded or run.**
-What ran is the `v7.2.6` backport of the same change, on this emulator:
-see [`../devmem-tx/README.md`](../devmem-tx/README.md) and
+`checkpatch.pl --strict` reports only the missing `Signed-off-by:`.
+**It has never been loaded or run in its mainline form.** What ran is
+the `v7.2.6` backport of the same change, on this emulator: see
+[`../devmem-tx/README.md`](../devmem-tx/README.md) and
 `rocm102-frag-limit.md` in
 [`docs/devmem/notes`](../../../../docs/devmem/notes).
+
+The seven files here did not change when `../devmem-rx` was rebased
+onto all of them; it was the Rx series that moved. `git apply` of all
+seven to the `v7.4-rc3` blobs plus the XDP frag offset fix was checked
+again, with `--whitespace=error-all`, as the base that series is now
+generated from.
 
 **Not tested:** net-next (the patches other than `0005` apply to its
 ionic files as of 2026-11-18, unbuilt), ionic hardware, `git am` of

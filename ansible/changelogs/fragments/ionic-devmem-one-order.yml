@@ -1,0 +1,27 @@
+# Copyright (c) Advanced Micro Devices, Inc. All rights reserved.
+#
+# SPDX-License-Identifier: MIT
+
+---
+minor_changes:
+  - >-
+    The ionic devmem series now have one order and no variants:
+    ``files/patches/srq`` (or the base series) then
+    ``files/patches/p4`` then ``files/patches/devmem-tx`` then
+    ``files/patches/devmem-rx-7.2.6``, each directory given whole to
+    ``--patches-dir``.  The devmem Rx series was regenerated on top of
+    all eight Tx patches, the frag-limit ``0008`` included, so a Tx+Rx
+    guest no longer needs a copy of ``devmem-tx`` with one file removed.
+    No ``+`` or ``-`` line of any Rx patch changed; seven of the eight
+    files differ from their previous form in context and line numbers
+    only, and the tree the four directories produce is byte-identical to
+    the one the modules that were tested were built from.
+removed_features:
+  - >-
+    ``files/patches/devmem-tx/on-devmem-rx`` is gone, with the two
+    renumbered copies of the frag-limit patch it held.  Nothing applied
+    it: ``fetch-ionic-sources.sh`` never descends into a subdirectory of
+    a ``--patches-dir``.  A deployer who copied
+    ``devmem-tx/0001-0007`` into a directory of their own to build a
+    Tx+Rx guest should stop doing so and name
+    ``files/patches/devmem-tx`` instead.

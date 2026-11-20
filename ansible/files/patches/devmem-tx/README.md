@@ -8,9 +8,9 @@ guest bind a dma-buf to its ionic netdev for transmit
 **Experimental.** The series is a backport of an RFC that has not been
 posted upstream. `0001-0007` were built, with `W=1` and no warnings,
 against a v7.2.15 kernel and run between two guests of this emulator;
-`0008` came later and was built and run on v7.2.6 guests, in its
-`on-devmem-rx` form. No ionic hardware has run any of it. See "What was
-tested" below for what was not.
+`0008` came later and was built and run on v7.2.6 guests. No ionic
+hardware has run any of it. See "What was tested" below for what was
+not.
 
 ## Base
 
@@ -20,13 +20,10 @@ ref `IONIC_KERNEL_REF` pins in
 [`cmake/ErnicKernelModule.cmake`](../../../../cmake/ErnicKernelModule.cmake),
 with or without the base series in [`../`](../), [`../srq`](../srq) and
 [`../p4`](../p4) below it: none of those touches the lines it changes.
-`0008` was checked both ways too, on `v7.2.6` + srq + p4 + `0001-0007`
-and on `v7.2.6` + the base series + `0001-0007`.
-Give it as the **last** `--patches-dir`.
 
-The subdirectory [`on-devmem-rx/`](on-devmem-rx) is **not** part of the
-series: `fetch-ionic-sources.sh` applies only `*.patch` directly in a
-directory it is given, so nothing here descends into it.
+Give the directory **whole**, as it is. The devmem Rx series in
+[`../devmem-rx-7.2.6`](../devmem-rx-7.2.6) goes on top of all eight of
+these, and is the only series that does; nothing wants a subset.
 
 The module must be built for, and run on, a kernel with netmem TX
 (`netdev->netmem_tx`, `netmem_dma_unmap_addr_set()` and
@@ -49,7 +46,9 @@ Each patch's message ends with a `[ rocm-ernic: ... ]` note saying which
 RFC patch it is and how the backport differs.
 
 `0008` is newer than the rest, and its mainline form is
-[`../devmem-tx-mainline/0007`](../devmem-tx-mainline).
+[`../devmem-tx-mainline/0007`](../devmem-tx-mainline). It is last because
+it is the last thing written, and because it needs `0005`'s counter and
+`0007`'s netmem Tx beneath it; nothing below it depends on it.
 
 ## 0008: an over-limit unreadable skb goes out as a TSO chain
 
@@ -84,16 +83,21 @@ descriptors, is dropped and counted in `tx_unreadable_drop` as before.
 **Whether real firmware accepts an mss as small as 15, or the runt final
 segment of such a chain, is unknown**: only this emulator has run it.
 
-## 0008 and the devmem Rx series do not stack in this order
+## The devmem Rx series goes on top of all eight
 
-The Rx series adds its counters to the same three places `0008` does, so
-a tree that is to have both takes `0001-0007` from here, then the Rx
-series, then the renumbered form in
-[`on-devmem-rx/`](on-devmem-rx). `0008` itself must be left out of that
-combination — and `fetch-ionic-sources.sh` applies every `*.patch` in a
-directory it is given, so **this directory cannot be used as it is for a
-Tx+Rx guest**. Copy `0001-0007` elsewhere, or apply them by hand. See
-[`on-devmem-rx/README.md`](on-devmem-rx/README.md).
+The Rx series adds its own counters to the three places `0008` touches,
+directly after `0008`'s. It was regenerated on top of this series as it
+stands, so a Tx+Rx guest applies this whole directory and then
+[`../devmem-rx-7.2.6`](../devmem-rx-7.2.6), with no file left out and no
+second form of anything.
+
+It was not always so: `0008` was once the last patch of a Tx+Rx tree,
+carried twice under a `devmem-tx/on-devmem-rx/` that nothing could
+apply, because `fetch-ionic-sources.sh` applies every `*.patch` in a
+directory it is given and the Rx series would not go above `0008`.
+Keep it this way: if `0008` has to move, move it inside this series and
+regenerate the Rx series on the result rather than making a second copy
+of it.
 
 ## How the backport differs from the RFC
 
@@ -129,7 +133,10 @@ dma-buf from, such as `CONFIG_UDMABUF`.
 
 The series is **optional**, so it is not in `patches/`, where
 [`fetch-ionic-sources.sh`](../../scripts/fetch-ionic-sources.sh) picks
-the base series up by default. Name every series, this one last:
+the base series up by default. Name every series, in order, this one
+after `srq/` and `p4/` — and
+[`../devmem-rx-7.2.6`](../devmem-rx-7.2.6) after it, if the guest wants
+devmem receive too:
 
 ```bash
 ansible/files/scripts/fetch-ionic-sources.sh \
@@ -156,12 +163,10 @@ directory to `ernic_p4_dkms_patches_dirs` as well.
 
 ## What was tested
 
-- Each of `0001-0007` applies with `git apply` to v7.2.6 with
-  `patches/srq` and `patches/p4`, and the whole of `0001-0007` to v7.2.6
-  alone, with the base series, with base and p4, and with srq alone.
-  `0008` was checked on srq + p4 + `0001-0007` and on the base series +
-  `0001-0007`, the two combinations a caller and CI use; the other
-  bases were not re-checked for it. `git mailinfo` parses every file.
+- The whole of `0001-0008` applies in order, with `git apply --check`
+  and `git apply --whitespace=error-all`, to v7.2.6 alone, with the base
+  series, with base and p4, with srq alone, and with srq and p4 — the
+  five bases a caller or CI uses. `git mailinfo` parses every file.
   `git am` itself was not run; the `ionic-patches` CI job runs it, on
   top of the base series.
 - `ionic.ko` and `ionic_rdma.ko` build after every patch with the Kbuild
@@ -182,11 +187,12 @@ directory to `ernic_p4_dkms_patches_dirs` as well.
 
 ### 0008
 
-`0008` was added later, and what ran was not this file but its
-`on-devmem-rx/0009` form, which differs from it only in context and line
-numbers (the `+`/`-` lines are identical). On a `v7.2.6` kernel with the
-peer-to-peer dma-buf backport, in two guests of this emulator, with the
-`v7.2.6` Rx series loaded as well:
+`0008` was added later. The runs below used a tree reached by applying
+an `on-devmem-rx/0009` form of it above the Rx series; that directory is
+gone, and this file in this position now produces the same tree, byte
+for byte, which was checked and re-run (next section). On a `v7.2.6`
+kernel with the peer-to-peer dma-buf backport, in two guests of this
+emulator, with the `v7.2.6` Rx series loaded as well:
 
 - Seven layouts that ended in `ETIMEDOUT` without it — 15 and 512 iovec
   pieces of 64, 100 and 128 bytes at MTU 1500 and 9000 — all completed
@@ -211,10 +217,33 @@ peer-to-peer dma-buf backport, in two guests of this emulator, with the
   missing `Signed-off-by:`, and a userspace model of the mss choice over
   5,000,000 random frag layouts.
 
-  **Not tested for 0008:** this file itself in a guest (only its
-  `on-devmem-rx` form ran), ionic hardware, KASAN or lockdep, VLAN,
+  **Not tested for 0008:** ionic hardware, KASAN or lockdep, VLAN,
   tunnels, IPv6 extension headers, `TSO_ECN` off with CWR set, and the
   hwtstamp queue.
+
+### After the one-order rework
+
+This directory did not change: `0001-0008` are the same eight files,
+with the same `sha256sum`, as before the Rx series was rebased onto all
+eight of them. What was checked again, with the Rx series regenerated on
+top:
+
+- The tree `srq` + `p4` + this directory + `../devmem-rx-7.2.6` produces
+  is **byte-identical** to the tree the modules that did the runs above
+  were built from, and the three modules built from it have the same
+  `srcversion` as the ones that were loaded then.
+- `ionic.ko`, `ionic_rdma.ko` and `ernic_p4.ko` build after every one of
+  the 28 patches of that order, `W=1` and sparse, gcc 15.2, with no
+  warning, against the `7.2.6-devmemp2p` build tree. (`srq` `0001-0003`
+  do not compile: `0001` uses `rcq_sign_bit`, which `0004` adds. That is
+  how the SRQ series arrived and is not changed here.)
+- The two frag-limit layouts that stall without `0008` — the unpaced
+  `TCP_NODELAY` 15-frag sender and 512 iovec pieces of 64 bytes at MTU
+  1500 — were run again in both guests, before and after. Without
+  `0008`: both ended short, `tx_unreadable_drop` +7 and +8, no
+  `tx_unreadable_reseg` counter at all. With it: both completed, every
+  byte's sha256 equal at the receiver, `tx_unreadable_drop` +0 and
+  `tx_unreadable_reseg` +56 and +1920, no emulator error counter moved.
 
 ## Retiring this directory
 

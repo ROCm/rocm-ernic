@@ -101,10 +101,10 @@ index af3461fec0b5..c4e730017401 100644
  	if (lif->doorbell_wa)
  		INIT_WORK(&new->doorbell_napi_work, ionic_doorbell_napi_work);
 diff --git a/drivers/net/ethernet/pensando/ionic/ionic_lif.h b/drivers/net/ethernet/pensando/ionic/ionic_lif.h
-index 8244182408c7..feda60b1850d 100644
+index 869681480ef0..1e93ea992fc1 100644
 --- a/drivers/net/ethernet/pensando/ionic/ionic_lif.h
 +++ b/drivers/net/ethernet/pensando/ionic/ionic_lif.h
-@@ -95,6 +95,7 @@ struct ionic_qcq {
+@@ -96,6 +96,7 @@ struct ionic_qcq {
  	struct napi_struct napi;
  	struct ionic_intr_info intr;
  	struct work_struct doorbell_napi_work;
@@ -113,7 +113,7 @@ index 8244182408c7..feda60b1850d 100644
  };
  
 diff --git a/drivers/net/ethernet/pensando/ionic/ionic_txrx.c b/drivers/net/ethernet/pensando/ionic/ionic_txrx.c
-index 63d5d204f766..47d51085304d 100644
+index baa476f537ba..becc0c2c1aea 100644
 --- a/drivers/net/ethernet/pensando/ionic/ionic_txrx.c
 +++ b/drivers/net/ethernet/pensando/ionic/ionic_txrx.c
 @@ -903,6 +903,14 @@ bool ionic_rx_service(struct ionic_cq *cq)

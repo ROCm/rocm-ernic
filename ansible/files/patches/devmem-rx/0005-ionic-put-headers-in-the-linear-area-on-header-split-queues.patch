@@ -57,20 +57,20 @@ SG buffers. Such a frame is received, not dropped.
  6 files changed, 239 insertions(+), 57 deletions(-)
 
 diff --git a/Documentation/networking/device_drivers/ethernet/pensando/ionic.rst b/Documentation/networking/device_drivers/ethernet/pensando/ionic.rst
-index 472cec10aad0..2de6f43fd0c2 100644
+index 14bf33d65a4c..e06520898726 100644
 --- a/Documentation/networking/device_drivers/ethernet/pensando/ionic.rst
 +++ b/Documentation/networking/device_drivers/ethernet/pensando/ionic.rst
-@@ -162,6 +162,9 @@ Driver port specific::
-      xdp_redirect: 0
+@@ -163,6 +163,9 @@ Driver port specific::
       xdp_frames: 0
       tx_unreadable_drop: 0
+      tx_unreadable_reseg: 0
 +     rx_hds_split: 0
 +     rx_hds_hbo: 0
 +     rx_unreadable_drop: 0
  
  Driver queue specific::
  
-@@ -197,6 +200,9 @@ Driver queue specific::
+@@ -199,6 +202,9 @@ Driver queue specific::
       rx_0_xdp_pass: 0
       rx_0_xdp_tx: 0
       rx_0_xdp_redirect: 0
@@ -352,10 +352,10 @@ index 32dde9bbac3b..dacb4746a4c5 100644
  		}
  	}
 diff --git a/drivers/net/ethernet/pensando/ionic/ionic_lif.h b/drivers/net/ethernet/pensando/ionic/ionic_lif.h
-index 88f1ca4e2f40..2b9a32c55d08 100644
+index d71ee2d3c241..df420c920b90 100644
 --- a/drivers/net/ethernet/pensando/ionic/ionic_lif.h
 +++ b/drivers/net/ethernet/pensando/ionic/ionic_lif.h
-@@ -60,6 +60,9 @@ struct ionic_rx_stats {
+@@ -61,6 +61,9 @@ struct ionic_rx_stats {
  	u64 xdp_pass;
  	u64 xdp_tx;
  	u64 xdp_redirect;
@@ -365,10 +365,10 @@ index 88f1ca4e2f40..2b9a32c55d08 100644
  };
  
  #define IONIC_QCQ_F_INITED		BIT(0)
-@@ -151,6 +154,9 @@ struct ionic_lif_sw_stats {
- 	u64 xdp_redirect;
+@@ -153,6 +156,9 @@ struct ionic_lif_sw_stats {
  	u64 xdp_frames;
  	u64 tx_unreadable_drop;
+ 	u64 tx_unreadable_reseg;
 +	u64 rx_hds_split;
 +	u64 rx_hds_hbo;
 +	u64 rx_unreadable_drop;
@@ -376,20 +376,20 @@ index 88f1ca4e2f40..2b9a32c55d08 100644
  
  enum ionic_lif_state_flags {
 diff --git a/drivers/net/ethernet/pensando/ionic/ionic_stats.c b/drivers/net/ethernet/pensando/ionic/ionic_stats.c
-index fa1abf094c02..d74a87106f85 100644
+index 08cb65207dfb..5ae65848c666 100644
 --- a/drivers/net/ethernet/pensando/ionic/ionic_stats.c
 +++ b/drivers/net/ethernet/pensando/ionic/ionic_stats.c
-@@ -35,6 +35,9 @@ static const struct ionic_stat_desc ionic_lif_stats_desc[] = {
- 	IONIC_LIF_STAT_DESC(xdp_redirect),
+@@ -36,6 +36,9 @@ static const struct ionic_stat_desc ionic_lif_stats_desc[] = {
  	IONIC_LIF_STAT_DESC(xdp_frames),
  	IONIC_LIF_STAT_DESC(tx_unreadable_drop),
+ 	IONIC_LIF_STAT_DESC(tx_unreadable_reseg),
 +	IONIC_LIF_STAT_DESC(rx_hds_split),
 +	IONIC_LIF_STAT_DESC(rx_hds_hbo),
 +	IONIC_LIF_STAT_DESC(rx_unreadable_drop),
  };
  
  static const struct ionic_stat_desc ionic_port_stats_desc[] = {
-@@ -165,6 +168,9 @@ static const struct ionic_stat_desc ionic_rx_stats_desc[] = {
+@@ -167,6 +170,9 @@ static const struct ionic_stat_desc ionic_rx_stats_desc[] = {
  	IONIC_RX_STAT_DESC(xdp_pass),
  	IONIC_RX_STAT_DESC(xdp_tx),
  	IONIC_RX_STAT_DESC(xdp_redirect),
@@ -399,7 +399,7 @@ index fa1abf094c02..d74a87106f85 100644
  };
  
  #define IONIC_NUM_LIF_STATS ARRAY_SIZE(ionic_lif_stats_desc)
-@@ -210,6 +216,9 @@ static void ionic_add_lif_rxq_stats(struct ionic_lif *lif, int q_num,
+@@ -213,6 +219,9 @@ static void ionic_add_lif_rxq_stats(struct ionic_lif *lif, int q_num,
  	stats->xdp_pass += rxstats->xdp_pass;
  	stats->xdp_tx += rxstats->xdp_tx;
  	stats->xdp_redirect += rxstats->xdp_redirect;
@@ -410,7 +410,7 @@ index fa1abf094c02..d74a87106f85 100644
  
  static void ionic_get_lif_stats(struct ionic_lif *lif,
 diff --git a/drivers/net/ethernet/pensando/ionic/ionic_txrx.c b/drivers/net/ethernet/pensando/ionic/ionic_txrx.c
-index 14eebe57d745..63d5d204f766 100644
+index 868696d7af76..baa476f537ba 100644
 --- a/drivers/net/ethernet/pensando/ionic/ionic_txrx.c
 +++ b/drivers/net/ethernet/pensando/ionic/ionic_txrx.c
 @@ -135,15 +135,14 @@ static dma_addr_t ionic_rx_buf_pa(struct ionic_buf_info *buf_info)

@@ -186,10 +186,10 @@ index 5925ba7e69c9..af3461fec0b5 100644
  #define XDP_ERR_SPLIT "XDP not available with split Tx/Rx interrupts"
  		NL_SET_ERR_MSG_MOD(bpf->extack, XDP_ERR_SPLIT);
 diff --git a/drivers/net/ethernet/pensando/ionic/ionic_lif.h b/drivers/net/ethernet/pensando/ionic/ionic_lif.h
-index e411463d4bf5..8244182408c7 100644
+index 4a3d15a8cbfa..869681480ef0 100644
 --- a/drivers/net/ethernet/pensando/ionic/ionic_lif.h
 +++ b/drivers/net/ethernet/pensando/ionic/ionic_lif.h
-@@ -345,6 +345,22 @@ static inline bool ionic_txq_hwstamp_enabled(struct ionic_queue *q)
+@@ -347,6 +347,22 @@ static inline bool ionic_txq_hwstamp_enabled(struct ionic_queue *q)
  	return q->features & IONIC_TXQ_F_HWSTAMP;
  }
  

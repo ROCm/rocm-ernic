@@ -821,7 +821,8 @@ The ionic modules running in the guest must carry the P4 patch series
 (``ansible/files/patches/p4/``), which registers the auxiliary device
 that ``ernic_p4.ko`` binds to. ``fetch-ionic-sources.sh`` applies the
 ``*.patch`` files of each ``--patches-dir`` it is given, in order, and
-not those of a directory's subdirectories. There are four series:
+not those of a directory's subdirectories, of which there are none.
+There are five series:
 
 - ``ansible/files/patches/`` — the base series: the UC address-handle
   fix, the XDP frag offset fix and the queue count leak fix.
@@ -837,16 +838,16 @@ not those of a directory's subdirectories. There are four series:
   base series or the SRQ series.
 - ``ansible/files/patches/devmem-tx/`` — the experimental netmem Tx
   series, with which a guest can transmit from a dma-buf (devmem TCP).
-  It is optional, and applies last, after any of the others; see its
+  It is optional, and applies after any of the others; only the devmem
+  Rx series goes above it. See its
   ``README.md``. A guest built with it builds ``ernic_p4.ko`` against a
   tree that has it too (``ernic_p4_dkms_patches_dirs``).
 - ``ansible/files/patches/devmem-rx-7.2.6/`` — the experimental devmem
   TCP Rx series, with which a guest can receive into a dma-buf from a
-  device that splits headers from payload. It applies after the SRQ, P4
-  and netmem Tx series, and the Tx series has to be given without its
-  ``0008`` for it to apply; see its ``README.md``. ``ernic_p4.ko`` must
-  be built against a tree that has it, because the series changes the
-  CRC of the ionic exports.
+  device that splits headers from payload. It applies after the SRQ (or
+  base), P4 and netmem Tx series, each given whole; see its
+  ``README.md``. ``ernic_p4.ko`` must be built against a tree that has
+  it, because the series changes the CRC of the ionic exports.
 
 Two more directories, ``devmem-tx-mainline/`` and ``devmem-rx/``, hold
 the Tx and Rx series against ``v7.4-rc3``. They are there for reference,

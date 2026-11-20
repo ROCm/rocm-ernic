@@ -517,12 +517,12 @@ Transmit, on the kernel the project's guests use:
 
 Receive on the pinned ``v7.2.6`` line needs
 :project-file:`ansible/files/patches/devmem-rx-7.2.6` after ``srq``,
-``p4`` and ``devmem-tx`` ``0001-0007``, a guest that rebuilds
+``p4`` and ``devmem-tx``, each given whole, a guest that rebuilds
 ``ionic_rdma.ko`` and ``ernic_p4.ko`` against the same ionic, and the
-server started with ``--nic-profile header-split``. A guest that wants
-the eighth transmit patch as well applies
-``devmem-tx/on-devmem-rx/0009`` after the receive series instead; the
-two directories' READMEs say so.
+server started with ``--nic-profile header-split``. The receive series
+is generated on top of all eight transmit patches, so a guest that
+wants both applies the two directories in that order and nothing else;
+their READMEs say so.
 
 Transmit on ``v7.4``, and the reference form of receive, need a
 ``v7.4-rc3`` guest kernel and the series in ``devmem-tx-mainline`` and

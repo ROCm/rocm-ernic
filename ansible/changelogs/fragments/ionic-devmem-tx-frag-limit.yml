@@ -14,12 +14,7 @@ minor_changes:
     gains the ``tx_unreadable_reseg`` ethtool counter, per queue and summed.
     Its mainline form is ``files/patches/devmem-tx-mainline/0007``.
   - >-
-    ``files/patches/devmem-tx/on-devmem-rx`` holds the same change
-    renumbered for a tree that also has a devmem Rx series.  A guest that
-    wants both Tx and Rx must apply ``devmem-tx`` ``0001-0007`` only, then
-    the Rx series, then that file: ``0008`` and the Rx series add their
-    counters to the same lines and do not stack in that order.
-    ``fetch-ionic-sources.sh`` applies only the ``*.patch`` directly in a
-    directory it is given, so the subdirectory is never applied by
-    accident -- and ``--patches-dir files/patches/devmem-tx`` cannot be
-    used for such a guest, because it would bring ``0008`` with it.
+    A guest that wants both Tx and Rx applies ``files/patches/devmem-tx``
+    whole, ``0008`` included, and then
+    ``files/patches/devmem-rx-7.2.6``, which is generated on top of all
+    eight and adds its own counters after ``0008``'s.

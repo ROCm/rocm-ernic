@@ -24,7 +24,8 @@ be taken for one that splits headers.
    which is against `v7.2.6`, and has the same patch-id, the first
    `prerequisite-patch-id` in the cover letter;
 2. the netmem Tx series in its mainline form,
-   [`../devmem-tx-mainline`](../devmem-tx-mainline).
+   [`../devmem-tx-mainline`](../devmem-tx-mainline), all seven patches
+   including its frag-limit `0007`.
 
 That is not `IONIC_KERNEL_REF`, which
 [`cmake/ErnicKernelModule.cmake`](../../../../cmake/ErnicKernelModule.cmake)
@@ -127,6 +128,18 @@ module that differs from the earlier one in `ionic_txrx.c` only:
   and builds with `W=1` and sparse without a warning; `checkpatch
   --strict` reports only the missing `Signed-off-by`.
 
+The files were regenerated once more when the frag-limit patch moved
+below the series, so that the two sides stay the same shape. Seven of
+the eight changed in context and line numbers only — **no `+` or `-`
+line of any of them changed** — and the cover letter gained one
+`prerequisite-patch-id`. On the new files: each applies in order with
+`git apply --check` and `--whitespace=error-all` to `v7.4-rc3` plus the
+XDP frag offset fix and all seven mainline Tx patches, reproduces its
+stage, parses with `git mailinfo` and `git mailsplit`, and
+`checkpatch.pl --strict` reports only the missing `Signed-off-by:`.
+**Nothing was rebuilt or re-run on a `v7.4-rc3` kernel for the
+regeneration**; the `v7.2.6` backport of the same eight patches was.
+
 The reconfiguration, reset and teardown cases, IPv6, VLAN and the larger
 transfers were **not** re-run on the regenerated patches.
 
@@ -138,13 +151,15 @@ other than `v7.4-rc3`. The `v7.2.6` backport of the same eight patches
 and `ernic_p4` beside it; see
 [`../devmem-rx-7.2.6/README.md`](../devmem-rx-7.2.6/README.md).
 
-## The frag-limit patch goes after this series, not before
+## The frag-limit patch goes below this series
 
 [`../devmem-tx-mainline/0007`](../devmem-tx-mainline) adds
 `tx_unreadable_reseg` to the same three places this series adds its own
-counters to, so it does not apply below these patches. Its form for a
-tree that has them is
-[`../devmem-tx/on-devmem-rx/0007`](../devmem-tx/on-devmem-rx).
+counters to. This series is generated above it: `0005` here adds
+`rx_hds_split`, `rx_hds_hbo` and `rx_unreadable_drop` directly after
+`tx_unreadable_reseg`. There is one order and one form of each change,
+on this side as on the `v7.2.6` side — the second, renumbered copy that
+used to live under `devmem-tx/on-devmem-rx/` is gone.
 
 ## Retiring this directory
 

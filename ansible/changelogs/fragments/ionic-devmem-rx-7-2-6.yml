@@ -9,9 +9,9 @@ minor_changes:
     receive series backported to ``v7.2.6``, the pinned ionic kernel ref,
     so that a guest can bind a dma-buf to an ionic receive queue and
     receive into it.  It applies after ``files/patches/srq``,
-    ``files/patches/p4`` and ``files/patches/devmem-tx`` ``0001-0007``, and
-    needed no code change.  ``files/patches/devmem-rx`` stays as the
-    ``v7.4-rc3`` reference form of the same series.
+    ``files/patches/p4`` and ``files/patches/devmem-tx``, each given
+    whole, and needed no code change.  ``files/patches/devmem-rx``
+    stays as the ``v7.4-rc3`` reference form of the same series.
   - >-
     A guest built with ``files/patches/devmem-rx-7.2.6`` must rebuild
     ``ionic_rdma.ko`` and ``ernic_p4.ko`` against the same ionic tree: the
@@ -20,14 +20,3 @@ minor_changes:
     a module built against an older ``Module.symvers`` is refused at load.
     List the directory in ``ernic_p4_dkms_patches_dirs`` and in the SRQ
     DKMS role's patch directories after the other three.
-known_issues:
-  - >-
-    ``files/patches/devmem-rx-7.2.6`` cannot be reached through
-    ``--patches-dir files/patches/devmem-tx``: that directory now also
-    holds the frag-limit patch ``0008``, which adds its counter to the
-    lines the Rx series adds its own to, and
-    ``fetch-ionic-sources.sh`` applies every ``*.patch`` in a directory it
-    is given.  A guest that wants both needs ``devmem-tx`` ``0001-0007``
-    copied into a directory of their own, then the Rx series, then
-    ``files/patches/devmem-tx/on-devmem-rx/0009``.  For the same reason the
-    ``ionic-patches`` CI job has no leg for the Rx backport.

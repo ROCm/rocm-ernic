@@ -54,7 +54,7 @@ jobs:
   # copies start applying twice -- so a single job covering only the base
   # series left the SRQ series untested until a guest failed.  The optional
   # p4/ and devmem-tx/ series each go on top of the base series, at the
-  # same ref.
+  # same ref, and devmem-rx-7.2.6/ goes on top of all three.
   ionic-patches:
     name: Apply ionic Driver Patches (${{ matrix.series }})
     runs-on: ubuntu-26.04
@@ -79,6 +79,17 @@ jobs:
           - series: devmem-tx
             base_patches: ansible/files/patches
             patches: ansible/files/patches/devmem-tx
+          # The optional devmem Rx series, on everything the Tx+Rx guest
+          # builds: the base series, p4 and the whole of devmem-tx. This
+          # leg was impossible while the frag-limit fix lived outside the
+          # Tx series, because the base it needed was devmem-tx minus one
+          # of its files and --patches-dir takes whole directories.
+          - series: devmem-rx-7.2.6
+            base_patches: >-
+              ansible/files/patches
+              ansible/files/patches/p4
+              ansible/files/patches/devmem-tx
+            patches: ansible/files/patches/devmem-rx-7.2.6
 
     steps:
     - name: Checkout code
@@ -104,7 +115,7 @@ jobs:
                 ansible/roles/ernic_srq_dkms/defaults/main.yml | head -1)
           WHERE=ansible/roles/ernic_srq_dkms/defaults/main.yml
           ;;
-        p4|devmem-tx)
+        p4|devmem-tx|devmem-rx-7.2.6)
           # Same base as the shipping series: these patches are applied on top
           # of patches/ to one tree, so a ref of their own would mean the
           # two were checked against trees that are never combined.
@@ -131,12 +142,13 @@ jobs:
         git config --global user.email "ci@rocm-ernic.invalid"
         git config --global user.name "rocm-ernic CI"
 
-        # The series a matrix entry builds on goes first; the script applies
-        # them in the order given.
+        # The series a matrix entry builds on go first, in the order the
+        # matrix lists them; the script applies them in the order given.
         patches_dirs=()
-        if [ -n "$BASE_PATCHES" ]; then
-          patches_dirs+=(--patches-dir "$PWD/$BASE_PATCHES")
-        fi
+        # shellcheck disable=SC2086  # base_patches is a list of directories
+        for d in $BASE_PATCHES; do
+          patches_dirs+=(--patches-dir "$PWD/$d")
+        done
         patches_dirs+=(--patches-dir "$PWD/$PATCHES")
 
         # Call the script the humans and the ernic_srq_dkms role call, rather
@@ -208,8 +220,12 @@ jobs:
     # can revert a hunk; and when the pinned ref gains the upstream fixes
     # these must be DROPPED, not kept.
     #
-    # devmem-rx is NOT covered: no leg applies it (it is against v7.4-rc3).
-    # It reintroduces the 0003 bug in netmem form -- see its README.
+    # devmem-rx-7.2.6 IS covered, and this step matters most there: its
+    # 0004 rewrites the two calls 0003 fixes into their netmem form, so a
+    # tree that lost 0003 would carry the bug on in netmem form -- see its
+    # README. The v7.4-rc3 reference form in devmem-rx/ is not covered: no
+    # leg applies it, because it is against a kernel this project does not
+    # pin.
     #
     # These greps name the shape of our fixes, not the behaviour. If upstream
     # lands a differently shaped fix and these patches are dropped, delete
@@ -229,7 +245,10 @@ jobs:
         # 0003: XDP frags must be built at the buffer's own page offset.
         check "$ETH/ionic_txrx.c" 'bi->page_offset, frag_len);' \
               'XDP frags use the buffer page offset'
-        if grep -qF 'skb_frag_fill_page_desc(frag, bi->page, 0,' \
+        # Both forms of the call: devmem-rx-7.2.6's 0004 rewrites this line
+        # to skb_frag_fill_netmem_desc(), and a netmem frag filled at 0 is
+        # the same leak.
+        if grep -qE 'skb_frag_fill_(page|netmem)_desc\(frag, bi->[a-z]+, 0,' \
              "$ETH/ionic_txrx.c"; then
           echo "::error::$ETH/ionic_txrx.c still fills XDP frags at page offset 0"
           rc=1
@@ -349,6 +368,48 @@ jobs:
           echo "::error::ionic_txrx.c still calls dma_unmap_page()"
           rc=1
         fi
+        [ "$rc" -eq 0 ] || exit 1
+
+    # The facts patches/devmem-rx-7.2.6 exists to produce. Applying cleanly
+    # is not enough, and here a half-applied series is worse than elsewhere:
+    # the memory provider and the queue management ops are what let an Rx
+    # queue hand out memory the kernel cannot read, and without the header
+    # split datapath below them that is a device writing payload into
+    # buffers the stack would then try to read.
+    #
+    # It also pins the one thing this reordering could have silently lost:
+    # the frag-limit counter from devmem-tx/0008, which the Rx series' 0005
+    # adds its own counters beside. A rebase that dropped it would leave a
+    # tree that still applies, still builds, and stalls a devmem sender
+    # with more frags than a descriptor holds.
+    - name: Verify the devmem-rx series enabled header split and devmem Rx
+      if: matrix.series == 'devmem-rx-7.2.6'
+      run: |
+        SRC=ionic-kernel-src/drivers/net/ethernet/pensando/ionic
+        rc=0
+        check() {
+          if grep -qE "$2" "$1"; then
+            echo "  ✓ $3"
+          else
+            echo "::error::$3 -- not found in $1"
+            rc=1
+          fi
+        }
+        check "$SRC/ionic_if.h" 'IONIC_RXQ_F_HDS' \
+              'the header split queue feature bit is defined'
+        check "$SRC/ionic_lif.c" 'netdev_queue_mgmt_ops' \
+              'the netdev has queue management ops'
+        check "$SRC/ionic_lif.c" 'PP_FLAG_ALLOW_UNREADABLE_NETMEM' \
+              'the payload pool may hand out unreadable netmem'
+        check "$SRC/ionic_ethtool.c" 'ETHTOOL_RING_USE_TCP_DATA_SPLIT' \
+              'ethtool -G tcp-data-split is supported'
+        check "$SRC/ionic_lif.c" 'ndo_set_rx_mode_async' \
+              'the driver is ops locked'
+        check "$SRC/ionic_stats.c" 'IONIC_LIF_STAT_DESC\(rx_hds_split\)' \
+              'the header split counter is reported'
+        # From devmem-tx/0008, below this series in the one order.
+        check "$SRC/ionic_stats.c" 'IONIC_LIF_STAT_DESC\(tx_unreadable_reseg\)' \
+              'the frag-limit counter from devmem-tx survived the rebase'
         [ "$rc" -eq 0 ] || exit 1
 
   # The userspace half, which rots for a different reason than the kernel

@@ -18,49 +18,49 @@ applies here — this directory changes only which kernel it applies to.
 [`cmake/ErnicKernelModule.cmake`](../../../../cmake/ErnicKernelModule.cmake),
 with three series applied first, in this order:
 
-1. [`../srq`](../srq) `0001-0011`. Not optional: `0004` needs the XDP
-   frag offset fix, which is `srq/0010` here, and does not apply without
-   it (on purpose — see `../devmem-rx/README.md`).
+1. [`../srq`](../srq) `0001-0011`, or the base series in [`../`](../).
+   Not optional either way: `0004` needs the XDP frag offset fix, which
+   is `srq/0010` or the base series' `0003`, and does not apply without
+   it (on purpose — see `../devmem-rx/README.md`). The `ionic-patches`
+   CI leg uses the base series; a guest built by `ernic_srq_dkms` uses
+   `srq/`.
 2. [`../p4`](../p4).
-3. [`../devmem-tx`](../devmem-tx) `0001-0007`, **without its `0008`**
-   (next section).
+3. [`../devmem-tx`](../devmem-tx) `0001-0008`, **whole**.
 
-`git apply` was checked on every other combination: the series also
-applies on `v7.2.6` + srq + devmem-tx, and **fails** on srq + p4 without
-devmem-tx (`0005`), without `srq/0010` (`0004`), and on plain `v7.2.6` +
-devmem-tx (`0004`).
+Give it as the **last** `--patches-dir`, after those three, each of
+which is given whole as well. Note that `--patches-dir` replaces rather
+than adds, and that with `srq/` the base series in [`../`](../) is not
+in the list: `srq/0009-0011` are its copies, so naming both would apply
+the same three patches twice.
 
-Give it as the **last** `--patches-dir`, after those three. Note that
-`--patches-dir` replaces rather than adds, and that the base series in
-[`../`](../) is not in the list: `srq/0009-0011` are its copies, so
-naming both would apply the same three patches twice.
+`git apply --check` and `git apply --whitespace=error-all` were run on
+every patch of every combination below. The series also applies on
+`v7.2.6` + srq + devmem-tx with no p4, and on `v7.2.6` + the base series
++ p4 + devmem-tx. It **fails**, as it should, on srq + p4 without
+devmem-tx (`0005`, on `ionic_lif.h`), without `srq/0010` (`0004`, on
+`ionic_txrx.c`), and on plain `v7.2.6` + devmem-tx (`0004`, likewise).
 
-### Why `devmem-tx/0008` has to be left out, and what that costs
+### One order, no variants
 
-[`../devmem-tx/0008`](../devmem-tx) (the frag-limit fix) adds
-`tx_unreadable_reseg` to `struct ionic_lif_sw_stats` in `ionic_lif.h`
-and to `ionic_lif_stats_desc[]` in `ionic_stats.c` at exactly the lines
-where `0005` here adds `rx_hds_split`, `rx_hds_hbo` and
-`rx_unreadable_drop`. With `0008` applied first, `0005` fails on both
-files and `0008` of this series fails on `ionic_lif.c` behind it. The
-order that works, and the one that was run, is `devmem-tx` `0001-0007`,
-then this series, then
-[`../devmem-tx/on-devmem-rx/0009`](../devmem-tx/on-devmem-rx).
+This series is generated on top of the whole of `devmem-tx`, the
+frag-limit patch `devmem-tx/0008` included. `0005` here adds
+`rx_hds_split`, `rx_hds_hbo` and `rx_unreadable_drop` to
+`struct ionic_lif_sw_stats` in `ionic_lif.h` and to
+`ionic_lif_stats_desc[]` in `ionic_stats.c` directly after `0008`'s
+`tx_unreadable_reseg`, rather than where it stands.
 
+It was not always so. The series used to be generated on `devmem-tx`
+`0001-0007`, so a Tx+Rx guest had to be given that directory minus one
+of its files — which `--patches-dir` cannot express, since
 [`fetch-ionic-sources.sh`](../../scripts/fetch-ionic-sources.sh) applies
-every `*.patch` in a directory it is given, so
-`--patches-dir .../devmem-tx` brings `0008` along and **cannot be used
-for a guest that also wants this series**. Until the two are rebased
-onto one another, a Tx+Rx guest needs `devmem-tx/0001-0007` copied into
-a directory of their own.
+every `*.patch` in a directory it is given — and the frag-limit change
+was carried a second time, renumbered, under `devmem-tx/on-devmem-rx/`.
+That directory is gone.
 
-For the same reason there is **no `ionic-patches` leg in
-[`ernic-driver-build.yml`](../../../../.github/workflows/ernic-driver-build.yml)
-for this series**, as there is for `devmem-tx`: that job builds a base
-out of whole directories, and the base this series needs —
-srq + p4 + devmem-tx without one of devmem-tx's files — is not something
-a `--patches-dir` list can express. Give the two series one shared order
-and the leg becomes possible.
+The one order is also why there is now a `devmem-rx-7.2.6` leg in
+[`ernic-driver-build.yml`](../../../../.github/workflows/ernic-driver-build.yml),
+as there is for `devmem-tx`: that job builds a base out of whole
+directories, which the old arrangement could not give it.
 
 | File | What it does |
 | --- | --- |
@@ -194,6 +194,51 @@ steering, so `ncdevmem` must be run with `-n`).
 The report is `impl-rx-backport-7.2.6.md` (the backport) and
 `rocm102-rx.md` (the runs) in
 [`docs/devmem/notes`](../../../../docs/devmem/notes).
+
+### After the one-order rework
+
+Everything above ran on patch **files** that have since been
+regenerated: seven of the eight now have different context and line
+numbers, because they sit on `devmem-tx` `0001-0008` rather than
+`0001-0007`. `0002` and `0008` did not change at all. **No `+` or `-`
+line of any of the eight changed**, checked line by line against the
+files that ran.
+
+What the regeneration gives, and what was checked on the new files:
+
+- The tree `srq` + `p4` + `devmem-tx` + this series produces is
+  **byte-identical** to the tree the modules that did the runs above
+  were built from, with the frag-limit fix as it was applied then: 27
+  files of the Ethernet driver, and the RDMA and uapi directories the
+  series does not touch. The `ionic.ko`, `ionic_rdma.ko` and
+  `ernic_p4.ko` built from it in both guests have the same
+  `srcversion` as the ones that were loaded.
+- Each file applies in order with `git apply --check` and
+  `git apply --whitespace=error-all`, reproduces its stage, parses with
+  `git mailinfo` and splits with `git mailsplit`, and its diff
+  reverse-applies. `git am` was not run here; the new CI leg runs it.
+- `checkpatch.pl --strict` reports nothing but the deliberate missing
+  `Signed-off-by:`.
+- `ionic.ko`, `ionic_rdma.ko` and `ernic_p4.ko` build with `W=1` and
+  with sparse, gcc 15.2, with no warning, after every one of the 28
+  patches of the one order, against the `7.2.6-devmemp2p` build tree.
+  (`srq` `0001-0003` do not compile: `0001` uses `rcq_sign_bit`, which
+  `0004` adds. That is how the SRQ series arrived, and nothing here
+  changes it.)
+- Re-run in both guests on modules built from the regenerated series:
+  the upstream quick-start test (base and `--p4-test`), an SRQ check
+  (`max_srq` 256, `ib_send_bw --use-srq`, `ibv_srq_pingpong`), the
+  frag-limit before-and-after pair, a hash-verified devmem Tx run into
+  a udmabuf (4 MiB, 0 mismatches, 0 copies, no frag page outside the
+  dma-buf), and one devmem Rx case with header split on (4 MiB, 2898
+  dma-buf cmsgs, **0 linear cmsgs**, 0 validation failures, no leaked
+  pool or dma-buf object).
+
+**Not re-run on the regenerated files**, because the sources they
+produce are byte-identical to the ones that were: the lockdep boot, the
+ops-locking and bind/unbind stress rounds, the header-split-with-pages
+matrix, the 1 GiB receive, the `compat`-server behaviour, and the build
+against the stock guest config.
 
 ## Retiring this directory
 

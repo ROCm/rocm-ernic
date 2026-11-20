@@ -78,7 +78,7 @@ excludes the directory.
 | `test/evidence/tx-verify/SUMMARY-*.txt` | `tx-verify-summary-*.md` here |
 | `overnight2/e2e/src/`, `overnight2/e2e/scripts/`, the Rx and verifier probes | `tests/devmem/src/`, `tests/devmem/scripts/stack3/`, `tests/devmem/probes/` (`rx-probe.bt`, `vprobe.bt`) |
 | `overnight2/kernel/0001-net-devmem-allow-peer-to-peer-*.patch` | `tests/devmem/kernel-patches/net-core-devmem-p2p/` |
-| `overnight2/rx-backport/patches/`, `overnight2/frag/patches/` | `ansible/files/patches/devmem-rx-7.2.6/`, `devmem-tx/0008` and `devmem-tx/on-devmem-rx/0009` |
+| `overnight2/rx-backport/patches/`, `overnight2/frag/patches/` | `ansible/files/patches/devmem-rx-7.2.6/` and `devmem-tx/0008` |
 | `rocm-ernic-pin`, `rocm-ernic-rx`, `test/ernic/*/src` | snapshots of this repository; the work is on its branch now |
 | `linux`, `linux-rx`, `k74`, `k726`, `linux-7.2.*`, `test/kbuild`, `test/images`, `test/ionic-mod`, every `evidence` directory, `qemu-minimal*`, `kernel-tools`, `test-rocm102`, the rest of `overnight2` (its kernel build trees, staged module trees and evidence) | not kept |
 

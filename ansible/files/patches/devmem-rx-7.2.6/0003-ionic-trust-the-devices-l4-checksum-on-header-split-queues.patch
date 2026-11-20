@@ -36,10 +36,10 @@ Move the checksum code to a helper while at it, and count the new case.
  3 files changed, 39 insertions(+), 13 deletions(-)
 
 diff --git a/drivers/net/ethernet/pensando/ionic/ionic_lif.h b/drivers/net/ethernet/pensando/ionic/ionic_lif.h
-index 9f2f4b64561a..9da17ae2a7e6 100644
+index f6e9f6bc540b..b724782d8ac0 100644
 --- a/drivers/net/ethernet/pensando/ionic/ionic_lif.h
 +++ b/drivers/net/ethernet/pensando/ionic/ionic_lif.h
-@@ -47,6 +47,7 @@ struct ionic_rx_stats {
+@@ -48,6 +48,7 @@ struct ionic_rx_stats {
  	u64 bytes;
  	u64 csum_none;
  	u64 csum_complete;
@@ -47,7 +47,7 @@ index 9f2f4b64561a..9da17ae2a7e6 100644
  	u64 dropped;
  	u64 vlan_stripped;
  	u64 csum_error;
-@@ -132,6 +133,7 @@ struct ionic_lif_sw_stats {
+@@ -133,6 +134,7 @@ struct ionic_lif_sw_stats {
  	u64 tx_csum;
  	u64 rx_csum_none;
  	u64 rx_csum_complete;
@@ -56,7 +56,7 @@ index 9f2f4b64561a..9da17ae2a7e6 100644
  	u64 tx_hwstamp_valid;
  	u64 tx_hwstamp_invalid;
 diff --git a/drivers/net/ethernet/pensando/ionic/ionic_stats.c b/drivers/net/ethernet/pensando/ionic/ionic_stats.c
-index 146987d530eb..fa1abf094c02 100644
+index 5cf9562bd2ed..08cb65207dfb 100644
 --- a/drivers/net/ethernet/pensando/ionic/ionic_stats.c
 +++ b/drivers/net/ethernet/pensando/ionic/ionic_stats.c
 @@ -21,6 +21,7 @@ static const struct ionic_stat_desc ionic_lif_stats_desc[] = {
@@ -67,7 +67,7 @@ index 146987d530eb..fa1abf094c02 100644
  	IONIC_LIF_STAT_DESC(rx_csum_error),
  	IONIC_LIF_STAT_DESC(hw_tx_dropped),
  	IONIC_LIF_STAT_DESC(hw_rx_dropped),
-@@ -153,6 +154,7 @@ static const struct ionic_stat_desc ionic_rx_stats_desc[] = {
+@@ -155,6 +156,7 @@ static const struct ionic_stat_desc ionic_rx_stats_desc[] = {
  	IONIC_RX_STAT_DESC(alloc_err),
  	IONIC_RX_STAT_DESC(csum_none),
  	IONIC_RX_STAT_DESC(csum_complete),
@@ -75,7 +75,7 @@ index 146987d530eb..fa1abf094c02 100644
  	IONIC_RX_STAT_DESC(csum_error),
  	IONIC_RX_STAT_DESC(hwstamp_valid),
  	IONIC_RX_STAT_DESC(hwstamp_invalid),
-@@ -199,6 +201,7 @@ static void ionic_add_lif_rxq_stats(struct ionic_lif *lif, int q_num,
+@@ -202,6 +204,7 @@ static void ionic_add_lif_rxq_stats(struct ionic_lif *lif, int q_num,
  	stats->rx_bytes += rxstats->bytes;
  	stats->rx_csum_none += rxstats->csum_none;
  	stats->rx_csum_complete += rxstats->csum_complete;
@@ -84,7 +84,7 @@ index 146987d530eb..fa1abf094c02 100644
  	stats->rx_hwstamp_valid += rxstats->hwstamp_valid;
  	stats->rx_hwstamp_invalid += rxstats->hwstamp_invalid;
 diff --git a/drivers/net/ethernet/pensando/ionic/ionic_txrx.c b/drivers/net/ethernet/pensando/ionic/ionic_txrx.c
-index c568ffb05706..c82a1d1955a6 100644
+index 59eb619d777e..27600efa4cd1 100644
 --- a/drivers/net/ethernet/pensando/ionic/ionic_txrx.c
 +++ b/drivers/net/ethernet/pensando/ionic/ionic_txrx.c
 @@ -613,6 +613,39 @@ static bool ionic_run_xdp(struct ionic_rx_stats *stats,

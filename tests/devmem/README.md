@@ -32,9 +32,8 @@ repository:**
 | [`kernel-patches/`](kernel-patches) | Kernel and amdgpu patches the tests needed or produced, each with a README |
 
 The ionic driver series themselves are not here but in
-[`ansible/files/patches`](../../ansible/files/patches): `devmem-tx`
-(with `on-devmem-rx/`), `devmem-rx-7.2.6`, `devmem-tx-mainline` and
-`devmem-rx`.
+[`ansible/files/patches`](../../ansible/files/patches): `devmem-tx`,
+`devmem-rx-7.2.6`, `devmem-tx-mainline` and `devmem-rx`.
 
 ## The test programs
 
