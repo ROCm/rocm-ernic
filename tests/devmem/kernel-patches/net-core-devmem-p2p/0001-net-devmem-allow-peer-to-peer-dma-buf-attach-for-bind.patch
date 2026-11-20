@@ -1,0 +1,159 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Stephen Bates <sbates@raithlin.com>
+Date: Thu, 19 Nov 2026 22:40:00 -0500
+Subject: [PATCH 7.2.y] net: devmem: allow peer-to-peer dma-buf attach for
+ bindings
+
+commit 69ab87acc614cbe0bd08a65ece6e1aabee805106 upstream.
+
+net_devmem_bind_dmabuf() uses dma_buf_attach(), a static attachment
+with peer2peer false. Exporters must then keep the buffer reachable
+without P2P; amdgpu does so by placing it in GTT (system memory), so a
+device memory binding silently ends up in host memory.
+
+Use dma_buf_dynamic_attach() with allow_peer2peer set, so an exporter
+that can do P2P to the device keeps the buffer in device memory.
+Dynamic attachments are not pinned on map, and devmem cannot handle the
+buffer moving, so:
+
+- pin it with dma_buf_pin() before mapping, which keeps it in place for
+  the lifetime of the binding, as before;
+- wait for the exporter's kernel fences after mapping, interruptibly,
+  as the core does for static attachments.
+
+This follows the pinned RDMA umem path, including its limits: the
+binding cannot be revoked by the exporter, and once a P2P binding has
+pinned a buffer in device memory, a later attachment to the same buffer
+that cannot do P2P may fail to pin it. Exporters that cannot do P2P to
+the device place the buffer as before. RX and TX bindings both go
+through this function.
+
+[ Backport to v7.2.y (applies unchanged to v7.2.6 and v7.2.15, whose
+  net/core/devmem.c are identical). The upstream commit, by Erfan
+  Sharafzadeh (first in v7.4-rc1, acked by Stanislav Fomichev, applied
+  by Jakub Kicinski), does not apply as is: 3 of its 6 hunks fail on
+  context because v7.2.y still allocates net_iovs from a genpool. The
+  code added and removed is the same, line for line (+37 -10). What
+  differs is only where it lands:
+  - the new include goes before <linux/genalloc.h>, which v7.4 no
+    longer has;
+  - the attach ops go before net_devmem_dmabuf_free_chunk_owner()
+    instead of after net_iov_free_push(), which does not exist here;
+  - in __net_devmem_dmabuf_binding_free() the unmap follows the
+    genpool teardown instead of kvfree(binding->area.niovs);
+  - in net_devmem_bind_dmabuf() "int err" becomes "long err" among
+    v7.2.y's declarations (sg_idx, i, virtual), and the fence wait is
+    followed by v7.2.y's "if (direction == DMA_TO_DEVICE)" block.
+  Nothing else from v7.3 or v7.4 is needed: dma_buf_dynamic_attach(),
+  dma_buf_pin(), dma_buf_unpin() and dma_resv_wait_timeout() are all in
+  v7.2. Not signed off: this is a carried test patch for a guest
+  kernel, not a stable submission. ]
+---
+ net/core/devmem.c | 47 ++++++++++++++++++++++++++++++++++++++---------
+ 1 file changed, 37 insertions(+), 10 deletions(-)
+
+diff --git a/net/core/devmem.c b/net/core/devmem.c
+index 957d6b96216b..91414848abf9 100644
+--- a/net/core/devmem.c
++++ b/net/core/devmem.c
+@@ -8,6 +8,7 @@
+  */
+ 
+ #include <linux/dma-buf.h>
++#include <linux/dma-resv.h>
+ #include <linux/genalloc.h>
+ #include <linux/mm.h>
+ #include <linux/netdevice.h>
+@@ -28,6 +29,10 @@
+ 
+ static DEFINE_XARRAY_FLAGS(net_devmem_dmabuf_bindings, XA_FLAGS_ALLOC1);
+ 
++static const struct dma_buf_attach_ops net_devmem_dmabuf_attach_ops = {
++	.allow_peer2peer = true,
++};
++
+ static const struct memory_provider_ops dmabuf_devmem_ops;
+ 
+ static void net_devmem_dmabuf_free_chunk_owner(struct gen_pool *genpool,
+@@ -74,8 +79,11 @@ void __net_devmem_dmabuf_binding_free(struct work_struct *wq)
+ 		  size, avail))
+ 		gen_pool_destroy(binding->chunk_pool);
+ 
+-	dma_buf_unmap_attachment_unlocked(binding->attachment, binding->sgt,
+-					  binding->direction);
++	dma_resv_lock(binding->dmabuf->resv, NULL);
++	dma_buf_unmap_attachment(binding->attachment, binding->sgt,
++				 binding->direction);
++	dma_buf_unpin(binding->attachment);
++	dma_resv_unlock(binding->dmabuf->resv);
+ 	dma_buf_detach(binding->dmabuf, binding->attachment);
+ 	dma_buf_put(binding->dmabuf);
+ 	xa_destroy(&binding->bound_rxqs);
+@@ -193,7 +201,7 @@ net_devmem_bind_dmabuf(struct net_device *dev, void *vdev,
+ 	struct dma_buf *dmabuf;
+ 	unsigned int sg_idx, i;
+ 	unsigned long virtual;
+-	int err;
++	long err;
+ 
+ 	if (!dma_dev) {
+ 		NL_SET_ERR_MSG(extack, "Device doesn't support DMA");
+@@ -226,19 +234,35 @@ net_devmem_bind_dmabuf(struct net_device *dev, void *vdev,
+ 	binding->dmabuf = dmabuf;
+ 	binding->direction = direction;
+ 
+-	binding->attachment = dma_buf_attach(binding->dmabuf, dma_dev);
++	binding->attachment =
++		dma_buf_dynamic_attach(binding->dmabuf, dma_dev,
++				       &net_devmem_dmabuf_attach_ops, binding);
+ 	if (IS_ERR(binding->attachment)) {
+ 		err = PTR_ERR(binding->attachment);
+ 		NL_SET_ERR_MSG(extack, "Failed to bind dmabuf to device");
+ 		goto err_exit_ref;
+ 	}
+ 
+-	binding->sgt = dma_buf_map_attachment_unlocked(binding->attachment,
+-						       direction);
++	dma_resv_lock(dmabuf->resv, NULL);
++	err = dma_buf_pin(binding->attachment);
++	if (err) {
++		NL_SET_ERR_MSG(extack, "Failed to pin dmabuf");
++		goto err_unlock;
++	}
++
++	binding->sgt = dma_buf_map_attachment(binding->attachment, direction);
+ 	if (IS_ERR(binding->sgt)) {
+ 		err = PTR_ERR(binding->sgt);
+ 		NL_SET_ERR_MSG(extack, "Failed to map dmabuf attachment");
+-		goto err_detach;
++		goto err_unpin;
++	}
++	dma_resv_unlock(dmabuf->resv);
++
++	err = dma_resv_wait_timeout(dmabuf->resv, DMA_RESV_USAGE_KERNEL, true,
++				    MAX_SCHEDULE_TIMEOUT);
++	if (err < 0) {
++		NL_SET_ERR_MSG(extack, "Failed to wait for dmabuf fences");
++		goto err_unmap;
+ 	}
+ 
+ 	if (direction == DMA_TO_DEVICE) {
+@@ -336,9 +360,12 @@ err_free_chunks:
+ err_tx_vec:
+ 	kvfree(binding->tx_vec);
+ err_unmap:
+-	dma_buf_unmap_attachment_unlocked(binding->attachment, binding->sgt,
+-					  direction);
+-err_detach:
++	dma_resv_lock(dmabuf->resv, NULL);
++	dma_buf_unmap_attachment(binding->attachment, binding->sgt, direction);
++err_unpin:
++	dma_buf_unpin(binding->attachment);
++err_unlock:
++	dma_resv_unlock(dmabuf->resv);
+ 	dma_buf_detach(dmabuf, binding->attachment);
+ err_exit_ref:
+ 	percpu_ref_exit(&binding->ref);
+-- 
+2.43.0
+

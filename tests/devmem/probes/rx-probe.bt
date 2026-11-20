@@ -1,0 +1,169 @@
+// Placement probe for the GPU-to-GPU devmem runs on stack ionic-devmem-r102
+// (7.2.6-devmemp2p, amdgpu-dkms 7.2.3, ionic = srq + p4 + devmem-tx + rx
+// backport + frag fix). The attach/pin/map/TX part is test-rocm102's
+// gpu-probe.bt; the RX part is new. The DKMS/insmod modules carry no BTF, so
+// ionic's structs are read by offset (pahole on the loaded ionic.ko:
+// struct ionic_queue: head_idx u16 @48, index u32 @52, num_descs u32 @56,
+// features u64 @64, rxq @80, rxq_sgl @88, sg_desc_size u32 @188;
+// struct ionic_rxq_desc { ...; __le64 addr @8 } size 16;
+// struct ionic_rxq_sg_elem { __le64 addr @0; __le16 len @8 } size 16).
+//
+// Guest address map: GPU 02:00.0 BAR0 0x40_0000_0000-0x7f_ffff_ffff;
+// System RAM 0x1000-0x7ffd_bfff and 0x1_0000_0000-0x2_7fff_ffff. No IOMMU.
+//
+// RX evidence:
+//   @rx_niov_dma: every net_iov the devmem memory provider hands the page
+//     pool (mp_dmabuf_devmem_alloc_netmems return), by its DMA address.
+//   @rx_desc_*: what ionic_rx_fill() wrote into the RX ring for the device:
+//     the header buffer address (descriptor) and the payload buffer address
+//     (first SG element) of up to 64 descriptors per call.
+//   @dma_sync_*: any dma_sync_single on a GPU BAR0 address (expected: none).
+
+kprobe:dma_buf_dynamic_attach
+{
+	$ops = (struct dma_buf_attach_ops *)arg2;
+	if (arg2 == 0) {
+		@dma_buf_attach_kind[comm, "static (importer_ops NULL)"] = count();
+	} else if ($ops->allow_peer2peer) {
+		@dma_buf_attach_kind[comm, "dynamic, allow_peer2peer=1"] = count();
+	} else {
+		@dma_buf_attach_kind[comm, "dynamic, allow_peer2peer=0"] = count();
+	}
+}
+kprobe:net_devmem_bind_dmabuf { @net_devmem_bind_dmabuf_dir[comm, arg2] = count(); }
+kprobe:net_devmem_bind_dmabuf_to_queue { @net_devmem_bind_dmabuf_to_queue_rxq[arg1] = count(); }
+kretprobe:pci_p2pdma_distance_many { @pci_p2pdma_distance_many_ret[(int32)retval] = count(); }
+
+kprobe:amdgpu_dma_buf_attach { @att[tid] = arg1; }
+kretprobe:amdgpu_dma_buf_attach
+{
+	$a = (struct dma_buf_attachment *)@att[tid];
+	if ($a != 0) {
+		@amdgpu_attach_peer2peer_on_return[$a->peer2peer] = count();
+		@amdgpu_attach_ret[(int32)retval] = count();
+	}
+	delete(@att[tid]);
+}
+kprobe:amdgpu_dma_buf_pin { @in_pin[tid] = 1; }
+kprobe:amdgpu_bo_pin { if (@in_pin[tid]) { @amdgpu_dma_buf_pin_domain_mask[arg1] = count(); } }
+kretprobe:amdgpu_dma_buf_pin { @amdgpu_dma_buf_pin_ret[(int32)retval] = count(); delete(@in_pin[tid]); }
+kprobe:amdgpu_dma_buf_map { @in_map[tid] = 1; @amdgpu_dma_buf_map_dir[arg1] = count(); }
+kretprobe:amdgpu_dma_buf_map { delete(@in_map[tid]); delete(@in_vram[tid]); }
+kprobe:amdgpu_vram_mgr_alloc_sgt
+{
+	@map_path["amdgpu_vram_mgr_alloc_sgt (VRAM, dma_map_resource)"] = count();
+	@in_vram[tid] = 1;
+}
+kretprobe:amdgpu_vram_mgr_alloc_sgt { delete(@in_vram[tid]); }
+kprobe:drm_prime_pages_to_sg
+{
+	if (@in_map[tid]) { @map_path["drm_prime_pages_to_sg (GTT, system pages)"] = count(); }
+}
+kprobe:dma_map_resource
+{
+	if (@in_vram[tid]) { @res_phys[tid] = arg1; @res_size[tid] = arg2; @res_dir[tid] = arg3; }
+}
+kretprobe:dma_map_resource
+{
+	if (@in_vram[tid]) {
+		printf("VRAM-MAP phys=0x%llx size=0x%llx dir=%d dma=0x%llx\n", @res_phys[tid],
+		       @res_size[tid], @res_dir[tid], retval);
+		delete(@res_phys[tid]); delete(@res_size[tid]); delete(@res_dir[tid]);
+	}
+}
+
+kretprobe:ionic_tx_map_frag.constprop.0
+{
+	$a = (uint64)retval;
+	if ($a >= 0x4000000000 && $a < 0x8000000000) {
+		@eth_tx_frag_addr["GPU BAR0 (VRAM)"] = count();
+	} else if ($a < 0x7ffdc000 || ($a >= 0x100000000 && $a < 0x280000000)) {
+		@eth_tx_frag_addr["System RAM"] = count();
+	} else {
+		@eth_tx_frag_addr["other"] = count();
+	}
+	@eth_tx_frag_addr_min = min($a);
+	@eth_tx_frag_addr_max = max($a);
+}
+
+// ---- RX: net_iovs handed to the page pool by the devmem provider
+kretprobe:mp_dmabuf_devmem_alloc_netmems
+{
+	$n = retval & ~1;
+	if ($n != 0) {
+		$a = (uint64)((struct net_iov *)$n)->desc.dma_addr;
+		if ($a >= 0x4000000000 && $a < 0x8000000000) {
+			@rx_niov_dma["GPU BAR0 (VRAM)"] = count();
+		} else if ($a < 0x7ffdc000 || ($a >= 0x100000000 && $a < 0x280000000)) {
+			@rx_niov_dma["System RAM"] = count();
+		} else {
+			@rx_niov_dma["other"] = count();
+		}
+		@rx_niov_dma_min = min($a);
+		@rx_niov_dma_max = max($a);
+		@rx_niov_dma_low12[$a & 0xfff] = count();
+	} else {
+		@rx_niov_alloc_failed = count();
+	}
+}
+
+// ---- RX: what the driver wrote into the ring for the device
+kprobe:ionic_rx_fill
+{
+	@fq[tid] = arg0;
+	@fh[tid] = *(uint16 *)(arg0 + 48);
+}
+kretprobe:ionic_rx_fill
+{
+	$q = @fq[tid];
+	if ($q != 0) {
+		$old = (uint32)@fh[tid];
+		$new = (uint32)*(uint16 *)($q + 48);
+		$num = *(uint32 *)($q + 56);
+		$hds = (*(uint64 *)($q + 64)) & 0x80000000;
+		$rxq = *(uint64 *)($q + 80);
+		$sgl = *(uint64 *)($q + 88);
+		$sgsz = (uint64)*(uint32 *)($q + 188);
+		$posted = ($new - $old) & ($num - 1);
+		@rx_fill_descs_posted[*(uint32 *)($q + 52)] = sum($posted);
+		$i = (uint32)0;
+		$idx = $old;
+		while ($i < 64 && $idx != $new) {
+			$h = *(uint64 *)($rxq + 16 * (uint64)$idx + 8);
+			$p = *(uint64 *)($sgl + $sgsz * (uint64)$idx);
+			if ($h >= 0x4000000000 && $h < 0x8000000000) {
+				@rx_desc_hdr_addr["GPU BAR0 (VRAM)"] = count();
+			} else if ($h < 0x7ffdc000 || ($h >= 0x100000000 && $h < 0x280000000)) {
+				@rx_desc_hdr_addr["System RAM"] = count();
+			} else {
+				@rx_desc_hdr_addr["other"] = count();
+			}
+			if ($p >= 0x4000000000 && $p < 0x8000000000) {
+				@rx_desc_payload_addr["GPU BAR0 (VRAM)"] = count();
+				@rx_desc_payload_bar0_min = min($p);
+				@rx_desc_payload_bar0_max = max($p);
+			} else if ($p == 0) {
+				@rx_desc_payload_addr["none (no SG element)"] = count();
+			} else if ($p < 0x7ffdc000 || ($p >= 0x100000000 && $p < 0x280000000)) {
+				@rx_desc_payload_addr["System RAM"] = count();
+			} else {
+				@rx_desc_payload_addr["other"] = count();
+			}
+			$idx = ($idx + 1) & ($num - 1);
+			$i++;
+		}
+	}
+	delete(@fq[tid]); delete(@fh[tid]);
+}
+
+kprobe:__dma_sync_single_for_cpu,
+kprobe:__dma_sync_single_for_device
+{
+	if (arg1 >= 0x4000000000 && arg1 < 0x8000000000) { @dma_sync_on_gpu_bar0[func] = count(); }
+}
+
+END
+{
+	clear(@att); clear(@in_pin); clear(@in_map); clear(@in_vram);
+	clear(@res_phys); clear(@res_size); clear(@res_dir); clear(@fq); clear(@fh);
+}

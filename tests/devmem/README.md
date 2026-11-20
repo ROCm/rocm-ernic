@@ -32,8 +32,9 @@ repository:**
 | [`kernel-patches/`](kernel-patches) | Kernel and amdgpu patches the tests needed or produced, each with a README |
 
 The ionic driver series themselves are not here but in
-[`ansible/files/patches`](../../ansible/files/patches): `devmem-tx`,
-`devmem-tx-mainline` and `devmem-rx`.
+[`ansible/files/patches`](../../ansible/files/patches): `devmem-tx`
+(with `on-devmem-rx/`), `devmem-rx-7.2.6`, `devmem-tx-mainline` and
+`devmem-rx`.
 
 ## The test programs
 
@@ -41,6 +42,8 @@ The ionic driver series themselves are not here but in
 | --- | --- |
 | `src/devmem_tx.c` | The devmem Tx exerciser. Sender: makes a udmabuf with a position-dependent pattern, binds it (`NETDEV_CMD_BIND_TX`, raw generic netlink) and sends from chosen offsets, lengths and iovec counts with `MSG_ZEROCOPY` and `SCM_DEVMEM_DMABUF`, reaping every completion. Receiver (`-r`): recomputes the stream from the same plan and compares every byte. Also sends the same framing by copy or by ordinary zerocopy, as controls. |
 | `src/devmem_tx_gpu.c` | `devmem_tx.c` plus `-G NODE`: the buffer is an amdgpu GEM object in VRAM (`-J`: in GTT), exported as a dma-buf. |
+| `src/devmem_rx_gpu.c` | The devmem Rx exerciser, and the receiving half of the GPU-to-GPU runs. Binds a dma-buf to Rx queues (`NETDEV_CMD_BIND_RX`, raw generic netlink), accepts one connection and receives with `recvmsg(MSG_SOCK_DEVMEM)`. **The payload is never read from the socket**: for each `SCM_DEVMEM_DMABUF` cmsg it reads the bytes from the dma-buf's own memory at the reported offset — through a GEM mapping (`-G`), through the parent's HIP device-to-host copy (`-E -Y -M`), or through the memfd (udmabuf, the control) — checks them against the sender's plan, and only then returns the tokens with `SO_DEVMEM_DONTNEED`. The buffer is pre-filled with `0xa5`, so a byte the NIC did not write cannot pass, and `mismatch_a5` and `mismatch_zero` are counted apart. |
+| `src/hip_devmem_rx.cpp` | The GPU compute buffer behind `devmem_rx_gpu -E`: `hipMalloc()`, a `0xa5` pre-fill checked by reading it back, `hsa_amd_portable_export_dmabuf()`, then fork and exec of the receiver with the dma-buf fd. Each time the receiver asks on its gate, this copies the whole buffer device-to-host into a shared memfd (`-c`: through a GPU kernel instead) so that the receiver verifies what the GPU holds. |
 | `src/vtx.c`, `src/vrx.py` | The verification pass's own sender and receiver, written from the uapi and not from `devmem_tx.c`. The buffer is random, the sender writes what the kernel accepted to a file, and the receiver hashes what arrives. |
 | `src/pcapcap.c` | A static packet capture to a pcap file, for a container's network namespace that has no tcpdump. |
 | `src/xdp_echo.c`, `src/udp_echo_check.py` | An XDP program that echoes UDP port 7777 with `XDP_TX` or `XDP_REDIRECT`, and the sender that checks the echoes. |
@@ -53,9 +56,9 @@ copied here.
 ### Building them for a guest
 
 From the top of the repository, with the flags every guest-side program
-of this project is compiled with. `devmem_tx`, `devmem_tx_gpu` and `vtx`
-reach `memfd_create()` through `src/ernic_gnu.c`, and all four parse
-numbers with `src/parse_int.h`:
+of this project is compiled with. `devmem_tx`, `devmem_tx_gpu`,
+`devmem_rx_gpu` and `vtx` reach `memfd_create()` through
+`src/ernic_gnu.c`, and all five parse numbers with `src/parse_int.h`:
 
 ```bash
 OUT=$(mktemp -d)    # not the source tree: git does not ignore the binaries
@@ -67,7 +70,24 @@ gcc $FLAGS -o "$OUT/pcapcap"   tests/devmem/src/pcapcap.c
 # needs <drm/amdgpu_drm.h>: point UAPI at a kernel's "make headers" output
 gcc $FLAGS -isystem "$UAPI" -o "$OUT/devmem_tx_gpu" \
   tests/devmem/src/devmem_tx_gpu.c src/ernic_gnu.c
+gcc $FLAGS -isystem "$UAPI" -o "$OUT/devmem_rx_gpu" \
+  tests/devmem/src/devmem_rx_gpu.c src/ernic_gnu.c
 ```
+
+`hip_devmem_rx.cpp` is the exception: it is C++ and needs ROCm, so it is
+built with `hipcc` for the GPU of the guest it runs in, not with the
+flags above, and not statically:
+
+```bash
+R=/opt/rocm                 # the guests use /opt/rocm/core-10.2
+"$R/bin/hipcc" -O2 --offload-arch=gfx1250 -I"$R/include" \
+  -o "$OUT/hip_devmem_rx" tests/devmem/src/hip_devmem_rx.cpp \
+  -L"$R/lib" -lhsa-runtime64 -Wl,-rpath,"$R/lib"
+```
+
+A host without ROCm cannot build it at all;
+[`scripts/stack3/install.sh`](scripts/stack3/install.sh) builds it in
+each guest, which is where it has to run anyway.
 
 The binaries are static, so they can be built on the host and copied in.
 Copy one into the guest's own filesystem before running it: a guest that
@@ -92,6 +112,7 @@ also takes hex with `0x`.
 | `probes/vprobe.bt`, `probes/dmamap.bt` | the same, written independently for the verification pass | Every frag's netmem bit per destination port and queue; calls that would read an unreadable skb; DMA maps per skb |
 | `probes/p2p-probe.bt` | `pci_p2pdma_distance_many()`, amdgpu's dma-buf attach, pin and map, `ionic_tx_map_frag()` | Whether a GPU buffer was attached peer-to-peer and which address range the NIC was given |
 | `probes/skbshape.bt` | the GRO receive entry points and `tcp_v4_rcv()` | Linear and frag bytes of received skbs: whether headers were split from payload |
+| `probes/rx-probe.bt` | the dma-buf attach, pin and map, `pci_p2pdma_distance_many()`, `ionic_tx_map_frag()`, `mp_dmabuf_devmem_alloc_netmems()`, `ionic_rx_fill()` and `dma_sync_single_*` | Whether the binding was peer-to-peer, and whether each net_iov DMA address, Rx payload descriptor and Tx frag is in the GPU's BAR0 or in system RAM. Run in **both** guests during a GPU-to-GPU case |
 
 ## The harness
 
@@ -127,6 +148,7 @@ binaries from there.
 | `scripts/tx-verify/` | `test/evidence/tx-verify/src/` | The independent verification pass: `v.sh` and one script per group of cases |
 | `scripts/stack2/` | `test-rx/scripts/` | Stack 2 (`ionic-devmem-rx`, guests `rx-1` and `-2`, server in `header-split` mode): the devmem Rx cases |
 | `scripts/stack2/guest/` | `test-rx/guest/` | Scripts run as root in a stack 2 guest |
+| `scripts/stack3/` | `test-rocm102/e2e/scripts/` | Stack 3 (`ionic-devmem-r102`, guests `r102-1` and `-2`, the ROCm 10.2 image): the GPU-to-GPU end-to-end cases. `install.sh` builds the two receive programs in the guests, `case.sh` runs one case, `sizes.sh` and `bench.sh` sweep it, `plan_bytes.py` computes on the host what a fragment should hold |
 | `scripts/host/` | `test/scripts/drun.sh`, `test-rx/scripts/drun.sh`, `test/builder/Dockerfile` | Glue for the development host only: `drun.sh` works around its Docker daemon (a container needs an explicit cgroup parent, and attached output is lost); `Dockerfile.kbuild` is the kernel build container |
 | `src/`, `probes/`, `tools/`, `kernel-patches/` | where `work-area.map` says | |
 
@@ -174,6 +196,32 @@ then the case scripts. The Rx cases are `scripts/stack2/`: `td-setup.sh`,
 `final.sh` for a first transfer, then `td1-kill.sh` to `td3-more.sh` and
 the `rv-*.sh` review cases. The emulator offload matrix is
 `scripts/stack1/emu-offloads/run.py LABEL`.
+
+### Running a GPU-to-GPU case
+
+With stack 3 up on a kernel carrying
+[`kernel-patches/net-core-devmem-p2p`](kernel-patches/net-core-devmem-p2p),
+the ionic module built with `devmem-tx`, the Rx series and the
+frag-limit patch, the server in `header-split` mode, and the receiving
+guest at one combined channel with `tcp-data-split on`:
+
+```bash
+S=$DEVMEM_ROOT/test-rocm102/e2e/scripts
+$S/install.sh                                      # both guests
+$S/case.sh B1 5401 gem-vram gem-vram 64m 64        # VRAM to VRAM
+HOLD=1 $S/case.sh B1h 5402 gem-vram gem-vram 64m 64  # + the host-side check
+$S/sizes.sh D-vram2vram gem-vram gem-vram "4m 16m 64m 256m"
+$S/bench.sh 3
+```
+
+**The receiver's `RESULT rx` line is the verdict.** `HOLD=1` makes the
+receiver keep its last batch's tokens while the host hashes the
+*receiving* NIC server's own mapping of the GPU's BAR at the address the
+driver gave the device, and compares that with what `plan_bytes.py` says
+was sent — the check that the bytes really reached VRAM, independent of
+anything in the guest. A dma-buf of 4 MiB is the smallest that kept an
+`rx 1024` ring fed in these runs; 1 MiB starves the page pool and the
+connection collapses (with nothing corrupted).
 
 ### State after the move into the repository
 
@@ -224,6 +272,19 @@ no default.
   `pcapcap`, `devmem_tx_gpu` and the XDP object from this tree have
   not been run in a guest. `devmem_tx_gpu` was last built against
   `v7.4-rc3` uapi headers before the `UINT64_C()` change.
+- `devmem_rx_gpu.c` and `hip_devmem_rx.cpp` came in later, with the
+  GPU-to-GPU runs. `devmem_rx_gpu.c` was changed the same way as the
+  others — `_GNU_SOURCE` removed, `memfd_create()` and the seals through
+  `src/ernic_gnu.c`, `atoi()`, `strtoull()` and the `sscanf()` of `-Y`
+  replaced by `parse_int.h`, `die()` marked `_Noreturn`, clang-format —
+  and from this tree it compiles with **no warning** under GCC 13 and
+  clang 18 with the flags above, against the host's headers.
+  `hip_devmem_rx.cpp` kept its code and gained its copyright header; it
+  builds with `hipcc` on a host with ROCm. **Neither has been run from
+  this tree**: every result in the notes is from the originals, which
+  differ from these only in the changes just listed.
+  `scripts/stack3/plan_bytes.py` was rewritten for black and pylint and
+  gives the same hash as the original on three plans.
 - The Python: reformatted and restructured for black and pylint. Each
   was compared with its original: the evidence summarizers and pcap
   checkers on the recorded evidence and captures, `gt.py`,
@@ -249,9 +310,16 @@ no default.
 - The control series "devmem-tx without its backstop": it is
   [`ansible/files/patches/devmem-tx`](../../ansible/files/patches/devmem-tx)
   without `0006`.
-- The scripts of the third stack (the ROCm 10.2 guest image), which
+- Most of the third stack's scripts (the ROCm 10.2 guest image), which
   were still changing; `rocm102-baseline.md` and `rocm102-devmem.md`
-  describe them.
+  describe them. Only the end-to-end set is here, in
+  `scripts/stack3/`, and **it does not stand alone**: stack 3's own
+  `env.sh`, `gssh`, `gscp`, `stack.sh` and `ionic-mod.sh`, and the
+  sender `devmem_tx_ext2` and its HIP exporter `hip_devmem_src2` (which
+  are `devmem_tx_gpu.c` and a HIP source with extra options, built in
+  the guests' `~/gputx`), are not. So `case.sh` and the two sweeps
+  **cannot be run from this tree as they are**; they are here to be
+  read, repeated and adapted.
 - All evidence, kernel trees, images and keys.
 
 ## The tools

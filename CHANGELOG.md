@@ -286,6 +286,45 @@
   `share/rocm-ernic/patches/`. Its cover letter still says the series was
   only built; see the directory's `README.md` for what has been run
   since.
+* **A devmem transmit that needs more than 16 buffers in a packet no
+  longer kills its connection**, with the new eighth patch of
+  `ansible/files/patches/devmem-tx/` (mainline form:
+  `devmem-tx-mainline/0007`). The device takes 16 buffers per packet, and
+  an unreadable (devmem) skb with more cannot be linearized, so the
+  driver dropped it — and because TCP retransmits the same skb, every
+  retry was dropped too and the socket ended in `ETIMEDOUT`. That is the
+  stall `docs/devmem.rst` warns about for sends in pieces below about a
+  fifteenth of the MSS; unpaced `TCP_NODELAY` sends of 15 pieces reach it
+  too, because TCP coalesces them into a 17-frag skb. Such an skb now
+  goes out with the TSO opcode and an mss the driver picks so that every
+  descriptor fits: the same bytes in shorter segments, with the skb and
+  its `skb_shinfo` untouched and no payload read. `ethtool -S` gains
+  `tx_unreadable_reseg`, per queue and summed. What is still dropped and
+  counted in `tx_unreadable_drop`, as before: TSO turned off for that IP
+  version, IPv4 without DF, anything but plain TCP, and a layout needing
+  more than half the Tx ring in descriptors. Whether real firmware
+  accepts an mss as small as 15 is unknown — only this emulator has run
+  it. **A guest that also wants the receive series must leave this patch
+  out and apply `devmem-tx/on-devmem-rx/0009` after that series
+  instead**, which `--patches-dir ansible/files/patches/devmem-tx`
+  cannot express; see the two directories' `README.md`.
+* **The devmem receive series, backported to the pinned kernel**,
+  `ansible/files/patches/devmem-rx-7.2.6/`. The eight patches of
+  `devmem-rx` against `v7.2.6`, which `IONIC_KERNEL_REF` pins, so a
+  guest of the emulator's `header-split` mode can now really be built
+  with them; `devmem-rx` stays as the `v7.4-rc3` reference form. It
+  applies after `srq`, `p4` and `devmem-tx` `0001-0007`, and needed no
+  code change. Two guests of this emulator have run it on a `v7.2.6`
+  kernel: header split with ordinary pages, devmem receive of 1 GiB into
+  a dma-buf with nothing through the linear area, devmem transmit into
+  devmem receive, bind and unbind raced against ring, channel, MTU and
+  reset operations, and a lockdep boot that reported nothing. **A guest
+  must rebuild `ionic_rdma.ko` and `ernic_p4.ko` against the same
+  ionic**: the series changes structures, so the CRC of every ionic
+  export taking a `struct ionic_lif *` changes. No ionic hardware has run
+  it, and there is no `ionic-patches` CI leg for it, because the base it
+  needs cannot be named as whole patch directories. See the directory's
+  `README.md`.
 * **The test aids and working notes of the devmem TCP proof of concept**,
   so that its results can be read and repeated:
   * `tests/devmem/`: the guest-side test programs (`devmem_tx`, which
@@ -304,6 +343,28 @@
   * `docs/devmem/notes/`: the studies, design notes and test reports,
     as written. They are not built into the documentation site; start
     from their `README.md`, which says how to read them.
+* **The devmem receive and GPU-to-GPU test aids**, added to
+  `tests/devmem/` with the end-to-end runs:
+  * `src/devmem_rx_gpu.c`, which binds a dma-buf for receive and checks
+    every fragment **in the dma-buf's own memory**, through a GEM
+    mapping or through HIP, never from the socket, before returning its
+    token; `src/hip_devmem_rx.cpp`, the `hipMalloc` buffer behind it
+    (needs ROCm and `hipcc`, so it is built in the guest);
+    `probes/rx-probe.bt`, which says whether each address the NIC was
+    given is in the GPU's BAR or in system RAM; and
+    `scripts/stack3/`, the host scripts that run one case, sweep it over
+    buffer sizes, and take rate samples. The rest of the third stack's
+    harness is still not here, so those scripts cannot be run from this
+    tree as they are — `tests/devmem/README.md` says what is missing.
+  * `kernel-patches/net-core-devmem-p2p/`: a backport of upstream's
+    `69ab87acc614` ("net: devmem: allow peer-to-peer dma-buf attach for
+    bindings", `v7.4-rc1`) to `v7.2.x`, which is what keeps a GPU
+    dma-buf in VRAM for a devmem binding instead of moving it to system
+    memory. **This repository ships no kernels**: it was built into a
+    test kernel by hand, and its `README.md` says what an image bake
+    would have to do instead. It is a second directory beside
+    `kernel-patches/net-core-v7.2.15/`, not folded into it, because the
+    two have different bases and both are a `0001-`.
 * NIC profiles have an `[rx]` section with one key, `header_split`
   (`off` or `on`; `off` in `compat`), and there is a built-in
   `header-split` profile that sets it. `--print-profile` now prints the

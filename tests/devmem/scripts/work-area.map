@@ -11,6 +11,9 @@ ansible/files/patches/devmem-tx-mainline/0003-ionic-unmap-tx-frags-with-the-netm
 ansible/files/patches/devmem-tx-mainline/0004-ionic-count-the-unreadable-skbs-dropped-on-tx.patch	patches/mainline/0004-ionic-count-the-unreadable-skbs-dropped-on-tx.patch
 ansible/files/patches/devmem-tx-mainline/0005-ionic-dont-send-an-unreadable-skb-that-has-no-frags.patch	patches/mainline/0005-ionic-dont-send-an-unreadable-skb-that-has-no-frags.patch
 ansible/files/patches/devmem-tx-mainline/0006-ionic-add-netmem-tx-support.patch	patches/mainline/0006-ionic-add-netmem-tx-support.patch
+src/ernic_gnu.c	test-rocm102/e2e/src/ernic_gnu.c
+src/ernic_gnu.h	test-rocm102/e2e/src/ernic_gnu.h
+src/parse_int.h	test-rocm102/e2e/src/parse_int.h
 tests/devmem/kernel-patches/amdgpu-dkms-31.70-v7.4/0001-kcl-find-the-headers-v7.4-moved.patch	amdgpu-31.70/patches/0001-kcl-find-the-headers-v7.4-moved.patch
 tests/devmem/kernel-patches/amdgpu-dkms-31.70-v7.4/0002-ttm-write-a-backup-folio-out-with-shmem_write_folio.patch	amdgpu-31.70/patches/0002-ttm-write-a-backup-folio-out-with-shmem_write_folio.patch
 tests/devmem/kernel-patches/amdgpu-dkms-31.70-v7.4/0003-kcl-keep-the-pre-v5.2-fill_info-fallback-to-pre-v5.2.patch	amdgpu-31.70/patches/0003-kcl-keep-the-pre-v5.2-fill_info-fallback-to-pre-v5.2.patch
@@ -24,9 +27,11 @@ tests/devmem/kernel-patches/amdgpu-intree-v7.4/0002-drm-amdgpu-define-HAVE_ACPI_
 tests/devmem/kernel-patches/ionic-mainline-fixes/0001-ionic-use-the-rx-buffers-page-offset-for-xdp-frags.patch	patches/xdp-frag-offset/net/0001-ionic-use-the-rx-buffers-page-offset-for-xdp-frags.patch
 tests/devmem/kernel-patches/ionic-mainline-fixes/0002-ionic-free-every-temporary-queue-after-a-queue-count-change.patch	patches-rx/extra/0001-ionic-free-every-temporary-queue-after-a-queue-count-change.patch
 tests/devmem/kernel-patches/ionic-test-knobs/test-only-ionic-fault-knobs.diff	patches-rx/extra/test-only-ionic-fault-knobs.diff
+tests/devmem/kernel-patches/net-core-devmem-p2p/0001-net-devmem-allow-peer-to-peer-dma-buf-attach-for-bind.patch	patches/core-devmem-p2p/0001-net-devmem-allow-peer-to-peer-dma-buf-attach-for-bind.patch
 tests/devmem/kernel-patches/net-core-v7.2.15/0001-net-devmem-detach-TX-bindings-on-NETDEV_UNREGISTER.patch	patches/core-unbind-uaf/0001-net-devmem-detach-TX-bindings-on-NETDEV_UNREGISTER.patch
 tests/devmem/probes/dmamap.bt	test/evidence/tx-verify/src/dmamap.bt
 tests/devmem/probes/p2p-probe.bt	test/scripts/gpu/p2p-probe.bt
+tests/devmem/probes/rx-probe.bt	test-rocm102/e2e/probes/rx-probe.bt
 tests/devmem/probes/skbshape.bt	test-rx/guest/skbshape.bt
 tests/devmem/probes/tx-probe.bt	test/scripts/devmem-tx/probe.bt
 tests/devmem/probes/vprobe.bt	test/evidence/tx-verify/src/vprobe.bt
@@ -107,6 +112,12 @@ tests/devmem/scripts/stack2/td2-ops.sh	test-rx/scripts/td2-ops.sh
 tests/devmem/scripts/stack2/td3-more.sh	test-rx/scripts/td3-more.sh
 tests/devmem/scripts/stack2/tdlib.sh	test-rx/scripts/tdlib.sh
 tests/devmem/scripts/stack2/xfer.sh	test-rx/scripts/xfer.sh
+tests/devmem/scripts/stack3/bench.sh	test-rocm102/e2e/scripts/bench.sh
+tests/devmem/scripts/stack3/case.sh	test-rocm102/e2e/scripts/case.sh
+tests/devmem/scripts/stack3/env.sh	test-rocm102/e2e/scripts/env.sh
+tests/devmem/scripts/stack3/install.sh	test-rocm102/e2e/scripts/install.sh
+tests/devmem/scripts/stack3/plan_bytes.py	test-rocm102/e2e/scripts/plan_bytes.py
+tests/devmem/scripts/stack3/sizes.sh	test-rocm102/e2e/scripts/sizes.sh
 tests/devmem/scripts/tx-verify/c-offloads-off.sh	test/evidence/tx-verify/src/c-offloads-off.sh
 tests/devmem/scripts/tx-verify/d-new.sh	test/evidence/tx-verify/src/d-new.sh
 tests/devmem/scripts/tx-verify/d1-concurrent.sh	test/evidence/tx-verify/src/d1-concurrent.sh
@@ -118,8 +129,10 @@ tests/devmem/scripts/tx-verify/m1-unpatched.sh	test/evidence/tx-verify/src/m1-un
 tests/devmem/scripts/tx-verify/v.sh	test/evidence/tx-verify/src/v.sh
 tests/devmem/scripts/tx-verify/vsum.py	test/evidence/tx-verify/src/vsum.py
 tests/devmem/scripts/tx-verify/z-final.sh	test/evidence/tx-verify/src/z-final.sh
+tests/devmem/src/devmem_rx_gpu.c	test-rocm102/e2e/src/devmem_rx_gpu.c
 tests/devmem/src/devmem_tx.c	test/src/devmem_tx.c
 tests/devmem/src/devmem_tx_gpu.c	test/src/gpu/devmem_tx_gpu.c
+tests/devmem/src/hip_devmem_rx.cpp	test-rocm102/e2e/src/hip_devmem_rx.cpp
 tests/devmem/src/hwtstamp.py	test-rx/guest/hwtstamp.py
 tests/devmem/src/nettool.py	test-rx/guest/nettool.py
 tests/devmem/src/pcapcap.c	test/src/pcapcap.c

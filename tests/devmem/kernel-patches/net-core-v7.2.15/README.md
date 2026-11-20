@@ -88,6 +88,13 @@ apply it: the guest kernel has to be built with it. It is not under
 `ansible/files/patches/`, whose series are for the out-of-tree ionic
 modules. The patch has no `Signed-off-by:` line.
 
+[`../net-core-devmem-p2p`](../net-core-devmem-p2p) holds the other core
+backport the devmem work needed — an upstream commit that keeps a GPU
+dma-buf in VRAM for a devmem binding. It is a separate directory because
+it has a different base and a different reason, and because both files
+are a `0001-`; neither is renumbered, since each was verified under the
+name it has.
+
 ## When to drop it
 
 When the guest kernel is one that contains `ede1618064a9`. Remove it
