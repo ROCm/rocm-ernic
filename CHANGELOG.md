@@ -185,6 +185,14 @@
 
 ### Added
 
+* **`devmem-poc-summary.md`**, a thousand-word account of what the devmem
+  TCP proof of concept is and what it demonstrated, for a reader who was
+  not part of it: what devmem TCP is and why GPU memory makes it worth
+  having, what the emulator, the driver series and the test material each
+  do, what was shown on which kernel and with what evidence, what has
+  never been run, and the three pre-existing ionic and core bugs the
+  testing turned up. `docs/devmem.rst` remains the page to work from; the
+  summary is a fixed account of the branch.
 * **The emulated ionic NIC has transmit offloads: scatter-gather,
   checksum, and TCP segmentation (TSO) over IPv4 and IPv6.** A Linux
   guest's `ethtool -k` now shows `scatter-gather`,
